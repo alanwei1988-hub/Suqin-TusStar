@@ -29,7 +29,7 @@ class MockAgent {
     });
 
     this.bot.on('event', (body, reqId) => {
-      console.log(`[MockAgent] Received event: ${body.event.eventtype}`);
+      console.log(`[MockAgent] Received event: ${body.event.eventtype}`, JSON.stringify(body));
       if (body.event.eventtype === 'enter_chat') {
         this.handleEnterChat(body, reqId);
       } else if (body.event.eventtype === 'template_card_event') {
@@ -62,12 +62,14 @@ class MockAgent {
     if (this.config.features.template_card && (text.includes('卡片') || text.includes('card'))) {
       this.bot.respondCardMsg(reqId, {
         card_type: "button_interaction",
+        source: { icon_url: "", desc: "OpenClaw", desc_color: 0 },
         main_title: { title: "OpenClaw 标准卡片", desc: "点击下方测试交互" },
+        task_id: `task_${Date.now()}`,
         button_list: [
           { text: "同意", style: 1, key: "btn_ok" },
           { text: "拒绝", style: 2, key: "btn_no" }
         ]
-      }, streamId, true);
+      });
       return;
     }
 
@@ -94,12 +96,28 @@ class MockAgent {
 
   handleTemplateCardEvent(body, reqId) {
     const event = body.event;
-    console.log(`[MockAgent] Interaction key: ${event.event_key}`);
+    const eventKey = event.event_key || (event.template_card_event && event.template_card_event.event_key);
+    console.log(`[MockAgent] Interaction key: ${eventKey}`);
+    
+    // 1. Update the card to a text notice (to remove buttons without error)
     this.bot.respondUpdateMsg(reqId, {
-      card_type: "button_interaction",
-      main_title: { title: "卡片已更新", desc: `你选择了: ${event.event_key}` },
-      button_list: []
+      card_type: "text_notice",
+      source: { icon_url: "", desc: "OpenClaw", desc_color: 0 },
+      main_title: { title: "交互成功", desc: `操作已处理` },
+      quote_area: {
+        type: 1,
+        title: "处理结果",
+        quote_text: `你点击了: ${eventKey === 'btn_ok' ? '同意' : '拒绝'}`
+      },
+      task_id: event.template_card_event ? event.template_card_event.task_id : `task_${Date.now()}`
     });
+
+    // 2. Send a separate message to confirm (Active Push)
+    setTimeout(() => {
+      this.bot.sendMsg(body.from.userid, 1, 'markdown', {
+        markdown: { content: `> **系统提示**\n> 收到你的选择：**${eventKey === 'btn_ok' ? '同意' : '拒绝'}**\n> 业务流程已继续。` }
+      });
+    }, 500);
   }
 
   async handleOtherMessage(body, reqId) {

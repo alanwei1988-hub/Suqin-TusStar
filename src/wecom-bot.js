@@ -11,7 +11,8 @@ class WeComAIBot extends EventEmitter {
     super();
     this.botId = config.botId;
     this.secret = config.secret;
-    this.wsUrl = config.wsUrl || 'wss://openws.work.weixin.qq.com';
+    const defaultUrl = 'wss://openws.work.weixin.qq.com';
+    this.wsUrl = config.wsUrl || (config.debug ? `${defaultUrl}?debug=1` : defaultUrl);
     this.pingIntervalMs = config.pingInterval || 30000;
     this.reconnectIntervalMs = config.reconnectInterval || 5000;
     this.debug = config.debug || false;
@@ -195,18 +196,14 @@ class WeComAIBot extends EventEmitter {
   }
 
   /**
-   * Respond with Template Card (using stream_with_template_card for better compatibility)
+   * Respond with Template Card
    */
-  respondCardMsg(reqId, templateCard, streamId, finish = true) {
+  respondCardMsg(reqId, templateCard) {
     return this.send({
       cmd: 'aibot_respond_msg',
       headers: { req_id: reqId },
       body: {
-        msgtype: 'stream_with_template_card',
-        stream: {
-          id: streamId,
-          finish: finish
-        },
+        msgtype: 'template_card',
         template_card: templateCard
       }
     });

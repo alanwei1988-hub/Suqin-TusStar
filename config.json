@@ -1,0 +1,10 @@
+{
+  "features": {
+    "streaming_response": true,
+    "active_push": true,
+    "welcome_msg": true,
+    "media_upload": true,
+    "template_card": true
+  },
+  "debug": true
+}
