@@ -16,53 +16,45 @@
   - **分片上传**：支持 Init -> Chunk -> Finish 三步法分片上传临时素材。
   - **安全解密**：内置 AES-256-CBC 算法，用于解密企微加密的多媒体资源。
 
-## 架构设计与解密：通信与业务的深度解耦
+## 核心架构与业务解耦
 
-本项目采用了 **事件驱动 (Event-Driven)** 架构，通过 Node.js 内置的 `EventEmitter` 实现了“底层通信”与“业务逻辑”的完全分离。
+本项目实现了“底层通信”与“业务逻辑”的深度解耦。开发者只需复用 `src/wecom-bot.js` 即可快速集成。
 
-### 1. 为什么这种设计对你很重要？
-- **WeComAIBot (底层插件)**：专注于处理 WebSocket 协议、身份验证、心跳、重连及 JSON 解析。它不关心你的 AI 是如何思考的。
-- **AI Agent (业务逻辑)**：专注于调用大模型（LLM）、编排技能（Skills）及记忆管理。它不需要关心 WebSocket 的底层细节。
+### 1. 核心 SDK：`wecom-bot.js` (重点复用)
 
-这种解耦意味着你可以像更换积木一样，随时将演示用的 `MockAgent` 替换为生产级的 AI 引擎。
+这是项目的核心插件，封装了所有复杂的长连接协议细节，可直接拷贝到任何 Node.js 项目中使用：
 
-### 2. 如何接入你自己的 AI Agent？
-只需在你的业务类中监听 `bot` 的事件，并配合流式回复接口即可：
+- **连接与保活**：自动处理 WebSocket 握手、身份订阅、心跳（Ping/Pong）及断线自动重连。
+- **安全与多媒体**：内置 AES-256-CBC 算法自动解密企微多媒体素材，支持复杂的分片上传（Init-Chunk-Finish）逻辑。
+- **接口封装**：将原始 JSON 协议简化为 `respondStreamMsg`、`uploadMedia` 等易用 API，并通过事件驱动（EventEmitter）分发消息。
+
+### 2. 参考实现：`mock-agent.js`
+
+演示了如何基于上述 SDK 对接后端 agent，涵盖了各类消息的支持：
+
+- **文本交互**：演示了基础对话、**流式逐字下发**、**交互式按钮卡片**。
+- **多媒体闭环**：
+  - **语音**：接收并展示企微端自动转写的文字内容。
+  - **图片/文件/视频**：演示了“接收加密链接 -> 下载 -> 解密 -> 存盘 -> 重传 -> 回发”的完整闭环。
+- **事件响应**：处理**用户进入会话**（发送欢迎语）及**卡片按钮点击**（动态更新卡片内容）。
+- **主动推送**：演示如何在非对话触发场景下，异步向用户推送消息。
+
+### 3. 如何开发自己的 AI Agent
+
+你只需引用 `wecom-bot.js` 并订阅事件，即可将精力集中在 AI 逻辑上：
 
 ```javascript
-// 伪代码示例：对接 OpenAI 流式回复
-bot.on('message', async (body, reqId) => {
-  const userPrompt = body.text.content;
-  const streamId = `ai_stream_${Date.now()}`;
-
-  // 1. 调用你的 AI 接口
-  const stream = await openai.chat.completions.create({
-    messages: [{ role: 'user', content: userPrompt }],
-    stream: true,
-  });
-
-  let fullContent = "";
-  for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta?.content || "";
-    fullContent += delta;
-    
-    // 2. 实时推送到企微 (WeComAIBot 自动处理 req_id 关联)
-    bot.respondStreamMsg(reqId, fullContent, streamId, false);
-  }
-
-  // 3. 发送结束帧
-  bot.respondStreamMsg(reqId, fullContent, streamId, true);
-});
-```
-
-### 3. 他人如何复用此插件？
-第三方开发者只需拷贝 `src/wecom-bot.js` 即可在任何 Node.js 项目中使用：
-```javascript
-const WeComAIBot = require('./wecom-bot');
+const WeComAIBot = require('./src/wecom-bot');
 const bot = new WeComAIBot({ botId: '...', secret: '...' });
 
-bot.on('message', (body, reqId) => {
-  bot.respondStreamMsg(reqId, "收到！", "sid_001", true);
+bot.on('message', async (body, reqId) => {
+  // 1. 识别消息类型 (text, image, file, voice, video)
+  if (body.msgtype === 'text') {
+    const userPrompt = body.text.content;
+    // 2. 接入你的 AI 逻辑并回传 (以流式为例)
+    bot.respondStreamMsg(reqId, "思考中...", "sid_001", false);
+    bot.respondStreamMsg(reqId, "这是 AI 的回答。", "sid_001", true);
+  }
 });
 
 bot.connect();
@@ -73,43 +65,54 @@ bot.connect();
 根据企业微信官方文档，使用本插件时请务必遵守以下频率与技术限制：
 
 ### 1. 消息发送频率限制
+
 - **30 条 / 分钟**
 - **1000 条 / 小时**
 
 ### 2. 媒体上传限制
+
 - **30 次 / 分钟**
 - **1000 条 / 小时**
 - **文件有效期**：上传成功的素材 `media_id` 有效期为 **3 天**。
 - **会话有效期**：初始化上传后，需在 **30 分钟** 内完成所有分片上传。
 
 ### 3. 超时控制
+
 - **响应时效**：收到进入会话或卡片点击事件后，必须在 **5 秒** 内发送回复。
 - **流式时效**：一条流式消息从首次下发开始，必须在 **6 分钟** 内完成所有更新并设置 `finish=true`。
 - **下载链接**：接收消息中的媒体 URL 有效期仅为 **5 分钟**。
 
 ### 4. 连接限制
+
 - 每个机器人同一时间只能保持 **1 个** 有效长连接。新连接建立时，旧连接将被服务端自动踢掉（断开）。
 
 ## 快速开始
 
 ### 1. 安装
+
 ```bash
 npm install
 ```
 
 ### 2. 配置环境变量 (`.env`)
+
 在根目录创建 `.env` 文件：
+
 ```env
 BOT_ID=你的机器人ID
 SECRET=你的长连接专用密钥
 ```
 
 ### 3. 运行测试 Agent
+
 项目内置了一个 `MockAgent`，用于演示各项功能：
+
 ```bash
 npm start
 ```
+
 您可以尝试以下测试场景：
+
 - **流式回复**：发送包含“流式”或“stream”的消息。
 - **模板卡片**：发送包含“卡片”或“card”的消息，点击按钮可测试**卡片动态更新**。
 - **主动推送**：发送包含“推送”的消息，机器人将在 5 秒后主动向您推送一条 Markdown 消息。

@@ -6,3 +6,4 @@ config.json
 package/
 *.log
 .DS_Store
+media/
