@@ -48,7 +48,7 @@ class MockAgent {
 
     // 1. Streaming Test
     if (this.config.features.streaming_response && (text.includes('流式') || text.toLowerCase().includes('stream'))) {
-      const chunks = ["你好！", "我是基于 OpenClaw 标准实现的 AI 助手。", "正在为你流式生成内容...", "生成完毕！"];
+      const chunks = ["你好！", "我是基于企业微信长连接协议实现的 AI 助手。", "正在为你流式生成内容...", "生成完毕！"];
       let currentContent = "";
       for (let i = 0; i < chunks.length; i++) {
         currentContent += chunks[i];
@@ -62,8 +62,8 @@ class MockAgent {
     if (this.config.features.template_card && (text.includes('卡片') || text.includes('card'))) {
       this.bot.respondCardMsg(reqId, {
         card_type: "button_interaction",
-        source: { icon_url: "", desc: "OpenClaw", desc_color: 0 },
-        main_title: { title: "OpenClaw 标准卡片", desc: "点击下方测试交互" },
+        source: { icon_url: "", desc: "AI 助手", desc_color: 0 },
+        main_title: { title: "互动测试卡片", desc: "点击下方测试交互" },
         task_id: `task_${Date.now()}`,
         button_list: [
           { text: "同意", style: 1, key: "btn_ok" },
@@ -78,7 +78,7 @@ class MockAgent {
       this.bot.respondStreamMsg(reqId, "好的，5秒后推送消息。", streamId, true);
       setTimeout(() => {
         this.bot.sendMsg(body.from.userid, 1, 'markdown', {
-          markdown: { content: `### 主动推送测试\n这是一条符合 OpenClaw 规范的**主动推送**消息。` }
+          markdown: { content: `### 主动推送测试\n这是一条符合企业微信规范的**主动推送**消息。` }
         });
       }, 5000);
       return;
@@ -90,7 +90,7 @@ class MockAgent {
 
   handleEnterChat(body, reqId) {
     if (this.config.features.welcome_msg) {
-      this.bot.respondWelcomeMsg(reqId, "欢迎使用基于 OpenClaw 标准的企业微信机器人！");
+      this.bot.respondWelcomeMsg(reqId, "欢迎使用企业微信 AI 机器人！");
     }
   }
 
@@ -102,7 +102,7 @@ class MockAgent {
     // 1. Update the card to a text notice (to remove buttons without error)
     this.bot.respondUpdateMsg(reqId, {
       card_type: "text_notice",
-      source: { icon_url: "", desc: "OpenClaw", desc_color: 0 },
+      source: { icon_url: "", desc: "AI 助手", desc_color: 0 },
       main_title: { title: "交互成功", desc: `操作已处理` },
       quote_area: {
         type: 1,
@@ -212,7 +212,7 @@ class MockAgent {
 
   start() {
     this.bot.connect();
-    console.log('MockAgent (OpenClaw Mode) started.');
+    console.log('MockAgent started.');
   }
 
   stop() {
