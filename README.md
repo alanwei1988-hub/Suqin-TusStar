@@ -16,19 +16,69 @@
   - **分片上传**：支持 Init -> Chunk -> Finish 三步法分片上传临时素材。
   - **安全解密**：内置 AES-256-CBC 算法，用于解密企微加密的多媒体资源。
 
+## 架构设计与解密：通信与业务的深度解耦
+
+本项目采用了 **事件驱动 (Event-Driven)** 架构，通过 Node.js 内置的 `EventEmitter` 实现了“底层通信”与“业务逻辑”的完全分离。
+
+### 1. 为什么这种设计对你很重要？
+- **WeComAIBot (底层插件)**：专注于处理 WebSocket 协议、身份验证、心跳、重连及 JSON 解析。它不关心你的 AI 是如何思考的。
+- **AI Agent (业务逻辑)**：专注于调用大模型（LLM）、编排技能（Skills）及记忆管理。它不需要关心 WebSocket 的底层细节。
+
+这种解耦意味着你可以像更换积木一样，随时将演示用的 `MockAgent` 替换为生产级的 AI 引擎。
+
+### 2. 如何接入你自己的 AI Agent？
+只需在你的业务类中监听 `bot` 的事件，并配合流式回复接口即可：
+
+```javascript
+// 伪代码示例：对接 OpenAI 流式回复
+bot.on('message', async (body, reqId) => {
+  const userPrompt = body.text.content;
+  const streamId = `ai_stream_${Date.now()}`;
+
+  // 1. 调用你的 AI 接口
+  const stream = await openai.chat.completions.create({
+    messages: [{ role: 'user', content: userPrompt }],
+    stream: true,
+  });
+
+  let fullContent = "";
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta?.content || "";
+    fullContent += delta;
+    
+    // 2. 实时推送到企微 (WeComAIBot 自动处理 req_id 关联)
+    bot.respondStreamMsg(reqId, fullContent, streamId, false);
+  }
+
+  // 3. 发送结束帧
+  bot.respondStreamMsg(reqId, fullContent, streamId, true);
+});
+```
+
+### 3. 他人如何复用此插件？
+第三方开发者只需拷贝 `src/wecom-bot.js` 即可在任何 Node.js 项目中使用：
+```javascript
+const WeComAIBot = require('./wecom-bot');
+const bot = new WeComAIBot({ botId: '...', secret: '...' });
+
+bot.on('message', (body, reqId) => {
+  bot.respondStreamMsg(reqId, "收到！", "sid_001", true);
+});
+
+bot.connect();
+```
+
 ## 技术规范与限制 (重要)
 
 根据企业微信官方文档，使用本插件时请务必遵守以下频率与技术限制：
 
 ### 1. 消息发送频率限制
-无论是“被动回复”还是“主动推送”，针对某个特定会话（chatid）的频率限制如下：
 - **30 条 / 分钟**
 - **1000 条 / 小时**
 
 ### 2. 媒体上传限制
-单个智能机器人的素材上传限制为：
 - **30 次 / 分钟**
-- **1000 次 / 小时**
+- **1000 条 / 小时**
 - **文件有效期**：上传成功的素材 `media_id` 有效期为 **3 天**。
 - **会话有效期**：初始化上传后，需在 **30 分钟** 内完成所有分片上传。
 
@@ -59,9 +109,13 @@ SECRET=你的长连接专用密钥
 ```bash
 npm start
 ```
-- 向机器人发送 **“流式”**：测试分段生成回复。
-- 向机器人发送 **“卡片”**：测试交互式按钮。
-- 向机器人发送 **“推送”**：测试异步主动消息推送。
+您可以尝试以下测试场景：
+- **流式回复**：发送包含“流式”或“stream”的消息。
+- **模板卡片**：发送包含“卡片”或“card”的消息，点击按钮可测试**卡片动态更新**。
+- **主动推送**：发送包含“推送”的消息，机器人将在 5 秒后主动向您推送一条 Markdown 消息。
+- **欢迎语**：在手机端或电脑端点击**进入机器人会话**，测试 `enter_chat` 事件触发。
+- **多媒体消息**：尝试发送**图片、文件、语音或视频**，测试非文本消息的初步接收响应。
+- **普通文本**：发送任意其他文字，测试基础的消息回显（Echo）。
 
 ## 核心接口说明 (`src/wecom-bot.js`)
 
@@ -70,7 +124,3 @@ npm start
 - `bot.respondWelcomeMsg(reqId, text)`: 回复欢迎语。
 - `bot.sendMsg(chatId, chatType, msgType, content)`: 主动推送消息。
 - `bot.uploadMedia(type, filename, buffer)`: 执行分片上传。
-
-## 架构建议
-
-建议将 `WeComAIBot` 作为一个核心 Service 引入你的 AI Agent 框架。由于其基于 `EventEmitter`，你可以通过监听 `message` 事件来处理入站流量，并异步调用 `respondStreamMsg` 将 AI 的思考结果实时推送到用户端。
