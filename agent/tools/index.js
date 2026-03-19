@@ -246,6 +246,7 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers }) {
     tools,
     toolNames: Object.keys(tools),
     mcpToolNames: Object.keys(mcpToolkit.tools),
+    mcpReadOnlyToolNames: mcpToolkit.readOnlyToolNames || [],
     promptSections: [
       `Machine\nYou are operating on a shared local machine. Default working directory: \`${toPosixPath(workingDir)}\`. You may use absolute filesystem paths when needed, but you are responsible for preserving the machine's long-term usability and file integrity.`,
       buildSkillsPrompt(skillsToolkit.skills),

@@ -80,7 +80,7 @@ function isMutatingToolCall(toolCall, runtime) {
   }
 
   if (runtime.mcpToolNames.includes(toolCall.toolName)) {
-    return true;
+    return !runtime.mcpReadOnlyToolNames.includes(toolCall.toolName);
   }
 
   if (toolCall.toolName === 'writeFile') {

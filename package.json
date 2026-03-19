@@ -4,7 +4,8 @@
   "description": "AI Contract Management Bot for WeChat Work",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node tests/run.js"
   },
   "dependencies": {
     "@ai-sdk/mcp": "^1.0.25",

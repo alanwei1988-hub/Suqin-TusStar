@@ -1,6 +1,8 @@
 const { createMCPClient } = require('@ai-sdk/mcp');
 const { Experimental_StdioMCPTransport } = require('@ai-sdk/mcp/mcp-stdio');
 
+const DEFAULT_MCP_INIT_TIMEOUT_MS = 8000;
+
 function buildTransport(server) {
   const type = server.transport || server.type;
 
@@ -13,6 +15,14 @@ function buildTransport(server) {
     });
   }
 
+  if (type === 'mock') {
+    if (!server.mockTransport) {
+      throw new Error(`MCP server "${server.name || 'unnamed'}" is missing a mockTransport`);
+    }
+
+    return server.mockTransport;
+  }
+
   if (type === 'http' || type === 'sse') {
     return {
       type,
@@ -23,6 +33,25 @@ function buildTransport(server) {
   }
 
   throw new Error(`Unsupported MCP transport type: ${type}`);
+}
+
+function describeServer(server) {
+  return server.name || server.url || server.command || 'unnamed';
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return promise;
+  }
+
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    }),
+  ]);
 }
 
 function assertServerConfig(server) {
@@ -45,43 +74,83 @@ async function createMcpToolkit(servers = []) {
   const enabledServers = servers.filter(server => server && server.enabled !== false);
   const clients = [];
   const mergedTools = {};
+  const readOnlyToolNames = [];
   const summaries = [];
 
   try {
     for (const server of enabledServers) {
       assertServerConfig(server);
+      const serverLabel = describeServer(server);
+      const timeoutMs = server.initTimeoutMs || DEFAULT_MCP_INIT_TIMEOUT_MS;
+      const failOpen = server.failOpen !== false;
+      let client;
 
-      const client = await createMCPClient({
-        name: server.clientName || 'wxwork-bot',
-        version: server.clientVersion || '1.0.0',
-        transport: buildTransport(server),
-        onUncaughtError: error => {
-          console.error(`[MCP:${server.name || server.url || server.command}]`, error);
-        },
-      });
+      try {
+        console.log(`[MCP] Initializing ${serverLabel} via ${server.transport || server.type}...`);
 
-      clients.push(client);
+        client = await withTimeout(
+          createMCPClient({
+            name: server.clientName || 'wxwork-bot',
+            version: server.clientVersion || '1.0.0',
+            transport: buildTransport(server),
+            onUncaughtError: error => {
+              console.error(`[MCP:${serverLabel}]`, error);
+            },
+          }),
+          timeoutMs,
+          `MCP server ${serverLabel} initialization`,
+        );
 
-      const tools = await client.tools();
-      const toolNames = Object.keys(tools);
+        clients.push(client);
 
-      for (const toolName of toolNames) {
-        if (mergedTools[toolName]) {
-          throw new Error(`Duplicate MCP tool name detected: ${toolName}`);
+        const definitions = await withTimeout(
+          client.listTools(),
+          timeoutMs,
+          `MCP server ${serverLabel} tool discovery`,
+        );
+        const tools = client.toolsFromDefinitions(definitions);
+        const prefix = server.toolPrefix ? `${server.toolPrefix}_` : '';
+        const toolNames = [];
+
+        for (const tool of definitions.tools) {
+          const mergedName = `${prefix}${tool.name}`;
+
+          if (mergedTools[mergedName]) {
+            throw new Error(`Duplicate MCP tool name detected: ${mergedName}`);
+          }
+
+          mergedTools[mergedName] = tools[tool.name];
+          toolNames.push(mergedName);
+
+          if (tool.annotations?.readOnlyHint === true || tool._meta?.readOnlyHint === true) {
+            readOnlyToolNames.push(mergedName);
+          }
         }
 
-        mergedTools[toolName] = tools[toolName];
-      }
+        summaries.push({
+          name: serverLabel,
+          transport: server.transport || server.type,
+          toolNames,
+        });
 
-      summaries.push({
-        name: server.name || server.url || server.command,
-        transport: server.transport || server.type,
-        toolNames,
-      });
+        console.log(`[MCP] ${serverLabel} ready with ${toolNames.length} tool(s).`);
+      } catch (error) {
+        if (client) {
+          await Promise.allSettled([client.close()]);
+        }
+
+        if (failOpen) {
+          console.error(`[MCP] ${serverLabel} disabled for this run: ${error.message}`);
+          continue;
+        }
+
+        throw error;
+      }
     }
 
     return {
       tools: mergedTools,
+      readOnlyToolNames,
       summaries,
       close: async () => {
         await Promise.allSettled(clients.map(client => client.close()));

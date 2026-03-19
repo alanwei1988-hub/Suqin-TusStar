@@ -12,13 +12,14 @@ const {
 } = require('./loop');
 const { createRuntimeTools } = require('./tools/index');
 const { listAvailableSkills } = require('./tools/skills');
+const { loadRolePrompt } = require('./roles');
 const SessionManager = require('./session');
 
 /**
  * AgentCore - 纯粹的通用 AI 大脑，通过配置初始化
  */
 class AgentCore {
-  constructor(config) {
+  constructor(config, options = {}) {
     this.config = config;
     this.provider = createOpenAICompatible({
       name: config.provider || 'openaiCompatible',
@@ -26,6 +27,7 @@ class AgentCore {
       baseURL: config.openai.baseURL,
       includeUsage: true,
     });
+    this.modelOverride = options.model;
     this.sessionManager = new SessionManager(config.sessionDb);
     this.skills = [];
   }
@@ -36,6 +38,21 @@ class AgentCore {
       workspaceDir: this.config.workspaceDir,
     });
     console.log(`[Agent] Loaded ${this.skills.length} skills: ${this.skills.map(s => s.name).join(', ')}`);
+
+    const strictMcpServers = (this.config.mcpServers || []).filter(
+      server => server && server.enabled !== false && server.failOpen === false,
+    );
+
+    if (strictMcpServers.length > 0) {
+      console.log(`[Agent] Preflighting strict MCP servers: ${strictMcpServers.map(server => server.name || server.command || server.url).join(', ')}`);
+      const runtime = await createRuntimeTools({
+        workspaceDir: this.config.workspaceDir,
+        skillsDir: this.config.skillsDir,
+        mcpServers: this.config.mcpServers || [],
+      });
+      await runtime.close();
+      console.log('[Agent] MCP preflight passed.');
+    }
   }
 
   async chat(userId, userMessage, attachments = [], onStepFinish) {
@@ -61,13 +78,15 @@ class AgentCore {
       skillsDir: this.config.skillsDir,
       mcpServers: this.config.mcpServers || [],
     });
+    const rolePrompt = await loadRolePrompt(this.config.rolePromptDir);
     const promptSections = [
+      rolePrompt,
       ...runtime.promptSections,
       context.summary,
     ].filter(Boolean);
 
     const agent = new ToolLoopAgent({
-      model: this.provider(this.config.model),
+      model: this.modelOverride || this.provider(this.config.model),
       instructions: buildSystemPrompt(promptSections),
       tools: {
         ...runtime.tools,
@@ -78,7 +97,7 @@ class AgentCore {
       prepareStep: createPrepareStep({
         runtime,
         contextSettings,
-        basePromptSections: runtime.promptSections,
+        basePromptSections: promptSections,
         toolChoice,
       }),
     });
@@ -101,6 +120,10 @@ class AgentCore {
     } finally {
       await runtime.close();
     }
+  }
+
+  close() {
+    this.sessionManager.close();
   }
 }
 

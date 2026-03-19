@@ -13,9 +13,29 @@
       "summaryLineCount": 10,
       "summaryMaxChars": 240
     },
-    "mcpServers": [],
+    "mcpServers": [
+      {
+        "name": "contract-manager",
+        "transport": "stdio",
+        "command": "node",
+        "args": ["./contract-mcp/server.js"],
+        "cwd": ".",
+        "failOpen": false,
+        "initTimeoutMs": 8000
+      }
+    ],
     "skillsDir": "./skills",
+    "rolePromptDir": "./roles/contract-manager",
     "sessionDb": "./data/sessions.db"
+  },
+  "contractMcp": {
+    "dbPath": "./data/contracts.db",
+    "storageRoot": "./storage/contracts",
+    "stagingDir": "./storage/contracts/.staging",
+    "contractIdPrefix": "CT",
+    "allowedExtensions": [".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png"],
+    "maxFileSizeMb": 50,
+    "defaultSearchLimit": 20
   },
   "channel": {
     "type": "wxwork",

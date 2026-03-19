@@ -140,6 +140,10 @@ class SessionManager {
     this.db.prepare('DELETE FROM sessions WHERE userId = ?').run(userId);
   }
 
+  close() {
+    this.db.close();
+  }
+
   buildModelContext(messages, options = {}) {
     const recentMessagesCount = options.recentMessagesCount || 12;
     const summaryLineCount = options.summaryLineCount || 10;
