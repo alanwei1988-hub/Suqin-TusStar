@@ -1,0 +1,20 @@
+{
+  "agent": {
+    "model": "qwen3.5-plus",
+    "provider": "openai",
+    "openai": {
+      "baseURL": "https://api.zetatechs.com/v1"
+    },
+    "skillsDir": "./skills",
+    "sessionDb": "./data/sessions.db"
+  },
+  "channel": {
+    "type": "wxwork",
+    "wxwork": {
+      "debug": true
+    }
+  },
+  "storage": {
+    "tempDir": "./storage/temp"
+  }
+}

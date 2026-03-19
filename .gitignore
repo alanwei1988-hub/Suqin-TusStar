@@ -1,2 +1,5 @@
 node_modules
 docs/vercel-ai-sdk
+storage/
+data/
+.env
