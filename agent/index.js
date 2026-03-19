@@ -43,7 +43,7 @@ ${skillsList || 'No specialized skills available currently.'}
 ## Base Tools
 - \`listDir\`: List files in a directory.
 - \`readFile\`: Read the content of a file.
-- \`bash\`: Execute terminal commands (mv, cp, python, etc.).
+- \`bash\`: Execute terminal commands. On Windows this tool runs in PowerShell.
 - \`loadSkill\`: Load specialized instructions for a specific domain.
 `;
   }

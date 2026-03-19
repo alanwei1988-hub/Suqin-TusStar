@@ -2,9 +2,36 @@ const { tool } = require('ai');
 const { z } = require('zod');
 const fs = require('fs/promises');
 const path = require('path');
-const { exec } = require('child_process');
-const util = require('util');
-const execPromise = util.promisify(exec);
+const { execFile } = require('child_process');
+
+function runCommand(command, cwd) {
+  const isWindows = process.platform === 'win32';
+  const file = isWindows ? 'powershell.exe' : '/bin/sh';
+  const args = isWindows
+    ? ['-NoProfile', '-NonInteractive', '-Command', command]
+    : ['-c', command];
+
+  return new Promise((resolve, reject) => {
+    execFile(
+      file,
+      args,
+      {
+        cwd,
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          error.stdout = stdout;
+          error.stderr = stderr;
+          reject(error);
+          return;
+        }
+        resolve({ stdout, stderr });
+      }
+    );
+  });
+}
 
 class Sandbox {
   constructor(workDir = process.cwd()) {
@@ -33,8 +60,17 @@ class Sandbox {
     if (command.includes('rm -rf /') || command.includes('del /s /q c:')) {
       throw new Error('Dangerous command blocked');
     }
-    const { stdout, stderr } = await execPromise(command, { cwd: this.workDir });
-    return { stdout, stderr };
+    try {
+      const { stdout, stderr } = await runCommand(command, this.workDir);
+      return { stdout, stderr, code: 0 };
+    } catch (error) {
+      return {
+        stdout: error.stdout || '',
+        stderr: error.stderr || error.message,
+        code: typeof error.code === 'number' ? error.code : 1,
+        failed: true,
+      };
+    }
   }
 }
 
@@ -103,7 +139,7 @@ const createTools = (skills) => ({
   }),
 
   bash: tool({
-    description: 'Execute a terminal command (e.g., mv, cp, python)',
+    description: 'Execute a terminal command. On Windows this runs in PowerShell; on Unix-like systems it runs in sh.',
     parameters: z.object({
       command: z.string().describe('The command to execute'),
     }),
