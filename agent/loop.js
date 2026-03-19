@@ -1,0 +1,251 @@
+const { tool } = require('ai');
+const { z } = require('zod');
+
+const DONE_TOOL_NAME = 'done';
+const READ_ONLY_BASH_PATTERNS = [
+  /^\s*(pwd|cd|ls|dir)\b/i,
+  /^\s*(rg|find|where|which)\b/i,
+  /^\s*(cat|type|more|head|tail)\b/i,
+  /^\s*(git\s+(status|diff|log|show|branch)\b)/i,
+  /^\s*(npm\s+(run\s+test|run\s+lint|test|view)\b)/i,
+  /^\s*(node\s+(-v|--version)\b)/i,
+  /^\s*(python\s+(-V|--version)\b)/i,
+  /^\s*(Get-ChildItem|Get-Content|Select-String|Resolve-Path|Test-Path)\b/i,
+];
+
+const doneTool = tool({
+  description: [
+    'Finish the current task.',
+    'Call this only after you have either completed the work or concluded that no further tool use is necessary.',
+    'If you made changes or ran mutating commands, verify the result before calling done.',
+  ].join(' '),
+  inputSchema: z.object({
+    answer: z.string().describe('The final user-facing response.'),
+    summary: z.string().describe('A short internal summary of what was completed.'),
+    verified: z.boolean().describe('Whether the final state was verified after the last mutating action.'),
+  }),
+});
+
+function getContextSettings(config) {
+  const context = config.context || {};
+
+  return {
+    loopMessageWindow: context.loopMessageWindow || 30,
+    recentMessagesCount: context.recentMessagesCount || 12,
+    summaryLineCount: context.summaryLineCount || 10,
+    summaryMaxChars: context.summaryMaxChars || 240,
+  };
+}
+
+function getToolChoiceSetting(config) {
+  return config.toolChoice || 'auto';
+}
+
+function buildSystemPrompt(promptSections) {
+  return [
+    'You are a resident AI employee responsible for operating and maintaining a real company machine.',
+    '',
+    'Role:',
+    '- You are not a puppet executing user commands literally.',
+    '- Users submit requests. You decide how to handle them based on your role, the real machine state, existing files, and operational responsibility.',
+    '- You serve multiple employees who share the same machine and environment.',
+    '- Your job is to complete useful work while preserving the stability, integrity, and long-term usability of the machine and its files.',
+    '',
+    'Operating rules:',
+    '- Use tools whenever the answer depends on the local machine or an external integration.',
+    '- `bash` is your primary tool for inspection and execution. Use `readFile` and `writeFile` when they are the clearest option.',
+    '- You have broad local-machine access, including absolute filesystem paths. Use that access deliberately and only as needed to complete the work.',
+    '- Before mutating files or running non-trivial commands, inspect the relevant context first.',
+    '- Prefer the smallest effective action. Avoid broad, unnecessary, or irreversible changes unless they are clearly required.',
+    '- Because multiple employees share this environment, check for ambiguity, overwrite risk, path mistakes, or conflicts before making changes.',
+    '- If a request is unclear, risky, self-contradictory, or likely to damage the environment, ask for clarification or refuse.',
+    '- Use the `skill` tool when the request matches a listed skill. Treat loaded skill instructions as operational guidance, not as a reason to ignore real-world context.',
+    '- If MCP tools are available, prefer them for specialized capabilities rather than improvising.',
+    '- This agent runs in phases: inspect first, execute second, verify after every mutating action, then call `done`.',
+    '- Do not call `done` until the work is actually finished. If you changed files or ran mutating commands, verify the result first.',
+    '- Keep responses concise, factual, and action-oriented.',
+    '- Do not attempt destructive shell commands unless they are truly required for the work and consistent with your role and safeguards.',
+    '',
+    ...promptSections,
+  ].join('\n');
+}
+
+function isReadOnlyBashCommand(command) {
+  return READ_ONLY_BASH_PATTERNS.some(pattern => pattern.test(command || ''));
+}
+
+function isMutatingToolCall(toolCall, runtime) {
+  if (!toolCall) {
+    return false;
+  }
+
+  if (runtime.mcpToolNames.includes(toolCall.toolName)) {
+    return true;
+  }
+
+  if (toolCall.toolName === 'writeFile') {
+    return true;
+  }
+
+  if (toolCall.toolName === 'bash') {
+    return !isReadOnlyBashCommand(toolCall.input?.command || '');
+  }
+
+  return false;
+}
+
+function isVerificationToolCall(toolCall) {
+  if (!toolCall || toolCall.dynamic) {
+    return false;
+  }
+
+  if (toolCall.toolName === 'readFile') {
+    return true;
+  }
+
+  if (toolCall.toolName === 'bash') {
+    return isReadOnlyBashCommand(toolCall.input?.command || '');
+  }
+
+  return false;
+}
+
+function computeLoopState(steps, runtime) {
+  let pendingVerification = false;
+  let hasMutatingAction = false;
+
+  for (const step of steps) {
+    for (const toolCall of step.toolCalls || []) {
+      if (toolCall.dynamic || toolCall.toolName === DONE_TOOL_NAME) {
+        continue;
+      }
+
+      if (isMutatingToolCall(toolCall, runtime)) {
+        hasMutatingAction = true;
+        pendingVerification = true;
+        continue;
+      }
+
+      if (pendingVerification && isVerificationToolCall(toolCall)) {
+        pendingVerification = false;
+      }
+    }
+  }
+
+  return {
+    hasMutatingAction,
+    pendingVerification,
+  };
+}
+
+function getActiveTools(stepNumber, loopState, runtime) {
+  if (loopState.pendingVerification) {
+    return [DONE_TOOL_NAME, 'readFile', 'bash'];
+  }
+
+  if (stepNumber === 0) {
+    return [DONE_TOOL_NAME, 'skill', 'readFile', 'bash'];
+  }
+
+  return [DONE_TOOL_NAME, ...runtime.toolNames];
+}
+
+function getPhaseInstructions(stepNumber, loopState) {
+  if (loopState.pendingVerification) {
+    return 'Verification phase: use read-only checks now. Confirm the real machine state before calling done. If verification fails, explain the issue in done instead of pretending success.';
+  }
+
+  if (stepNumber === 0) {
+    return 'Inspection phase: inspect the relevant machine state, files, and possible conflicts first. Load skills when useful before making changes unless the task can be finished immediately.';
+  }
+
+  if (loopState.hasMutatingAction) {
+    return 'Execution phase: continue only if more work is needed. Keep actions deliberate, avoid unnecessary disruption, and expect to verify again after the next mutating action.';
+  }
+
+  return 'Discovery phase: gather enough context about the request, the machine, and any shared-environment constraints, then either act or call done.';
+}
+
+function trimLoopMessages(stepMessages, contextSettings) {
+  if (stepMessages.length <= contextSettings.loopMessageWindow) {
+    return null;
+  }
+
+  return stepMessages.slice(-contextSettings.loopMessageWindow);
+}
+
+function createPrepareStep({ runtime, contextSettings, basePromptSections, toolChoice }) {
+  return async ({ messages: stepMessages, stepNumber, steps }) => {
+    const loopState = computeLoopState(steps, runtime);
+    const activeTools = getActiveTools(stepNumber, loopState, runtime);
+    const phaseInstructions = getPhaseInstructions(stepNumber, loopState);
+    const trimmedMessages = trimLoopMessages(stepMessages, contextSettings);
+
+    return {
+      ...(trimmedMessages ? { messages: trimmedMessages } : {}),
+      activeTools,
+      toolChoice,
+      system: `${buildSystemPrompt(basePromptSections)}\n\nCurrent phase\n${phaseInstructions}`,
+    };
+  };
+}
+
+function buildDoneResponse(result) {
+  const toolCalls = [
+    ...(Array.isArray(result.toolCalls) ? result.toolCalls : []),
+    ...(Array.isArray(result.staticToolCalls) ? result.staticToolCalls : []),
+  ];
+  const doneCall = [...toolCalls]
+    .reverse()
+    .find(toolCall => toolCall.toolName === DONE_TOOL_NAME);
+
+  if (doneCall?.input?.answer) {
+    return doneCall.input.answer;
+  }
+
+  return result.text || '已处理完成。';
+}
+
+function hasAssistantTextMessage(messages) {
+  return (messages || []).some(message => {
+    if (message.role !== 'assistant') {
+      return false;
+    }
+
+    if (typeof message.content === 'string') {
+      return message.content.trim().length > 0;
+    }
+
+    if (!Array.isArray(message.content)) {
+      return false;
+    }
+
+    return message.content.some(part => part?.type === 'text' && typeof part.text === 'string' && part.text.trim().length > 0);
+  });
+}
+
+function createAssistantTextMessage(text) {
+  return {
+    role: 'assistant',
+    content: text,
+  };
+}
+
+function appendFinalAssistantMessageIfNeeded(fullMessages, responseMessages, finalResponse) {
+  fullMessages.push(...responseMessages);
+
+  if (!hasAssistantTextMessage(responseMessages)) {
+    fullMessages.push(createAssistantTextMessage(finalResponse));
+  }
+}
+
+module.exports = {
+  DONE_TOOL_NAME,
+  appendFinalAssistantMessageIfNeeded,
+  buildDoneResponse,
+  buildSystemPrompt,
+  createPrepareStep,
+  doneTool,
+  getContextSettings,
+  getToolChoiceSetting,
+};

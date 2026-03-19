@@ -13,6 +13,7 @@ const processedConfig = {
   agent: {
     ...config.agent,
     model: process.env.MODEL_NAME || config.agent.model,
+    workspaceDir: path.resolve(__dirname),
     openai: {
       ...config.agent.openai,
       apiKey: process.env.OPENAI_API_KEY,
@@ -20,6 +21,7 @@ const processedConfig = {
     },
     skillsDir: path.resolve(__dirname, config.agent.skillsDir),
     sessionDb: path.resolve(__dirname, config.agent.sessionDb),
+    mcpServers: config.agent.mcpServers || [],
   },
   channel: {
     ...config.channel,

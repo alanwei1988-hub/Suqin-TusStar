@@ -1,0 +1,262 @@
+const fs = require('fs/promises');
+const path = require('path');
+const { execFile } = require('child_process');
+const { tool } = require('ai');
+const { z } = require('zod');
+const { buildMcpPrompt, createMcpToolkit } = require('./mcp');
+const { buildSkillsPrompt, createSkillsToolkit } = require('./skills');
+
+const MAX_BASH_OUTPUT_LENGTH = 20000;
+const MAX_READ_FILE_LENGTH = 100000;
+
+const BLOCKED_COMMAND_RULES = [
+  {
+    pattern: /\bgit\s+reset\s+--hard\b/i,
+    reason: 'Refusing to discard changes with git reset --hard.',
+  },
+  {
+    pattern: /\bgit\s+clean\b[\s\S]*\b-f\b/i,
+    reason: 'Refusing to run git clean with force flags.',
+  },
+  {
+    pattern: /\brm\s+-rf\s+(\/|~|[a-zA-Z]:\\)\b/i,
+    reason: 'Refusing to delete a filesystem root.',
+  },
+  {
+    pattern: /\b(remove-item|ri)\b[\s\S]*\b(-recurse|\/s)\b[\s\S]*([a-zA-Z]:\\|\/)/i,
+    reason: 'Refusing to recursively delete an absolute root path.',
+  },
+  {
+    pattern: /\b(del|erase)\b[\s\S]*\b\/[spqf]+\b[\s\S]*[a-zA-Z]:\\/i,
+    reason: 'Refusing to run a destructive absolute delete command.',
+  },
+  {
+    pattern: /\b(format|mkfs|diskpart|shutdown|reboot)\b/i,
+    reason: 'Refusing to run a destructive system command.',
+  },
+];
+
+function toPosixPath(value) {
+  return value.split(path.sep).join('/');
+}
+
+function getBlockedCommandReason(command) {
+  for (const rule of BLOCKED_COMMAND_RULES) {
+    if (rule.pattern.test(command)) {
+      return rule.reason;
+    }
+  }
+
+  return null;
+}
+
+function truncateText(value, maxLength, label) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const removedLength = value.length - maxLength;
+  return `${value.slice(0, maxLength)}\n\n[${label} truncated: ${removedLength} characters removed]`;
+}
+
+function resolveRequestedPath(baseDir, requestedPath) {
+  if (!requestedPath || typeof requestedPath !== 'string') {
+    throw new Error('Path is required.');
+  }
+
+  return path.isAbsolute(requestedPath)
+    ? path.normalize(requestedPath)
+    : path.resolve(baseDir, requestedPath);
+}
+
+function runShellCommand(command, cwd) {
+  const isWindows = process.platform === 'win32';
+  const shell = isWindows ? 'powershell.exe' : '/bin/sh';
+  const args = isWindows
+    ? ['-NoProfile', '-NonInteractive', '-Command', command]
+    : ['-lc', command];
+
+  return new Promise(resolve => {
+    execFile(
+      shell,
+      args,
+      {
+        cwd,
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        resolve({
+          stdout: stdout || '',
+          stderr: stderr || error?.message || '',
+          exitCode: typeof error?.code === 'number' ? error.code : 0,
+        });
+      },
+    );
+  });
+}
+
+class MachineBackend {
+  constructor(workingDir) {
+    this.workingDir = path.resolve(workingDir);
+  }
+
+  async executeCommand(command) {
+    const blockedReason = getBlockedCommandReason(command);
+
+    if (blockedReason) {
+      return {
+        stdout: '',
+        stderr: blockedReason,
+        exitCode: 126,
+      };
+    }
+
+    return runShellCommand(command, this.workingDir);
+  }
+
+  async readFile(filePath) {
+    const resolvedPath = resolveRequestedPath(this.workingDir, filePath);
+    return fs.readFile(resolvedPath, 'utf8');
+  }
+
+  async writeFile(filePath, content) {
+    const resolvedPath = resolveRequestedPath(this.workingDir, filePath);
+    await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+    await fs.writeFile(resolvedPath, content);
+    return resolvedPath;
+  }
+}
+
+function mergeToolSets(toolSets) {
+  const merged = {};
+
+  for (const toolSet of toolSets) {
+    for (const [toolName, toolDef] of Object.entries(toolSet || {})) {
+      if (merged[toolName]) {
+        throw new Error(`Duplicate tool name detected: ${toolName}`);
+      }
+
+      merged[toolName] = toolDef;
+    }
+  }
+
+  return merged;
+}
+
+function buildBashToolPrompt(workspaceDir) {
+  return [
+    'Use the bash tool to inspect and operate on the local machine you are responsible for maintaining.',
+    `Default working directory: ${toPosixPath(path.resolve(workspaceDir))}`,
+    '- This is a shared working environment used to serve multiple employees.',
+    '- Relative paths resolve from the default working directory.',
+    '- Absolute paths are allowed when you need to inspect or modify files elsewhere on the machine.',
+    '- Prefer `rg` for fast file and text search when available.',
+    '- Use shell commands for directory listing, script execution, builds, tests, file operations, and system inspection.',
+    '- Inspect first, then act. Confirm target paths and current state before mutating files or running impactful commands.',
+    '- Prefer the smallest effective action and avoid unnecessary disruption to the environment.',
+    '- Use `readFile` for precise inspection and `writeFile` for direct edits.',
+  ].join('\n');
+}
+
+function createBashTool(machine, workspaceDir) {
+  return tool({
+    description: buildBashToolPrompt(workspaceDir),
+    inputSchema: z.object({
+      command: z.string().describe('The shell command to execute on the local machine'),
+    }),
+    execute: async ({ command }) => {
+      const result = await machine.executeCommand(command);
+
+      return {
+        ...result,
+        stdout: truncateText(result.stdout, MAX_BASH_OUTPUT_LENGTH, 'stdout'),
+        stderr: truncateText(result.stderr, MAX_BASH_OUTPUT_LENGTH, 'stderr'),
+      };
+    },
+  });
+}
+
+function createReadFileTool(machine, workspaceDir) {
+  return tool({
+    description: [
+      'Read a UTF-8 text file from the local machine.',
+      `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
+      'Absolute paths are allowed.',
+    ].join(' '),
+    inputSchema: z.object({
+      path: z.string().describe('The path to the file to read'),
+    }),
+    execute: async ({ path: filePath }) => {
+      const resolvedPath = resolveRequestedPath(workspaceDir, filePath);
+      const content = await machine.readFile(filePath);
+
+      return {
+        path: resolvedPath,
+        content: truncateText(content, MAX_READ_FILE_LENGTH, 'file content'),
+      };
+    },
+  });
+}
+
+function createWriteFileTool(machine, workspaceDir) {
+  return tool({
+    description: [
+      'Write UTF-8 text content to a file on the local machine.',
+      `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
+      'Absolute paths are allowed.',
+    ].join(' '),
+    inputSchema: z.object({
+      path: z.string().describe('The path where the file should be written'),
+      content: z.string().describe('The content to write'),
+    }),
+    execute: async ({ path: filePath, content }) => {
+      const resolvedPath = await machine.writeFile(filePath, content);
+
+      return {
+        success: true,
+        path: resolvedPath,
+      };
+    },
+  });
+}
+
+async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers }) {
+  const workingDir = path.resolve(workspaceDir);
+  const machine = new MachineBackend(workingDir);
+
+  const [skillsToolkit, mcpToolkit] = await Promise.all([
+    createSkillsToolkit({ skillsDir, workspaceDir }),
+    createMcpToolkit(mcpServers),
+  ]);
+
+  const runtimeTools = {
+    bash: createBashTool(machine, workingDir),
+    readFile: createReadFileTool(machine, workingDir),
+    writeFile: createWriteFileTool(machine, workingDir),
+  };
+
+  const tools = mergeToolSets([
+    runtimeTools,
+    { skill: skillsToolkit.skill },
+    mcpToolkit.tools,
+  ]);
+
+  return {
+    tools,
+    toolNames: Object.keys(tools),
+    mcpToolNames: Object.keys(mcpToolkit.tools),
+    promptSections: [
+      `Machine\nYou are operating on a shared local machine. Default working directory: \`${toPosixPath(workingDir)}\`. You may use absolute filesystem paths when needed, but you are responsible for preserving the machine's long-term usability and file integrity.`,
+      buildSkillsPrompt(skillsToolkit.skills),
+      buildMcpPrompt(mcpToolkit.summaries),
+    ],
+    close: async () => {
+      await mcpToolkit.close();
+    },
+  };
+}
+
+module.exports = {
+  createRuntimeTools,
+};

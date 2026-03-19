@@ -5,6 +5,15 @@
     "openai": {
       "baseURL": "https://api.zetatechs.com/v1"
     },
+    "toolChoice": "auto",
+    "maxSteps": 12,
+    "context": {
+      "loopMessageWindow": 30,
+      "recentMessagesCount": 12,
+      "summaryLineCount": 10,
+      "summaryMaxChars": 240
+    },
+    "mcpServers": [],
     "skillsDir": "./skills",
     "sessionDb": "./data/sessions.db"
   },

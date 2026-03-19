@@ -1,6 +1,17 @@
-const { generateText } = require('ai');
-const { createOpenAI } = require('@ai-sdk/openai');
-const { createTools, discoverSkills } = require('./tools');
+const { ToolLoopAgent, stepCountIs } = require('ai');
+const { createOpenAICompatible } = require('@ai-sdk/openai-compatible');
+const {
+  DONE_TOOL_NAME,
+  appendFinalAssistantMessageIfNeeded,
+  buildDoneResponse,
+  buildSystemPrompt,
+  createPrepareStep,
+  doneTool,
+  getContextSettings,
+  getToolChoiceSetting,
+} = require('./loop');
+const { createRuntimeTools } = require('./tools/index');
+const { listAvailableSkills } = require('./tools/skills');
 const SessionManager = require('./session');
 
 /**
@@ -9,73 +20,87 @@ const SessionManager = require('./session');
 class AgentCore {
   constructor(config) {
     this.config = config;
-    this.openai = createOpenAI({
+    this.provider = createOpenAICompatible({
+      name: config.provider || 'openaiCompatible',
       apiKey: config.openai.apiKey,
       baseURL: config.openai.baseURL,
+      includeUsage: true,
     });
     this.sessionManager = new SessionManager(config.sessionDb);
     this.skills = [];
   }
 
   async init() {
-    this.skills = await discoverSkills(this.config.skillsDir);
+    this.skills = await listAvailableSkills({
+      skillsDir: this.config.skillsDir,
+      workspaceDir: this.config.workspaceDir,
+    });
     console.log(`[Agent] Loaded ${this.skills.length} skills: ${this.skills.map(s => s.name).join(', ')}`);
   }
 
-  buildSystemPrompt() {
-    const skillsList = this.skills
-      .map(s => `- ${s.name}: ${s.description}`)
-      .join('\n');
-
-    return `
-You are a proactive and capable AI Employee. You solve tasks by using your tools and can load specialized skills when needed.
-
-## Core Rules
-1. **Tool Usage**: Use your base tools to explore the workspace and handle general requests.
-2. **Specialized Skills**: If a task matches an available skill, you can use \`loadSkill\` to get additional instructions.
-3. **FileSystem**: You have access to your workspace via \`listDir\`, \`readFile\`, and \`bash\`.
-4. **Autonomy**: When you receive a file, examine it and determine the appropriate action.
-5. **Transparency**: Briefly mention which tool or skill you are using if it helps the user follow your process.
-
-## Available Skills
-${skillsList || 'No specialized skills available currently.'}
-
-## Base Tools
-- \`listDir\`: List files in a directory.
-- \`readFile\`: Read the content of a file.
-- \`bash\`: Execute terminal commands. On Windows this tool runs in PowerShell.
-- \`loadSkill\`: Load specialized instructions for a specific domain.
-`;
-  }
-
   async chat(userId, userMessage, attachments = [], onStepFinish) {
-    const messages = this.sessionManager.getMessages(userId);
-    
+    const contextSettings = getContextSettings(this.config);
+    const toolChoice = getToolChoiceSetting(this.config);
+    const fullMessages = this.sessionManager.getMessages(userId);
+
     let content = userMessage;
     if (attachments && attachments.length > 0) {
       const attachmentInfo = attachments.map(a => `[File: ${a.name}, Path: ${a.path}]`).join('\n');
       content = `${userMessage}\n\nI have provided the following file(s) for your reference:\n${attachmentInfo}`;
     }
-    
-    messages.push({ role: 'user', content });
 
-    const tools = createTools(this.skills);
-
-    const result = await generateText({
-      model: this.openai(this.config.model),
-      system: this.buildSystemPrompt(),
-      messages,
-      tools,
-      maxSteps: 10,
-      onStepFinish: (step) => {
-        if (onStepFinish) onStepFinish(step);
-      }
+    fullMessages.push({ role: 'user', content });
+    const context = this.sessionManager.buildModelContext(fullMessages, {
+      recentMessagesCount: contextSettings.recentMessagesCount,
+      summaryLineCount: contextSettings.summaryLineCount,
+      summaryMaxChars: contextSettings.summaryMaxChars,
     });
 
-    messages.push({ role: 'assistant', content: result.text });
-    this.sessionManager.saveMessages(userId, messages);
+    const runtime = await createRuntimeTools({
+      workspaceDir: this.config.workspaceDir,
+      skillsDir: this.config.skillsDir,
+      mcpServers: this.config.mcpServers || [],
+    });
+    const promptSections = [
+      ...runtime.promptSections,
+      context.summary,
+    ].filter(Boolean);
 
-    return result.text;
+    const agent = new ToolLoopAgent({
+      model: this.provider(this.config.model),
+      instructions: buildSystemPrompt(promptSections),
+      tools: {
+        ...runtime.tools,
+        [DONE_TOOL_NAME]: doneTool,
+      },
+      stopWhen: stepCountIs(this.config.maxSteps || 12),
+      toolChoice,
+      prepareStep: createPrepareStep({
+        runtime,
+        contextSettings,
+        basePromptSections: runtime.promptSections,
+        toolChoice,
+      }),
+    });
+
+    try {
+      const result = await agent.generate({
+        messages: context.messages,
+        onStepFinish: step => {
+          if (onStepFinish) {
+            onStepFinish(step);
+          }
+        },
+      });
+      const finalResponse = buildDoneResponse(result);
+
+      appendFinalAssistantMessageIfNeeded(fullMessages, result.response.messages, finalResponse);
+      this.sessionManager.saveMessages(userId, fullMessages);
+
+      return finalResponse;
+    } finally {
+      await runtime.close();
+    }
   }
 }
 
