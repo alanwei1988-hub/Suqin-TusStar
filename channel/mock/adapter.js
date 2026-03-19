@@ -6,6 +6,7 @@ class MockChannelAdapter extends EventEmitter {
     this.config = config;
     this.storageConfig = storageConfig;
     this.replies = [];
+    this.streamReplies = [];
     this.welcomeMessages = [];
   }
 
@@ -23,6 +24,35 @@ class MockChannelAdapter extends EventEmitter {
       content,
       context,
     });
+  }
+
+  createStreamingReply(userId, context = {}) {
+    const stream = {
+      userId,
+      context,
+      updates: [],
+      finalContent: '',
+    };
+    this.streamReplies.push(stream);
+
+    return {
+      updateStatus: async content => {
+        stream.updates.push({ content, finish: false, kind: 'status' });
+      },
+      updateDraft: async content => {
+        stream.updates.push({ content, finish: false, kind: 'draft' });
+      },
+      finish: async content => {
+        stream.finalContent = content;
+        stream.updates.push({ content, finish: true, kind: 'final' });
+        this.replies.push({
+          userId,
+          content,
+          context,
+          streamed: true,
+        });
+      },
+    };
   }
 
   async sendWelcome(userId, content, context = {}) {

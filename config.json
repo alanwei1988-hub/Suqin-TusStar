@@ -40,7 +40,8 @@
   "channel": {
     "type": "wxwork",
     "wxwork": {
-      "debug": true
+      "debug": true,
+      "streamingResponse": true
     }
   },
   "storage": {

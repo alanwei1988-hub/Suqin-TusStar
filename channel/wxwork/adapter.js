@@ -9,6 +9,7 @@ const path = require('path');
 class WxWorkAdapter extends EventEmitter {
   constructor(config, storageConfig) {
     super();
+    this.streamingResponse = config.streamingResponse !== false;
     this.bot = new WeComAIBot({
       botId: config.botId,
       secret: config.secret,
@@ -84,8 +85,33 @@ class WxWorkAdapter extends EventEmitter {
   }
 
   async reply(userId, content, context) {
+    if (!this.streamingResponse) {
+      this.bot.respondMarkdownMsg(context.reqId, content);
+      return;
+    }
+
     const streamId = `sid_${Date.now()}`;
     this.bot.respondStreamMsg(context.reqId, content, streamId, true);
+  }
+
+  createStreamingReply(userId, context) {
+    if (!this.streamingResponse) {
+      return null;
+    }
+
+    const streamId = `sid_${Date.now()}`;
+
+    return {
+      updateStatus: async status => {
+        this.bot.respondStreamMsg(context.reqId, status, streamId, false);
+      },
+      updateDraft: async draft => {
+        this.bot.respondStreamMsg(context.reqId, draft, streamId, false);
+      },
+      finish: async content => {
+        this.bot.respondStreamMsg(context.reqId, content, streamId, true);
+      },
+    };
   }
 
   async sendWelcome(userId, content, context) {

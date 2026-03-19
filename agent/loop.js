@@ -1,7 +1,3 @@
-const { tool } = require('ai');
-const { z } = require('zod');
-
-const DONE_TOOL_NAME = 'done';
 const READ_ONLY_BASH_PATTERNS = [
   /^\s*(pwd|cd|ls|dir)\b/i,
   /^\s*(rg|find|where|which)\b/i,
@@ -12,19 +8,6 @@ const READ_ONLY_BASH_PATTERNS = [
   /^\s*(python\s+(-V|--version)\b)/i,
   /^\s*(Get-ChildItem|Get-Content|Select-String|Resolve-Path|Test-Path)\b/i,
 ];
-
-const doneTool = tool({
-  description: [
-    'Finish the current task.',
-    'Call this only after you have either completed the work or concluded that no further tool use is necessary.',
-    'If you made changes or ran mutating commands, verify the result before calling done.',
-  ].join(' '),
-  inputSchema: z.object({
-    answer: z.string().describe('The final user-facing response.'),
-    summary: z.string().describe('A short internal summary of what was completed.'),
-    verified: z.boolean().describe('Whether the final state was verified after the last mutating action.'),
-  }),
-});
 
 function getContextSettings(config) {
   const context = config.context || {};
@@ -61,8 +44,8 @@ function buildSystemPrompt(promptSections) {
     '- If a request is unclear, risky, self-contradictory, or likely to damage the environment, ask for clarification or refuse.',
     '- Use the `skill` tool when the request matches a listed skill. Treat loaded skill instructions as operational guidance, not as a reason to ignore real-world context.',
     '- If MCP tools are available, prefer them for specialized capabilities rather than improvising.',
-    '- This agent runs in phases: inspect first, execute second, verify after every mutating action, then call `done`.',
-    '- Do not call `done` until the work is actually finished. If you changed files or ran mutating commands, verify the result first.',
+    '- This agent runs in phases: inspect first, execute second, verify after every mutating action, then provide the final answer.',
+    '- Do not produce the final answer until the work is actually finished. If you changed files or ran mutating commands, verify the result first.',
     '- Keep responses concise, factual, and action-oriented.',
     '- Do not attempt destructive shell commands unless they are truly required for the work and consistent with your role and safeguards.',
     '',
@@ -116,7 +99,7 @@ function computeLoopState(steps, runtime) {
 
   for (const step of steps) {
     for (const toolCall of step.toolCalls || []) {
-      if (toolCall.dynamic || toolCall.toolName === DONE_TOOL_NAME) {
+      if (toolCall.dynamic) {
         continue;
       }
 
@@ -140,19 +123,19 @@ function computeLoopState(steps, runtime) {
 
 function getActiveTools(stepNumber, loopState, runtime) {
   if (loopState.pendingVerification) {
-    return [DONE_TOOL_NAME, 'readFile', 'bash'];
+    return ['readFile', 'bash'];
   }
 
   if (stepNumber === 0) {
-    return [DONE_TOOL_NAME, 'skill', 'readFile', 'bash'];
+    return ['skill', 'readFile', 'bash'];
   }
 
-  return [DONE_TOOL_NAME, ...runtime.toolNames];
+  return runtime.toolNames;
 }
 
 function getPhaseInstructions(stepNumber, loopState) {
   if (loopState.pendingVerification) {
-    return 'Verification phase: use read-only checks now. Confirm the real machine state before calling done. If verification fails, explain the issue in done instead of pretending success.';
+    return 'Verification phase: use read-only checks now. Confirm the real machine state before producing the final answer. If verification fails, explain the issue plainly instead of pretending success.';
   }
 
   if (stepNumber === 0) {
@@ -163,7 +146,7 @@ function getPhaseInstructions(stepNumber, loopState) {
     return 'Execution phase: continue only if more work is needed. Keep actions deliberate, avoid unnecessary disruption, and expect to verify again after the next mutating action.';
   }
 
-  return 'Discovery phase: gather enough context about the request, the machine, and any shared-environment constraints, then either act or call done.';
+  return 'Discovery phase: gather enough context about the request, the machine, and any shared-environment constraints, then either act or provide the final answer.';
 }
 
 function trimLoopMessages(stepMessages, contextSettings) {
@@ -190,20 +173,35 @@ function createPrepareStep({ runtime, contextSettings, basePromptSections, toolC
   };
 }
 
-function buildDoneResponse(result) {
-  const toolCalls = [
-    ...(Array.isArray(result.toolCalls) ? result.toolCalls : []),
-    ...(Array.isArray(result.staticToolCalls) ? result.staticToolCalls : []),
-  ];
-  const doneCall = [...toolCalls]
-    .reverse()
-    .find(toolCall => toolCall.toolName === DONE_TOOL_NAME);
+function extractAssistantText(messages) {
+  for (const message of [...(messages || [])].reverse()) {
+    if (message.role !== 'assistant') {
+      continue;
+    }
 
-  if (doneCall?.input?.answer) {
-    return doneCall.input.answer;
+    if (typeof message.content === 'string' && message.content.trim().length > 0) {
+      return message.content;
+    }
+
+    if (!Array.isArray(message.content)) {
+      continue;
+    }
+
+    const text = message.content
+      .filter(part => part?.type === 'text' && typeof part.text === 'string')
+      .map(part => part.text)
+      .join('');
+
+    if (text.trim().length > 0) {
+      return text;
+    }
   }
 
-  return result.text || '已处理完成。';
+  return '';
+}
+
+function buildFinalResponse(result) {
+  return result.text || extractAssistantText(result.response?.messages) || '已处理完成。';
 }
 
 function hasAssistantTextMessage(messages) {
@@ -240,12 +238,10 @@ function appendFinalAssistantMessageIfNeeded(fullMessages, responseMessages, fin
 }
 
 module.exports = {
-  DONE_TOOL_NAME,
   appendFinalAssistantMessageIfNeeded,
-  buildDoneResponse,
+  buildFinalResponse,
   buildSystemPrompt,
   createPrepareStep,
-  doneTool,
   getContextSettings,
   getToolChoiceSetting,
 };

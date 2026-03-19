@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { MockLanguageModelV3 } = require('ai/test');
 const AgentCore = require('../agent');
-const { createContractMcpFixture, generateResult, makeTempDir, psQuote, repoRoot, toolCall } = require('./helpers/test-helpers');
+const { createContractMcpFixture, generateResult, makeTempDir, psQuote, repoRoot, textPart, toolCall } = require('./helpers/test-helpers');
 
 module.exports = async function runAgentMcpIntegrationTest() {
   const rootDir = makeTempDir('agent-mcp-');
@@ -52,12 +52,8 @@ module.exports = async function runAgentMcpIntegrationTest() {
       }
 
       return generateResult([
-        toolCall('done-1', 'done', {
-          answer: '合同已归档',
-          summary: 'created contract',
-          verified: true,
-        }),
-      ]);
+        textPart('合同已归档'),
+      ], 'stop');
     },
   });
 

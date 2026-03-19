@@ -4,7 +4,7 @@ const path = require('path');
 const { MockLanguageModelV3 } = require('ai/test');
 const AgentCore = require('../agent');
 const { loadRolePrompt } = require('../agent/roles');
-const { generateResult, makeTempDir, repoRoot, toolCall } = require('./helpers/test-helpers');
+const { generateResult, makeTempDir, repoRoot, textPart } = require('./helpers/test-helpers');
 
 module.exports = async function runAgentRoleTest() {
   const rolePrompt = await loadRolePrompt(path.join(repoRoot, 'roles', 'contract-manager'));
@@ -14,12 +14,8 @@ module.exports = async function runAgentRoleTest() {
   const rootDir = makeTempDir('agent-role-');
   const model = new MockLanguageModelV3({
     doGenerate: () => generateResult([
-      toolCall('done-1', 'done', {
-        answer: 'ok',
-        summary: 'finished',
-        verified: true,
-      }),
-    ]),
+      textPart('ok'),
+    ], 'stop'),
   });
 
   const agent = new AgentCore({

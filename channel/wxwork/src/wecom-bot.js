@@ -196,6 +196,22 @@ class WeComAIBot extends EventEmitter {
   }
 
   /**
+   * Respond with Markdown message
+   */
+  respondMarkdownMsg(reqId, content) {
+    return this.send({
+      cmd: 'aibot_respond_msg',
+      headers: { req_id: reqId },
+      body: {
+        msgtype: 'markdown',
+        markdown: {
+          content,
+        }
+      }
+    });
+  }
+
+  /**
    * Respond with Template Card
    */
   respondCardMsg(reqId, templateCard) {

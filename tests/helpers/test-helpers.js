@@ -87,6 +87,13 @@ function toolCall(toolCallId, toolName, input) {
   };
 }
 
+function textPart(text) {
+  return {
+    type: 'text',
+    text,
+  };
+}
+
 function generateResult(content, finishReason = 'tool-calls') {
   return {
     content,
@@ -125,6 +132,7 @@ module.exports = {
   makeTempDir,
   psQuote,
   repoRoot,
+  textPart,
   toolCall,
   waitFor,
 };

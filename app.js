@@ -52,6 +52,16 @@ function normalizeMcpServer(rootDir, server) {
 function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {}) {
   const channelType = rawConfig.channel.type;
   const channelConfig = rawConfig.channel[channelType] || {};
+  const normalizedChannelConfig = {
+    ...channelConfig,
+    botId: env.BOT_ID,
+    secret: env.SECRET,
+    debug: env.DEBUG === 'true' || channelConfig.debug,
+  };
+
+  if (channelType === 'wxwork') {
+    normalizedChannelConfig.streamingResponse = channelConfig.streamingResponse !== false;
+  }
 
   return {
     agent: {
@@ -70,12 +80,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
     },
     channel: {
       ...rawConfig.channel,
-      [channelType]: {
-        ...channelConfig,
-        botId: env.BOT_ID,
-        secret: env.SECRET,
-        debug: env.DEBUG === 'true' || channelConfig.debug,
-      },
+      [channelType]: normalizedChannelConfig,
     },
     storage: {
       ...rawConfig.storage,
@@ -92,21 +97,99 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
   };
 }
 
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function splitReplyIntoChunks(content, maxChunkLength = 48) {
+  const normalized = String(content || '');
+
+  if (normalized.length <= maxChunkLength) {
+    return [normalized];
+  }
+
+  const chunks = [];
+  let buffer = '';
+
+  for (const char of normalized) {
+    buffer += char;
+    if (buffer.length >= maxChunkLength || /[，。！？；\n]/.test(char)) {
+      chunks.push(buffer);
+      buffer = '';
+    }
+  }
+
+  if (buffer.length > 0) {
+    chunks.push(buffer);
+  }
+
+  return chunks.filter(Boolean);
+}
+
+function formatStepStatus(step) {
+  if (step.toolCalls && step.toolCalls.length > 0) {
+    return `正在处理（第 ${step.stepNumber + 1} 步）：${step.toolCalls.map(toolCall => toolCall.toolName).join(', ')}`;
+  }
+
+  if (step.text && step.text.trim().length > 0) {
+    return `正在整理回复（第 ${step.stepNumber + 1} 步）...`;
+  }
+
+  return `正在处理（第 ${step.stepNumber + 1} 步）...`;
+}
+
+async function streamFinalReply(streamReply, response) {
+  const finalResponse = response || '已处理完成。';
+  const chunks = splitReplyIntoChunks(finalResponse);
+  let partial = '';
+
+  await streamReply.updateStatus('正在整理回复...');
+
+  for (const chunk of chunks) {
+    partial += chunk;
+    await streamReply.updateDraft(partial);
+    await delay(80);
+  }
+
+  await streamReply.finish(finalResponse);
+}
+
 function registerChannelHandlers({ agent, channel }) {
   channel.on('message', async ({ userId, text, attachments, context }) => {
     console.log(`[Main] Message from ${userId}: ${text} (${attachments.length} files)`);
+    const streamReply = typeof channel.createStreamingReply === 'function'
+      ? channel.createStreamingReply(userId, context)
+      : null;
 
     try {
-      const response = await agent.chat(userId, text, attachments, step => {
-        if (step.toolCalls && step.toolCalls.length > 0) {
-          console.log('[Main] Agent tools:', step.toolCalls.map(toolCall => toolCall.toolName).join(', '));
-        }
+      if (streamReply) {
+        await streamReply.updateStatus('已收到，正在处理...');
+      }
+
+      const response = await agent.chat(userId, text, attachments, {
+        onStepFinish: async step => {
+          if (step.toolCalls && step.toolCalls.length > 0) {
+            console.log('[Main] Agent tools:', step.toolCalls.map(toolCall => toolCall.toolName).join(', '));
+          }
+
+          if (streamReply) {
+            await streamReply.updateStatus(formatStepStatus(step));
+          }
+        },
       });
 
-      await channel.reply(userId, response, context);
+      if (streamReply) {
+        await streamFinalReply(streamReply, response);
+      } else {
+        await channel.reply(userId, response, context);
+      }
     } catch (error) {
       console.error('[Main] Chat error:', error);
-      await channel.reply(userId, '抱歉，我现在处理消息时遇到了点问题。', context);
+      if (streamReply) {
+        await streamReply.finish('抱歉，我现在处理消息时遇到了点问题。');
+      } else {
+        await channel.reply(userId, '抱歉，我现在处理消息时遇到了点问题。', context);
+      }
     }
   });
 
@@ -132,9 +215,11 @@ async function createAgent(processedConfig, options = {}) {
 
 module.exports = {
   createAgent,
+  formatStepStatus,
   loadChannelAdapter,
   loadRawConfig,
   normalizeMcpServer,
   processConfig,
   registerChannelHandlers,
+  splitReplyIntoChunks,
 };

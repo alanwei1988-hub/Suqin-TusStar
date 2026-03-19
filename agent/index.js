@@ -1,12 +1,10 @@
 const { ToolLoopAgent, stepCountIs } = require('ai');
 const { createOpenAICompatible } = require('@ai-sdk/openai-compatible');
 const {
-  DONE_TOOL_NAME,
   appendFinalAssistantMessageIfNeeded,
-  buildDoneResponse,
+  buildFinalResponse,
   buildSystemPrompt,
   createPrepareStep,
-  doneTool,
   getContextSettings,
   getToolChoiceSetting,
 } = require('./loop');
@@ -55,10 +53,13 @@ class AgentCore {
     }
   }
 
-  async chat(userId, userMessage, attachments = [], onStepFinish) {
+  async chat(userId, userMessage, attachments = [], options = {}) {
     const contextSettings = getContextSettings(this.config);
     const toolChoice = getToolChoiceSetting(this.config);
     const fullMessages = this.sessionManager.getMessages(userId);
+    const callbacks = typeof options === 'function'
+      ? { onStepFinish: options }
+      : (options || {});
 
     let content = userMessage;
     if (attachments && attachments.length > 0) {
@@ -88,10 +89,7 @@ class AgentCore {
     const agent = new ToolLoopAgent({
       model: this.modelOverride || this.provider(this.config.model),
       instructions: buildSystemPrompt(promptSections),
-      tools: {
-        ...runtime.tools,
-        [DONE_TOOL_NAME]: doneTool,
-      },
+      tools: runtime.tools,
       stopWhen: stepCountIs(this.config.maxSteps || 12),
       toolChoice,
       prepareStep: createPrepareStep({
@@ -105,13 +103,13 @@ class AgentCore {
     try {
       const result = await agent.generate({
         messages: context.messages,
-        onStepFinish: step => {
-          if (onStepFinish) {
-            onStepFinish(step);
+        onStepFinish: async step => {
+          if (callbacks.onStepFinish) {
+            await callbacks.onStepFinish(step);
           }
         },
       });
-      const finalResponse = buildDoneResponse(result);
+      const finalResponse = buildFinalResponse(result);
 
       appendFinalAssistantMessageIfNeeded(fullMessages, result.response.messages, finalResponse);
       this.sessionManager.saveMessages(userId, fullMessages);
