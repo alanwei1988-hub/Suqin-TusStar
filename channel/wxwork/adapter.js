@@ -3,6 +3,136 @@ const WeComAIBot = require('./src/wecom-bot');
 const fs = require('fs');
 const path = require('path');
 
+const FALLBACK_MEDIA_EXTENSIONS = {
+  image: '.jpg',
+  file: '.dat',
+  video: '.mp4',
+};
+
+let fileTypeModulePromise;
+
+function containsAsciiOrUtf16(buffer, value) {
+  return buffer.includes(Buffer.from(value))
+    || buffer.includes(Buffer.from(value, 'utf16le'));
+}
+
+function detectLegacyOfficeExtension(buffer) {
+  const oleHeader = Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+
+  if (!buffer || buffer.length < oleHeader.length || !buffer.subarray(0, oleHeader.length).equals(oleHeader)) {
+    return '';
+  }
+
+  if (containsAsciiOrUtf16(buffer, 'WordDocument')) {
+    return '.doc';
+  }
+
+  if (
+    containsAsciiOrUtf16(buffer, 'Workbook')
+    || containsAsciiOrUtf16(buffer, 'Book')
+  ) {
+    return '.xls';
+  }
+
+  if (containsAsciiOrUtf16(buffer, 'PowerPoint Document')) {
+    return '.ppt';
+  }
+
+  if (containsAsciiOrUtf16(buffer, 'VisioDocument')) {
+    return '.vsd';
+  }
+
+  return '.cfb';
+}
+
+function looksLikeDelimitedText(lines, delimiter) {
+  const nonEmptyLines = lines.filter(line => line.trim().length > 0).slice(0, 6);
+
+  if (nonEmptyLines.length < 2) {
+    return false;
+  }
+
+  const widths = nonEmptyLines.map(line => line.split(delimiter).length);
+  return widths[0] >= 2 && widths.every(width => width === widths[0]);
+}
+
+function detectTextExtension(buffer) {
+  const sample = buffer.subarray(0, Math.min(buffer.length, 8192));
+
+  if (sample.length === 0 || sample.includes(0x00)) {
+    return '';
+  }
+
+  const text = sample.toString('utf8');
+
+  if (text.includes('\uFFFD')) {
+    return '';
+  }
+
+  const printableChars = Array.from(text).filter(char => {
+    const code = char.charCodeAt(0);
+    return code === 9 || code === 10 || code === 13 || (code >= 32 && code <= 126);
+  }).length;
+
+  if (printableChars / text.length < 0.85) {
+    return '';
+  }
+
+  const trimmed = text.trimStart();
+  const lines = text.split(/\r?\n/);
+
+  if (trimmed.startsWith('<?xml') || trimmed.startsWith('<')) {
+    return '.xml';
+  }
+
+  if (looksLikeDelimitedText(lines, ',')) {
+    return '.csv';
+  }
+
+  if (looksLikeDelimitedText(lines, '\t')) {
+    return '.tsv';
+  }
+
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    return '.json';
+  }
+
+  return '.txt';
+}
+
+async function detectExtensionFromBuffer(buffer) {
+  try {
+    fileTypeModulePromise ||= import('file-type');
+    const { fileTypeFromBuffer } = await fileTypeModulePromise;
+    const result = await fileTypeFromBuffer(buffer);
+
+    if (result?.ext && result.ext !== 'cfb') {
+      return `.${result.ext}`;
+    }
+
+    if (result?.ext === 'cfb') {
+      return detectLegacyOfficeExtension(buffer);
+    }
+  } catch {
+    // Fall through to heuristic detection below.
+  }
+
+  return detectLegacyOfficeExtension(buffer) || detectTextExtension(buffer);
+}
+
+async function buildStoredFileName(msgType, originalName, buffer) {
+  let safeFileName = `${Date.now()}_${originalName.replace(/[\\/:"*?<>|]/g, '_')}`;
+
+  if (path.extname(safeFileName)) {
+    return safeFileName;
+  }
+
+  const detectedExtension = await detectExtensionFromBuffer(buffer);
+  safeFileName += detectedExtension || FALLBACK_MEDIA_EXTENSIONS[msgType] || '.dat';
+
+  return safeFileName;
+}
+
 /**
  * WxWorkAdapter - 将企业微信长连接协议适配为通用 Channel 接口
  */
@@ -57,7 +187,7 @@ class WxWorkAdapter extends EventEmitter {
             const encryptedBuffer = await this.bot.downloadMedia(mediaObj.url);
             const decryptedBuffer = this.bot.decryptMedia(encryptedBuffer, mediaObj.aeskey);
             
-            const safeFileName = `${Date.now()}_${originalName.replace(/[\\/:"*?<>|]/g, '_')}`;
+            const safeFileName = await buildStoredFileName(body.msgtype, originalName, decryptedBuffer);
             const filePath = path.join(this.tempDir, safeFileName);
             fs.writeFileSync(filePath, decryptedBuffer);
             
