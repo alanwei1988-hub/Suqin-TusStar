@@ -2,6 +2,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const AgentCore = require('./agent/index');
+const { resolveContractMcpConfig } = require('./contract-mcp/config');
 const { getProjectMarkItDownPython } = require('./markitdown/runtime');
 
 function loadRawConfig(rootDir = __dirname) {
@@ -136,12 +137,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       tempDir: resolveRelativePath(rootDir, rawConfig.storage.tempDir),
     },
     contractMcp: rawConfig.contractMcp
-      ? {
-        ...rawConfig.contractMcp,
-        dbPath: resolveRelativePath(rootDir, rawConfig.contractMcp.dbPath),
-        storageRoot: resolveRelativePath(rootDir, rawConfig.contractMcp.storageRoot),
-        stagingDir: resolveRelativePath(rootDir, rawConfig.contractMcp.stagingDir),
-      }
+      ? resolveContractMcpConfig(rootDir, rawConfig.contractMcp)
       : undefined,
   };
 }

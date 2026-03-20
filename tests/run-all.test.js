@@ -1,4 +1,5 @@
 require('./app.config.test');
+require('./contract-mcp.config.test');
 require('./contract-mcp.service.test');
 require('./agent.roles.test');
 require('./agent.tools.test');

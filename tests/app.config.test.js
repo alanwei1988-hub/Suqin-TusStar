@@ -24,6 +24,10 @@ module.exports = async function runAppConfigTest() {
     storage: {
       tempDir: './storage/temp',
     },
+    contractMcp: {
+      storageRoot: './contract-library',
+      contractIdPrefix: 'CT',
+    },
   };
 
   const processedDefault = processConfig(baseConfig, {
@@ -36,6 +40,10 @@ module.exports = async function runAppConfigTest() {
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.command, getProjectMarkItDownPython(__dirname));
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.args, ['-X', 'utf8', '-m', 'markitdown', '{input}']);
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.supportedExtensions, ['.pdf', '.docx', '.pptx', '.xls', '.xlsx']);
+  assert.equal(processedDefault.contractMcp.storageRoot, `${__dirname}\\contract-library`);
+  assert.equal(processedDefault.contractMcp.dbPath, `${__dirname}\\contract-library\\contracts.db`);
+  assert.equal(processedDefault.contractMcp.stagingDir, `${__dirname}\\contract-library\\.staging`);
+  assert.equal(processedDefault.contractMcp.libraryRoot, `${__dirname}\\contract-library`);
 
   const processedDisabled = processConfig({
     ...baseConfig,

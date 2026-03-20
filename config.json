@@ -39,9 +39,7 @@
     "sessionDb": "./data/sessions.db"
   },
   "contractMcp": {
-    "dbPath": "./data/contracts.db",
-    "storageRoot": "./storage/contracts",
-    "stagingDir": "./storage/contracts/.staging",
+    "libraryRoot": "\\\\192.168.20.100\\启迪之星\\技术商业化事业部\\板块-产业化\\合同管理",
     "contractIdPrefix": "CT",
     "allowedExtensions": [".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png"],
     "maxFileSizeMb": 50,

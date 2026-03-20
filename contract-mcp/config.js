@@ -36,17 +36,18 @@ function resolveRelative(baseDir, value, fallback) {
     : path.resolve(baseDir, candidate);
 }
 
-function loadContractMcpConfig({ configPath = resolveConfigPath() } = {}) {
-  const resolvedConfigPath = path.resolve(configPath);
-  const configDir = path.dirname(resolvedConfigPath);
-  const rootConfig = JSON.parse(fs.readFileSync(resolvedConfigPath, 'utf8'));
-  const contractMcp = rootConfig.contractMcp || {};
+function resolveContractMcpConfig(baseDir, contractMcp = {}) {
+  const libraryRoot = resolveRelative(
+    baseDir,
+    contractMcp.libraryRoot || contractMcp.storageRoot,
+    './storage/contracts',
+  );
 
   return {
-    configPath: resolvedConfigPath,
-    dbPath: resolveRelative(configDir, contractMcp.dbPath, './data/contracts.db'),
-    storageRoot: resolveRelative(configDir, contractMcp.storageRoot, './storage/contracts'),
-    stagingDir: resolveRelative(configDir, contractMcp.stagingDir, './storage/contracts/.staging'),
+    libraryRoot,
+    dbPath: resolveRelative(baseDir, contractMcp.dbPath, path.join(libraryRoot, 'contracts.db')),
+    storageRoot: resolveRelative(baseDir, contractMcp.storageRoot, libraryRoot),
+    stagingDir: resolveRelative(baseDir, contractMcp.stagingDir, path.join(libraryRoot, '.staging')),
     contractIdPrefix: contractMcp.contractIdPrefix || 'CT',
     allowedExtensions: Array.isArray(contractMcp.allowedExtensions) && contractMcp.allowedExtensions.length > 0
       ? contractMcp.allowedExtensions
@@ -60,8 +61,19 @@ function loadContractMcpConfig({ configPath = resolveConfigPath() } = {}) {
   };
 }
 
+function loadContractMcpConfig({ configPath = resolveConfigPath() } = {}) {
+  const resolvedConfigPath = path.resolve(configPath);
+  const configDir = path.dirname(resolvedConfigPath);
+  const rootConfig = JSON.parse(fs.readFileSync(resolvedConfigPath, 'utf8'));
+  return {
+    configPath: resolvedConfigPath,
+    ...resolveContractMcpConfig(configDir, rootConfig.contractMcp || {}),
+  };
+}
+
 module.exports = {
   loadContractMcpConfig,
   parseCliArgs,
+  resolveContractMcpConfig,
   resolveConfigPath,
 };
