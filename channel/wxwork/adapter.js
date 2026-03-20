@@ -35,6 +35,8 @@ class WxWorkAdapter extends EventEmitter {
       const userId = body.from.userid;
       let text = '';
       let attachments = [];
+      let streamId;
+      let initialStatusSent = false;
 
       if (body.msgtype === 'text') {
         text = body.text.content;
@@ -42,6 +44,15 @@ class WxWorkAdapter extends EventEmitter {
         const mediaObj = body[body.msgtype];
         if (mediaObj.url && mediaObj.aeskey) {
           try {
+            if (this.streamingResponse) {
+              streamId = `sid_${Date.now()}`;
+              const mediaLabel = body.msgtype === 'file'
+                ? '文件'
+                : (body.msgtype === 'image' ? '图片' : '视频');
+              this.bot.respondStreamMsg(reqId, `已收到${mediaLabel}，正在下载并处理...`, streamId, false);
+              initialStatusSent = true;
+            }
+
             const originalName = mediaObj.name || mediaObj.title || mediaObj.filename || `file_${Date.now()}`;
             const encryptedBuffer = await this.bot.downloadMedia(mediaObj.url);
             const decryptedBuffer = this.bot.decryptMedia(encryptedBuffer, mediaObj.aeskey);
@@ -66,7 +77,11 @@ class WxWorkAdapter extends EventEmitter {
         userId,
         text,
         attachments,
-        context: { reqId }
+        context: {
+          reqId,
+          ...(streamId ? { streamId } : {}),
+          ...(initialStatusSent ? { initialStatusSent: true } : {}),
+        }
       });
     });
 
@@ -99,7 +114,7 @@ class WxWorkAdapter extends EventEmitter {
       return null;
     }
 
-    const streamId = `sid_${Date.now()}`;
+    const streamId = context.streamId || `sid_${Date.now()}`;
 
     return {
       updateStatus: async status => {

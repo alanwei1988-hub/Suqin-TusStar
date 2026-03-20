@@ -163,7 +163,11 @@ function registerChannelHandlers({ agent, channel }) {
 
     try {
       if (streamReply) {
-        await streamReply.updateStatus('已收到，正在处理...');
+        if (context.initialStatusSent && attachments.length > 0) {
+          await streamReply.updateStatus('文件已下载，正在处理...');
+        } else if (!context.initialStatusSent) {
+          await streamReply.updateStatus('已收到，正在处理...');
+        }
       }
 
       const response = await agent.chat(userId, text, attachments, {

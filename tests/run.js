@@ -4,6 +4,7 @@ const tests = [
   ['agent.roles', require('./agent.roles.test')],
   ['mcp.toolkit', require('./mcp.toolkit.test')],
   ['agent.mcp.integration', require('./agent.mcp.integration.test')],
+  ['wxwork.adapter', require('./wxwork.adapter.test')],
   ['channel.integration', require('./channel.integration.test')],
 ];
 
