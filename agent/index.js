@@ -13,6 +13,26 @@ const { listAvailableSkills } = require('./tools/skills');
 const { loadRolePrompt } = require('./roles');
 const SessionManager = require('./session');
 
+function buildUserContent(userMessage, attachments = []) {
+  let content = userMessage;
+
+  if (attachments && attachments.length > 0) {
+    const attachmentInfo = attachments.map(a => `[File: ${a.name}, Path: ${a.path}]`).join('\n');
+    content = `${userMessage}
+
+The user has provided the following file(s) for reference:
+${attachmentInfo}
+
+Important attachment handling rule:
+- Do not read or inspect these files just because they are available.
+- First infer the user's intent from the current message and prior conversation.
+- If the intended operation on the file is not clear enough, ask a clarifying question first.
+- Only use file-reading tools when the user's intent clearly requires inspecting the file contents.`;
+  }
+
+  return content;
+}
+
 /**
  * AgentCore - 纯粹的通用 AI 大脑，通过配置初始化
  */
@@ -60,12 +80,7 @@ class AgentCore {
     const callbacks = typeof options === 'function'
       ? { onStepFinish: options }
       : (options || {});
-
-    let content = userMessage;
-    if (attachments && attachments.length > 0) {
-      const attachmentInfo = attachments.map(a => `[File: ${a.name}, Path: ${a.path}]`).join('\n');
-      content = `${userMessage}\n\nI have provided the following file(s) for your reference:\n${attachmentInfo}`;
-    }
+    const content = buildUserContent(userMessage, attachments);
 
     fullMessages.push({ role: 'user', content });
     const context = this.sessionManager.buildModelContext(fullMessages, {
