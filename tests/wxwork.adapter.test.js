@@ -146,6 +146,44 @@ module.exports = async function runWxworkAdapterTest() {
         },
       },
     });
+
+    adapter.bot.uploadMedia = async () => {
+      throw new Error('初始化上传失败: file too large (代码: 40058)');
+    };
+
+    await assert.rejects(
+      () => adapter.sendAttachments('u4', [{
+        path: events[3].attachments[0].path,
+        name: 'oversized.csv',
+      }], events[3].context),
+      error => {
+        assert.equal(error.code, 'ATTACHMENT_SEND_FAILED');
+        assert.equal(error.absolutePath, path.resolve(events[3].attachments[0].path));
+        assert.equal(error.userMessage.includes('文件太大，当前无法直接发送。'), true);
+        assert.equal(error.userMessage.includes('[点击打开文件](file:///'), true);
+        assert.equal(error.userMessage.includes(path.resolve(events[3].attachments[0].path)), true);
+        return true;
+      },
+    );
+
+    adapter.bot.uploadMedia = async () => {
+      throw new Error('初始化上传失败: invalid file size, hint: [123], more info at https://open.work.weixin.qq.com/devtool/query?e=40006 (代码: 40006)');
+    };
+
+    await assert.rejects(
+      () => adapter.sendAttachments('u4', [{
+        path: events[3].attachments[0].path,
+        name: 'oversized-invalid-size.csv',
+      }], events[3].context),
+      error => {
+        assert.equal(error.code, 'ATTACHMENT_SEND_FAILED');
+        assert.equal(error.userMessage.includes('文件太大，当前无法直接发送。'), true);
+        assert.equal(error.userMessage.includes('hint: [123]'), false);
+        assert.equal(error.userMessage.includes('more info at https://open.work.weixin.qq.com/devtool/query?e=40006'), false);
+        assert.equal(error.userMessage.includes('invalid file size'), false);
+        return true;
+      },
+    );
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

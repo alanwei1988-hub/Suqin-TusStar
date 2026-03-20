@@ -7,11 +7,12 @@ const AgentCore = require('../agent');
 const MockChannelAdapter = require('../channel/mock/adapter');
 const { generateResult, makeTempDir, repoRoot, textPart, toolCall, waitFor } = require('./helpers/test-helpers');
 
-module.exports = async function runChannelFileReplyTest() {
-  const rootDir = makeTempDir('channel-file-reply-');
-  const reportPath = path.join(rootDir, 'report.txt');
+module.exports = async function runChannelFileSendFailureTest() {
+  const rootDir = makeTempDir('channel-file-send-failure-');
+  const reportPath = path.join(rootDir, 'oversized-report.txt');
   fs.writeFileSync(reportPath, 'export ready');
   let callIndex = 0;
+  let sendAttempts = 0;
 
   const model = new MockLanguageModelV3({
     doGenerate: () => {
@@ -19,17 +20,9 @@ module.exports = async function runChannelFileReplyTest() {
 
       if (callIndex === 1) {
         return generateResult([
-          toolCall('read-file-1', 'readFile', {
-            path: reportPath,
-          }),
-        ]);
-      }
-
-      if (callIndex === 2) {
-        return generateResult([
           toolCall('send-file-1', 'sendFile', {
             path: reportPath,
-            name: 'report.txt',
+            name: 'oversized-report.txt',
           }),
         ]);
       }
@@ -57,16 +50,9 @@ module.exports = async function runChannelFileReplyTest() {
 
   try {
     channel.createStreamingReply = undefined;
-    const eventOrder = [];
-    const originalReply = channel.reply.bind(channel);
-    const originalSendAttachments = channel.sendAttachments.bind(channel);
-    channel.reply = async (...args) => {
-      eventOrder.push('reply');
-      return originalReply(...args);
-    };
-    channel.sendAttachments = async (...args) => {
-      eventOrder.push('attachments');
-      return originalSendAttachments(...args);
+    channel.sendAttachments = async () => {
+      sendAttempts += 1;
+      throw new Error('初始化上传失败: file too large (代码: 40058)');
     };
 
     await agent.init();
@@ -74,24 +60,16 @@ module.exports = async function runChannelFileReplyTest() {
 
     await channel.simulateMessage({
       userId: 'user-1',
-      text: '把报告发给我',
+      text: '把大文件发给我',
       context: { reqId: 'mock-req' },
     });
 
     await waitFor(() => channel.replies.length > 0);
-    assert.equal(channel.replies[0].content, '报告已生成，文件已发送。');
-    assert.deepEqual(eventOrder, ['attachments', 'reply']);
-
-    await waitFor(() => channel.sentAttachments.length === 1);
-    assert.deepEqual(channel.sentAttachments[0], {
-      userId: 'user-1',
-      attachments: [{
-        path: reportPath,
-        name: 'report.txt',
-        sizeBytes: fs.statSync(reportPath).size,
-      }],
-      context: { reqId: 'mock-req' },
-    });
+    assert.equal(sendAttempts, 1);
+    assert.equal(channel.replies[0].content.includes('文件太大，当前无法直接发送。'), true);
+    assert.equal(channel.replies[0].content.includes(`[oversized-report.txt](file:///`), true);
+    assert.equal(channel.replies[0].content.includes(reportPath), true);
+    assert.equal(channel.replies[0].content.includes('报告已生成，文件已发送。'), false);
   } finally {
     agent.close();
     fs.rmSync(rootDir, { recursive: true, force: true });

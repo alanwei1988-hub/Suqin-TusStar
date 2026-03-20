@@ -217,6 +217,39 @@ function resolveChatTarget(userId, context = {}) {
   };
 }
 
+function isLikelyFileTooLargeMessage(message = '') {
+  return /too large|文件太大|超出.{0,12}(大小|限制)|超过.{0,12}(限制|大小)|40058|40009|40006|size limit|total_size|invalid file size/i.test(message);
+}
+
+function toFileUri(filePath = '') {
+  const normalizedPath = String(filePath || '').replace(/\\/g, '/');
+  return `file:///${encodeURI(normalizedPath)}`;
+}
+
+function formatAbsolutePathLink(fileName, resolvedPath) {
+  const label = fileName || '点击打开文件';
+  return `${label}： [点击打开文件](${toFileUri(resolvedPath)})\n绝对路径：\`${resolvedPath}\``;
+}
+
+function buildAttachmentSendError(fileName, resolvedPath, cause) {
+  const causeMessage = String(cause?.message || '').trim();
+  let userMessage = `文件暂时无法直接发送。请直接打开：${formatAbsolutePathLink(fileName, resolvedPath)}`;
+
+  if (isLikelyFileTooLargeMessage(causeMessage)) {
+    userMessage = `文件太大，当前无法直接发送。请直接打开：${formatAbsolutePathLink(fileName, resolvedPath)}`;
+  } else if (causeMessage) {
+    userMessage = `文件暂时无法直接发送。请直接打开：${formatAbsolutePathLink(fileName, resolvedPath)}`;
+  }
+
+  const error = new Error(`Failed to send attachment: ${fileName}. ${causeMessage || 'Unknown error'}`);
+  error.code = 'ATTACHMENT_SEND_FAILED';
+  error.cause = cause;
+  error.fileName = fileName;
+  error.absolutePath = resolvedPath;
+  error.userMessage = userMessage;
+  return error;
+}
+
 /**
  * WxWorkAdapter - 将企业微信长连接协议适配为通用 Channel 接口
  */
@@ -370,16 +403,21 @@ class WxWorkAdapter extends EventEmitter {
         ? attachmentPath
         : path.resolve(process.cwd(), attachmentPath);
       const fileName = attachment?.name || path.basename(resolvedPath);
-      const buffer = fs.readFileSync(resolvedPath);
-      const mediaId = await this.bot.uploadMedia('file', fileName, buffer);
-      const sent = this.bot.sendMsg(target.chatId, target.chatType, 'file', {
-        file: {
-          media_id: mediaId,
-        },
-      });
+      
+      try {
+        const buffer = fs.readFileSync(resolvedPath);
+        const mediaId = await this.bot.uploadMedia('file', fileName, buffer);
+        const sent = this.bot.sendMsg(target.chatId, target.chatType, 'file', {
+          file: {
+            media_id: mediaId,
+          },
+        });
 
-      if (!sent) {
-        throw new Error(`Failed to send attachment: ${fileName}`);
+        if (!sent) {
+          throw new Error('通道返回发送失败');
+        }
+      } catch (error) {
+        throw buildAttachmentSendError(fileName, resolvedPath, error);
       }
     }
   }

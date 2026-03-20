@@ -263,6 +263,78 @@ async function streamFinalReply(streamReply, response) {
   await streamReply.finish(finalResponse);
 }
 
+function isLikelyFileTooLargeMessage(message = '') {
+  return /too large|文件太大|超出.{0,12}(大小|限制)|超过.{0,12}(限制|大小)|40058|40009|40006|size limit|total_size|invalid file size/i.test(message);
+}
+
+function toFileUri(filePath = '') {
+  const normalizedPath = String(filePath || '').replace(/\\/g, '/');
+  return `file:///${encodeURI(normalizedPath)}`;
+}
+
+function formatAttachmentLink(attachment) {
+  const filePath = attachment?.path || '';
+  const fileName = attachment?.name || '点击打开文件';
+  return `[${fileName}](${toFileUri(filePath)})`;
+}
+
+function formatAttachmentPaths(attachments = []) {
+  if (attachments.length === 1) {
+    return `${formatAttachmentLink(attachments[0])}\n绝对路径：\`${attachments[0].path}\``;
+  }
+
+  return attachments.map((attachment, index) => `${index + 1}. ${formatAttachmentLink(attachment)}\n绝对路径：\`${attachment.path}\``).join('\n');
+}
+
+function buildAttachmentFailureReply(attachments = [], error) {
+  if (error?.userMessage) {
+    return error.userMessage;
+  }
+
+  const rawMessage = String(error?.cause?.message || error?.message || '').trim();
+  let prefix = '文件发送失败。';
+
+  if (isLikelyFileTooLargeMessage(rawMessage)) {
+    prefix = '文件太大，当前无法直接发送。';
+  } else if (rawMessage) {
+    prefix = '文件暂时无法直接发送。';
+  }
+
+  if (attachments.length === 1) {
+    return `${prefix} 请直接打开：${formatAttachmentPaths(attachments)}`;
+  }
+
+  return `${prefix} 请直接打开这些文件：\n${formatAttachmentPaths(attachments)}`;
+}
+
+async function sendOutboundAttachments({ channel, userId, attachments, context, streamReply }) {
+  if (!Array.isArray(attachments) || attachments.length === 0) {
+    return { ok: true };
+  }
+
+  if (typeof channel.sendAttachments !== 'function') {
+    return {
+      ok: false,
+      message: buildAttachmentFailureReply(attachments, new Error('当前通道不支持发送文件')),
+    };
+  }
+
+  if (streamReply) {
+    await streamReply.updateStatus('正在发送文件...');
+  }
+
+  try {
+    await channel.sendAttachments(userId, attachments, context);
+    return { ok: true };
+  } catch (attachmentError) {
+    console.error('[Main] Attachment send error:', attachmentError);
+    return {
+      ok: false,
+      message: buildAttachmentFailureReply(attachments, attachmentError),
+    };
+  }
+}
+
 function registerChannelHandlers({ agent, channel }) {
   const messageQueue = createConversationQueue();
 
@@ -300,18 +372,21 @@ function registerChannelHandlers({ agent, channel }) {
           },
         }));
 
-        if (streamReply) {
-          await streamFinalReply(streamReply, agentResponse.text);
-        } else {
-          await channel.reply(userId, agentResponse.text, context);
-        }
+        const attachmentResult = await sendOutboundAttachments({
+          channel,
+          userId,
+          attachments: agentResponse.outboundAttachments,
+          context,
+          streamReply,
+        });
+        const finalText = attachmentResult.ok
+          ? agentResponse.text
+          : attachmentResult.message;
 
-        if (agentResponse.outboundAttachments.length > 0 && typeof channel.sendAttachments === 'function') {
-          try {
-            await channel.sendAttachments(userId, agentResponse.outboundAttachments, context);
-          } catch (attachmentError) {
-            console.error('[Main] Attachment send error:', attachmentError);
-          }
+        if (streamReply) {
+          await streamFinalReply(streamReply, finalText);
+        } else {
+          await channel.reply(userId, finalText, context);
         }
       } catch (error) {
         console.error('[Main] Chat error:', error);

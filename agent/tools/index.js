@@ -279,9 +279,10 @@ function createWriteFileTool(machine, workspaceDir) {
 function createSendFileTool(machine, workspaceDir) {
   return tool({
     description: [
-      'Queue a local file to be sent back to the user through the current channel after your final reply.',
+      'Queue a local file to be sent back to the user through the current channel before your final reply is delivered.',
       `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
       'Use this after creating or locating a real file the user should receive.',
+      'If channel delivery fails, the user will be told the file could not be sent and will receive the absolute path instead.',
     ].join(' '),
     inputSchema: z.object({
       path: z.string().describe('The path to the local file that should be sent to the user'),
@@ -336,7 +337,7 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
     attachmentToolNames: attachmentToolkit.toolNames,
     promptSections: [
       `Machine\nYou are operating on a shared local machine. Default working directory: \`${toPosixPath(workingDir)}\`. You may use absolute filesystem paths when needed, but you are responsible for preserving the machine's long-term usability and file integrity.`,
-      'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent after your final text reply.',
+      'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
       buildSkillsPrompt(skillsToolkit.skills),
       buildMcpPrompt(mcpToolkit.summaries),
       buildAttachmentsPrompt(normalizedAttachments),
