@@ -22,6 +22,10 @@ class WeComAIBot extends EventEmitter {
     this.reconnectTimer = null;
     this.isClosing = false;
     this.pendingRequests = new Map(); // Store pending waitForResponse resolvers
+    this.callbackResponseQueues = new Map();
+    this.callbackResponseTimeoutMs = config.callbackResponseTimeout || 5000;
+    this.callbackResponseRetryDelayMs = config.callbackResponseRetryDelay || 250;
+    this.callbackResponseMaxRetries = config.callbackResponseMaxRetries || 2;
   }
 
   log(...args) {
@@ -32,6 +36,135 @@ class WeComAIBot extends EventEmitter {
 
   error(...args) {
     console.error('[WeComAIBot ERROR]', ...args);
+  }
+
+  formatDebugPayload(payload) {
+    const logPayload = JSON.parse(JSON.stringify(payload));
+
+    if (logPayload.body && logPayload.body.base64_data) {
+      const len = logPayload.body.base64_data.length;
+      if (len > 100) {
+        logPayload.body.base64_data = logPayload.body.base64_data.substring(0, 50) + '...' + logPayload.body.base64_data.substring(len - 50);
+      }
+    }
+
+    return logPayload;
+  }
+
+  logOutgoingPayload(payload) {
+    if (!this.debug) {
+      return;
+    }
+
+    if (payload?.cmd === 'ping') {
+      return;
+    }
+
+    const stream = payload?.body?.stream;
+    if (payload?.cmd === 'aibot_respond_msg' && payload?.body?.msgtype === 'stream') {
+      if (!stream?.finish) {
+        return;
+      }
+
+      this.log('Sending final stream:', JSON.stringify({
+        cmd: payload.cmd,
+        headers: payload.headers,
+        body: {
+          msgtype: 'stream',
+          stream: {
+            id: stream.id,
+            content: stream.content,
+            finish: true,
+          },
+        },
+      }));
+      return;
+    }
+
+    this.log('Sending:', JSON.stringify(this.formatDebugPayload(payload)));
+  }
+
+  shouldLogIncomingMessage(msg) {
+    if (msg?.cmd === 'ping') {
+      return false;
+    }
+
+    if (msg?.errmsg === 'ok') {
+      return false;
+    }
+
+    return true;
+  }
+
+  delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  enqueueCallbackResponse(reqId, task) {
+    const previous = this.callbackResponseQueues.get(reqId) || Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(task);
+
+    const tracked = next.finally(() => {
+      if (this.callbackResponseQueues.get(reqId) === tracked) {
+        this.callbackResponseQueues.delete(reqId);
+      }
+    });
+
+    this.callbackResponseQueues.set(reqId, tracked);
+
+    return next;
+  }
+
+  waitForCallbackResponse(reqId, payload, timeoutMs = this.callbackResponseTimeoutMs) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (this.pendingRequests.has(reqId)) {
+          this.pendingRequests.delete(reqId);
+          resolve(null);
+        }
+      }, timeoutMs);
+
+      this.pendingRequests.set(reqId, (msg) => {
+        clearTimeout(timer);
+        resolve(msg);
+      });
+
+      if (!this.send(payload)) {
+        clearTimeout(timer);
+        this.pendingRequests.delete(reqId);
+        resolve(null);
+      }
+    });
+  }
+
+  async sendCallbackResponse(reqId, payload) {
+    return this.enqueueCallbackResponse(reqId, async () => {
+      for (let attempt = 0; attempt <= this.callbackResponseMaxRetries; attempt++) {
+        const response = await this.waitForCallbackResponse(reqId, payload);
+
+        if (!response) {
+          this.error(`Callback response timed out for req_id=${reqId}`);
+          return null;
+        }
+
+        if (response.errcode === undefined || response.errcode === 0 || response.errmsg === 'ok') {
+          return response;
+        }
+
+        if (response.errcode === 6000 && attempt < this.callbackResponseMaxRetries) {
+          this.log(`Retrying callback response for req_id=${reqId} after errcode 6000 (${attempt + 1}/${this.callbackResponseMaxRetries})`);
+          await this.delay(this.callbackResponseRetryDelayMs);
+          continue;
+        }
+
+        this.error(`Callback response failed for req_id=${reqId}: ${response.errmsg} (${response.errcode})`);
+        return response;
+      }
+
+      return null;
+    });
   }
 
   connect() {
@@ -86,17 +219,8 @@ class WeComAIBot extends EventEmitter {
 
   send(payload) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      // Create a shallow copy for logging to avoid modifying the original payload
-      const logPayload = JSON.parse(JSON.stringify(payload));
-      if (logPayload.body && logPayload.body.base64_data) {
-        const len = logPayload.body.base64_data.length;
-        if (len > 100) {
-          logPayload.body.base64_data = logPayload.body.base64_data.substring(0, 50) + '...' + logPayload.body.base64_data.substring(len - 50);
-        }
-      }
-      
       const data = JSON.stringify(payload);
-      this.log('Sending:', JSON.stringify(logPayload));
+      this.logOutgoingPayload(payload);
       this.ws.send(data);
       return true;
     }
@@ -137,15 +261,16 @@ class WeComAIBot extends EventEmitter {
   }
 
   handleMessage(msg) {
-    this.log('Received:', JSON.stringify(msg));
-    
-    // Check if we can resolve a pending request
     const reqId = msg.headers?.req_id;
     if (reqId && this.pendingRequests.has(reqId)) {
       const resolve = this.pendingRequests.get(reqId);
       this.pendingRequests.delete(reqId);
       resolve(msg);
       return;
+    }
+
+    if (this.shouldLogIncomingMessage(msg)) {
+      this.log('Received:', JSON.stringify(msg));
     }
 
     // Handle 'naked' errors (no headers/req_id from WeCom)
@@ -166,10 +291,6 @@ class WeComAIBot extends EventEmitter {
       this.emit('message', msg.body, msg.headers.req_id);
     } else if (cmd === 'aibot_event_callback') {
       this.emit('event', msg.body, msg.headers.req_id);
-    } else if (cmd === 'ping') {
-      this.log('Pong received');
-    } else if (msg.errmsg === 'ok') {
-      this.log('Operation success for', msg.headers?.req_id);
     }
   }
 
@@ -181,7 +302,7 @@ class WeComAIBot extends EventEmitter {
    * @param {boolean} finish - whether it's the final chunk
    */
   respondStreamMsg(reqId, content, streamId, finish = true) {
-    return this.send({
+    return this.sendCallbackResponse(reqId, {
       cmd: 'aibot_respond_msg',
       headers: { req_id: reqId },
       body: {
@@ -199,7 +320,7 @@ class WeComAIBot extends EventEmitter {
    * Respond with Markdown message
    */
   respondMarkdownMsg(reqId, content) {
-    return this.send({
+    return this.sendCallbackResponse(reqId, {
       cmd: 'aibot_respond_msg',
       headers: { req_id: reqId },
       body: {
@@ -215,7 +336,7 @@ class WeComAIBot extends EventEmitter {
    * Respond with Template Card
    */
   respondCardMsg(reqId, templateCard) {
-    return this.send({
+    return this.sendCallbackResponse(reqId, {
       cmd: 'aibot_respond_msg',
       headers: { req_id: reqId },
       body: {
@@ -229,7 +350,7 @@ class WeComAIBot extends EventEmitter {
    * Respond with Welcome message (Strictly following WelcomeReplyBody)
    */
   respondWelcomeMsg(reqId, textContent) {
-    return this.send({
+    return this.sendCallbackResponse(reqId, {
       cmd: 'aibot_respond_welcome_msg',
       headers: { req_id: reqId },
       body: {
@@ -245,7 +366,7 @@ class WeComAIBot extends EventEmitter {
    * Update template card
    */
   respondUpdateMsg(reqId, templateCard) {
-    return this.send({
+    return this.sendCallbackResponse(reqId, {
       cmd: 'aibot_respond_update_msg',
       headers: { req_id: reqId },
       body: {
@@ -346,7 +467,7 @@ class WeComAIBot extends EventEmitter {
   respondMediaMsg(reqId, msgType, mediaId) {
     const body = { msgtype: msgType };
     body[msgType] = { media_id: mediaId };
-    return this.send({
+    return this.sendCallbackResponse(reqId, {
       cmd: 'aibot_respond_msg',
       headers: { req_id: reqId },
       body: body

@@ -5,6 +5,8 @@ const tests = [
   ['mcp.toolkit', require('./mcp.toolkit.test')],
   ['agent.mcp.integration', require('./agent.mcp.integration.test')],
   ['wxwork.adapter', require('./wxwork.adapter.test')],
+  ['wecom-bot.callback-queue', require('./wecom-bot.callback-queue.test')],
+  ['wecom-bot.logging', require('./wecom-bot.logging.test')],
   ['channel.integration', require('./channel.integration.test')],
 ];
 
