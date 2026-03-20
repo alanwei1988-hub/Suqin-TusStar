@@ -9,6 +9,28 @@ const FALLBACK_MEDIA_EXTENSIONS = {
   video: '.mp4',
 };
 
+const MIME_BY_EXTENSION = {
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.csv': 'text/csv',
+  '.tsv': 'text/tab-separated-values',
+  '.pdf': 'application/pdf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.mp4': 'video/mp4',
+};
+
 let fileTypeModulePromise;
 
 function containsAsciiOrUtf16(buffer, value) {
@@ -133,6 +155,54 @@ async function buildStoredFileName(msgType, originalName, buffer) {
   return safeFileName;
 }
 
+function inferMimeType(extension, msgType) {
+  if (MIME_BY_EXTENSION[extension]) {
+    return MIME_BY_EXTENSION[extension];
+  }
+
+  if (msgType === 'image') {
+    return 'image/*';
+  }
+
+  if (msgType === 'video') {
+    return 'video/*';
+  }
+
+  return 'application/octet-stream';
+}
+
+function inferAttachmentKind(msgType, extension, mimeType) {
+  if (msgType === 'image' || mimeType.startsWith('image/')) {
+    return 'image';
+  }
+
+  if (msgType === 'video' || mimeType.startsWith('video/')) {
+    return 'video';
+  }
+
+  if (extension === '.pdf') {
+    return 'pdf';
+  }
+
+  if (['.doc', '.docx'].includes(extension)) {
+    return 'document';
+  }
+
+  if (['.xls', '.xlsx', '.csv', '.tsv'].includes(extension)) {
+    return 'spreadsheet';
+  }
+
+  if (['.ppt', '.pptx'].includes(extension)) {
+    return 'presentation';
+  }
+
+  if (['.txt', '.md', '.json', '.xml'].includes(extension) || mimeType.startsWith('text/')) {
+    return 'text';
+  }
+
+  return msgType === 'file' ? 'file' : msgType;
+}
+
 /**
  * WxWorkAdapter - 将企业微信长连接协议适配为通用 Channel 接口
  */
@@ -190,10 +260,17 @@ class WxWorkAdapter extends EventEmitter {
             const safeFileName = await buildStoredFileName(body.msgtype, originalName, decryptedBuffer);
             const filePath = path.join(this.tempDir, safeFileName);
             fs.writeFileSync(filePath, decryptedBuffer);
+            const extension = path.extname(filePath).toLowerCase();
+            const mimeType = inferMimeType(extension, body.msgtype);
             
             attachments.push({
               path: path.relative(process.cwd(), filePath),
-              name: originalName
+              storedPath: path.relative(process.cwd(), filePath),
+              name: originalName,
+              extension,
+              mimeType,
+              kind: inferAttachmentKind(body.msgtype, extension, mimeType),
+              sizeBytes: decryptedBuffer.length,
             });
             
             text = `[Sent a file: ${originalName}]`;

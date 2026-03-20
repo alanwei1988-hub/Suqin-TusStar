@@ -1,4 +1,6 @@
+const crypto = require('crypto');
 const { ToolLoopAgent, stepCountIs } = require('ai');
+const path = require('path');
 const { createOpenAICompatible } = require('@ai-sdk/openai-compatible');
 const {
   appendFinalAssistantMessageIfNeeded,
@@ -13,21 +15,101 @@ const { listAvailableSkills } = require('./tools/skills');
 const { loadRolePrompt } = require('./roles');
 const SessionManager = require('./session');
 
+function normalizeConversationAttachments(attachments = []) {
+  return attachments.map((attachment, index) => {
+    const filePath = attachment?.path || '';
+    const fallbackKey = filePath || attachment?.name || `attachment-${index + 1}`;
+    const generatedId = `attachment-${crypto.createHash('sha1').update(String(fallbackKey)).digest('hex').slice(0, 10)}`;
+    return {
+      ...attachment,
+      sourceId: attachment?.id || null,
+      id: attachment?.id || generatedId,
+      name: attachment?.name || path.basename(filePath || `attachment-${index + 1}`),
+      path: filePath,
+      kind: attachment?.kind || 'file',
+      mimeType: attachment?.mimeType || attachment?.mime || '',
+    };
+  });
+}
+
+function collectConversationAttachments(messages = []) {
+  const collected = [];
+  const seenIdentityKeys = new Set();
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+
+    if (message?.role !== 'user' || !Array.isArray(message.attachments) || message.attachments.length === 0) {
+      continue;
+    }
+
+    for (const attachment of message.attachments) {
+      const identityKey = String(attachment?.path || attachment?.name || attachment?.id || '');
+
+      if (!identityKey || seenIdentityKeys.has(identityKey)) {
+        continue;
+      }
+
+      seenIdentityKeys.add(identityKey);
+      collected.push(attachment);
+    }
+  }
+
+  const reversed = collected.reverse();
+  const usedIds = new Set();
+
+  return reversed.map((attachment, index) => {
+    const identityKey = String(attachment?.path || attachment?.name || attachment?.id || `attachment-${index + 1}`);
+    const candidateId = String(attachment?.id || `attachment-${index + 1}`);
+
+    if (!usedIds.has(candidateId)) {
+      usedIds.add(candidateId);
+      return attachment;
+    }
+
+    const uniqueId = `${candidateId}-${crypto.createHash('sha1').update(identityKey).digest('hex').slice(0, 8)}`;
+    usedIds.add(uniqueId);
+    return {
+      ...attachment,
+      id: uniqueId,
+    };
+  });
+}
+
 function buildUserContent(userMessage, attachments = []) {
   let content = userMessage;
 
   if (attachments && attachments.length > 0) {
-    const attachmentInfo = attachments.map(a => `[File: ${a.name}, Path: ${a.path}]`).join('\n');
+    const attachmentInfo = attachments.map(a => {
+      const parts = [
+        `ID: ${a.id}`,
+        `Name: ${a.name}`,
+        `Path: ${a.path}`,
+      ];
+
+      if (a.kind) {
+        parts.push(`Kind: ${a.kind}`);
+      }
+
+      if (a.mimeType) {
+        parts.push(`MIME: ${a.mimeType}`);
+      }
+
+      return `[Attachment] ${parts.join(', ')}`;
+    }).join('\n');
     content = `${userMessage}
 
-The user has provided the following file(s) for reference:
+The user has provided the following attachment(s) for reference:
 ${attachmentInfo}
 
 Important attachment handling rule:
-- Do not read or inspect these files just because they are available.
+- User-provided attachments are not ordinary local text files.
+- Do not use readFile on attachment paths.
 - First infer the user's intent from the current message and prior conversation.
 - If the intended operation on the file is not clear enough, ask a clarifying question first.
-- Only use file-reading tools when the user's intent clearly requires inspecting the file contents.`;
+- Use inspectAttachment to inspect metadata or get a safe preview.
+- Use readAttachmentText only when bounded text extraction is actually needed.
+- Only pass an attachment path to another tool when that tool explicitly requires a file path.`;
   }
 
   return content;
@@ -67,6 +149,7 @@ class AgentCore {
         workspaceDir: this.config.workspaceDir,
         skillsDir: this.config.skillsDir,
         mcpServers: this.config.mcpServers || [],
+        attachmentExtraction: this.config.attachmentExtraction || {},
       });
       await runtime.close();
       console.log('[Agent] MCP preflight passed.');
@@ -80,9 +163,11 @@ class AgentCore {
     const callbacks = typeof options === 'function'
       ? { onStepFinish: options }
       : (options || {});
-    const content = buildUserContent(userMessage, attachments);
+    const normalizedAttachments = normalizeConversationAttachments(attachments);
+    const content = buildUserContent(userMessage, normalizedAttachments);
 
-    fullMessages.push({ role: 'user', content });
+    fullMessages.push({ role: 'user', content, attachments: normalizedAttachments });
+    const conversationAttachments = collectConversationAttachments(fullMessages);
     const context = this.sessionManager.buildModelContext(fullMessages, {
       recentMessagesCount: contextSettings.recentMessagesCount,
       summaryLineCount: contextSettings.summaryLineCount,
@@ -93,6 +178,8 @@ class AgentCore {
       workspaceDir: this.config.workspaceDir,
       skillsDir: this.config.skillsDir,
       mcpServers: this.config.mcpServers || [],
+      attachments: conversationAttachments,
+      attachmentExtraction: this.config.attachmentExtraction || {},
     });
     const rolePrompt = await loadRolePrompt(this.config.rolePromptDir);
     const promptSections = [
@@ -118,6 +205,21 @@ class AgentCore {
     try {
       const result = await agent.generate({
         messages: context.messages,
+        experimental_onStepStart: async step => {
+          if (callbacks.onStepStart) {
+            await callbacks.onStepStart(step);
+          }
+        },
+        experimental_onToolCallStart: async event => {
+          if (callbacks.onToolCallStart) {
+            await callbacks.onToolCallStart(event);
+          }
+        },
+        experimental_onToolCallFinish: async event => {
+          if (callbacks.onToolCallFinish) {
+            await callbacks.onToolCallFinish(event);
+          }
+        },
         onStepFinish: async step => {
           if (callbacks.onStepFinish) {
             await callbacks.onStepFinish(step);

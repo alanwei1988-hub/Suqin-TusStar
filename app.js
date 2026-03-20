@@ -2,6 +2,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const AgentCore = require('./agent/index');
+const { getProjectMarkItDownPython } = require('./markitdown/runtime');
 
 function loadRawConfig(rootDir = __dirname) {
   const configPath = path.resolve(rootDir, 'config.json');
@@ -49,6 +50,51 @@ function normalizeMcpServer(rootDir, server) {
   return normalized;
 }
 
+function normalizeMarkItDownConfig(rootDir, config = {}) {
+  const runnerPath = getProjectMarkItDownPython(rootDir);
+  const normalized = {
+    enabled: config.enabled === true,
+    handlerModule: typeof config.handlerModule === 'string' && config.handlerModule.trim().length > 0
+      ? resolveRelativePath(rootDir, config.handlerModule)
+      : '',
+    command: typeof config.command === 'string' && config.command.trim().length > 0
+      ? config.command
+      : runnerPath,
+    args: Array.isArray(config.args) && config.args.length > 0
+      ? [...config.args]
+      : ['-X', 'utf8', '-m', 'markitdown', '{input}'],
+    timeoutMs: Number.isFinite(config.timeoutMs) ? config.timeoutMs : 30000,
+    maxOutputChars: Number.isFinite(config.maxOutputChars) ? config.maxOutputChars : 24000,
+    supportedExtensions: Array.isArray(config.supportedExtensions) && config.supportedExtensions.length > 0
+      ? config.supportedExtensions.map(value => String(value).toLowerCase())
+      : ['.pdf', '.docx', '.pptx', '.xls', '.xlsx'],
+  };
+
+  if (normalized.command === '{runner}') {
+    normalized.command = runnerPath;
+  } else if (typeof normalized.command === 'string' && normalized.command.startsWith('.')) {
+    normalized.command = resolveRelativePath(rootDir, normalized.command);
+  }
+
+  normalized.args = normalized.args.map(arg => {
+    if (typeof arg !== 'string') {
+      return arg;
+    }
+
+    if (arg === '{input}' || arg === '{output}' || arg === '{runner}') {
+      return arg;
+    }
+
+    if (arg.startsWith('.')) {
+      return resolveRelativePath(rootDir, arg);
+    }
+
+    return arg;
+  });
+
+  return normalized;
+}
+
 function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {}) {
   const channelType = rawConfig.channel.type;
   const channelConfig = rawConfig.channel[channelType] || {};
@@ -77,6 +123,9 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       rolePromptDir: resolveRelativePath(rootDir, rawConfig.agent.rolePromptDir),
       sessionDb: resolveRelativePath(rootDir, rawConfig.agent.sessionDb),
       mcpServers: (rawConfig.agent.mcpServers || []).map(server => normalizeMcpServer(rootDir, server)),
+      attachmentExtraction: {
+        markitdown: normalizeMarkItDownConfig(rootDir, rawConfig.agent.attachmentExtraction?.markitdown || {}),
+      },
     },
     channel: {
       ...rawConfig.channel,
@@ -127,15 +176,15 @@ function splitReplyIntoChunks(content, maxChunkLength = 48) {
 }
 
 function formatStepStatus(step) {
-  if (step.toolCalls && step.toolCalls.length > 0) {
-    return `正在处理（第 ${step.stepNumber + 1} 步）：${step.toolCalls.map(toolCall => toolCall.toolName).join(', ')}`;
-  }
-
   if (step.text && step.text.trim().length > 0) {
     return `正在整理回复（第 ${step.stepNumber + 1} 步）...`;
   }
 
-  return `正在处理（第 ${step.stepNumber + 1} 步）...`;
+  return `已完成第 ${step.stepNumber + 1} 步，继续处理中...`;
+}
+
+function formatToolCallStatus(event) {
+  return `正在处理（第 ${event.stepNumber + 1} 步）：${event.toolCall.toolName}`;
 }
 
 async function streamFinalReply(streamReply, response) {
@@ -171,12 +220,17 @@ function registerChannelHandlers({ agent, channel }) {
       }
 
       const response = await agent.chat(userId, text, attachments, {
+        onToolCallStart: async event => {
+          if (streamReply) {
+            await streamReply.updateStatus(formatToolCallStatus(event));
+          }
+        },
         onStepFinish: async step => {
           if (step.toolCalls && step.toolCalls.length > 0) {
             console.log('[Main] Agent tools:', step.toolCalls.map(toolCall => toolCall.toolName).join(', '));
           }
 
-          if (streamReply) {
+          if (streamReply && ((!step.toolCalls || step.toolCalls.length === 0) || (step.text && step.text.trim().length > 0))) {
             await streamReply.updateStatus(formatStepStatus(step));
           }
         },
@@ -220,6 +274,7 @@ async function createAgent(processedConfig, options = {}) {
 module.exports = {
   createAgent,
   formatStepStatus,
+  formatToolCallStatus,
   loadChannelAdapter,
   loadRawConfig,
   normalizeMcpServer,

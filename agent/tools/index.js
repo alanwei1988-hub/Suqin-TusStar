@@ -3,11 +3,17 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { tool } = require('ai');
 const { z } = require('zod');
+const {
+  MAX_LOCAL_TEXT_CHARS,
+  assertReadableLocalTextFile,
+  buildAttachmentsPrompt,
+  createAttachmentTools,
+  normalizeAttachments,
+} = require('./attachments');
 const { buildMcpPrompt, createMcpToolkit } = require('./mcp');
 const { buildSkillsPrompt, createSkillsToolkit } = require('./skills');
 
 const MAX_BASH_OUTPUT_LENGTH = 20000;
-const MAX_READ_FILE_LENGTH = 100000;
 
 const BLOCKED_COMMAND_RULES = [
   {
@@ -155,7 +161,7 @@ function buildBashToolPrompt(workspaceDir) {
     '- Use shell commands for directory listing, script execution, builds, tests, file operations, and system inspection.',
     '- Inspect first, then act. Confirm target paths and current state before mutating files or running impactful commands.',
     '- Prefer the smallest effective action and avoid unnecessary disruption to the environment.',
-    '- Use `readFile` for precise inspection and `writeFile` for direct edits.',
+    '- Use `readFile` for precise inspection of local text files and `writeFile` for direct edits.',
   ].join('\n');
 }
 
@@ -177,23 +183,26 @@ function createBashTool(machine, workspaceDir) {
   });
 }
 
-function createReadFileTool(machine, workspaceDir) {
+function createReadFileTool(machine, workspaceDir, attachmentIndex) {
   return tool({
     description: [
-      'Read a UTF-8 text file from the local machine.',
+      'Read a local UTF-8 text file from the machine.',
       `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
       'Absolute paths are allowed.',
+      'Do not use this for user-provided attachments; use the attachment tools instead.',
     ].join(' '),
     inputSchema: z.object({
-      path: z.string().describe('The path to the file to read'),
+      path: z.string().describe('The path to the local text file to read'),
     }),
     execute: async ({ path: filePath }) => {
       const resolvedPath = resolveRequestedPath(workspaceDir, filePath);
+      const fileInfo = await assertReadableLocalTextFile(resolvedPath, attachmentIndex);
       const content = await machine.readFile(filePath);
 
       return {
         path: resolvedPath,
-        content: truncateText(content, MAX_READ_FILE_LENGTH, 'file content'),
+        sizeBytes: fileInfo.sizeBytes,
+        content: truncateText(content, MAX_LOCAL_TEXT_CHARS, 'file content'),
       };
     },
   });
@@ -221,9 +230,16 @@ function createWriteFileTool(machine, workspaceDir) {
   });
 }
 
-async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers }) {
+async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachments = [], attachmentExtraction = {} }) {
   const workingDir = path.resolve(workspaceDir);
   const machine = new MachineBackend(workingDir);
+  const normalizedAttachments = normalizeAttachments(attachments, workingDir, resolveRequestedPath);
+  const attachmentToolkit = createAttachmentTools(
+    normalizedAttachments,
+    workingDir,
+    resolveRequestedPath,
+    attachmentExtraction,
+  );
 
   const [skillsToolkit, mcpToolkit] = await Promise.all([
     createSkillsToolkit({ skillsDir, workspaceDir }),
@@ -232,8 +248,9 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers }) {
 
   const runtimeTools = {
     bash: createBashTool(machine, workingDir),
-    readFile: createReadFileTool(machine, workingDir),
+    readFile: createReadFileTool(machine, workingDir, attachmentToolkit.attachmentIndex),
     writeFile: createWriteFileTool(machine, workingDir),
+    ...attachmentToolkit.tools,
   };
 
   const tools = mergeToolSets([
@@ -247,11 +264,13 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers }) {
     toolNames: Object.keys(tools),
     mcpToolNames: Object.keys(mcpToolkit.tools),
     mcpReadOnlyToolNames: mcpToolkit.readOnlyToolNames || [],
+    attachmentToolNames: attachmentToolkit.toolNames,
     promptSections: [
       `Machine\nYou are operating on a shared local machine. Default working directory: \`${toPosixPath(workingDir)}\`. You may use absolute filesystem paths when needed, but you are responsible for preserving the machine's long-term usability and file integrity.`,
       buildSkillsPrompt(skillsToolkit.skills),
       buildMcpPrompt(mcpToolkit.summaries),
-    ],
+      buildAttachmentsPrompt(normalizedAttachments),
+    ].filter(Boolean),
     close: async () => {
       await mcpToolkit.close();
     },

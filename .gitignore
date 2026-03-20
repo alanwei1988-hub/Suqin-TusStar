@@ -3,3 +3,4 @@ docs/vercel-ai-sdk
 storage/
 data/
 .env
+.tools/

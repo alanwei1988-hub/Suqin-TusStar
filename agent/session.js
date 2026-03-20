@@ -1,6 +1,10 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 
+function serializeMessages(messages) {
+  return JSON.stringify(messages, null, 2);
+}
+
 function normalizeWhitespace(value) {
   return value.replace(/\s+/g, ' ').trim();
 }
@@ -115,6 +119,32 @@ class SessionManager {
         updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    this.reformatStoredMessages();
+  }
+
+  reformatStoredMessages() {
+    const rows = this.db.prepare('SELECT userId, messages FROM sessions').all();
+    const updateStmt = this.db.prepare(`
+      UPDATE sessions
+      SET messages = ?, updatedAt = CURRENT_TIMESTAMP
+      WHERE userId = ?
+    `);
+
+    for (const row of rows) {
+      if (!row?.messages) {
+        continue;
+      }
+
+      try {
+        const formatted = serializeMessages(JSON.parse(row.messages));
+
+        if (formatted !== row.messages) {
+          updateStmt.run(formatted, row.userId);
+        }
+      } catch (error) {
+        // Keep unreadable rows untouched so a bad record does not block startup.
+      }
+    }
   }
 
   getMessages(userId) {
@@ -133,7 +163,7 @@ class SessionManager {
         messages = excluded.messages,
         updatedAt = excluded.updatedAt
     `);
-    stmt.run(userId, JSON.stringify(messages));
+    stmt.run(userId, serializeMessages(messages));
   }
 
   clearSession(userId) {

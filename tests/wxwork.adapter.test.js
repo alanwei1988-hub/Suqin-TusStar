@@ -63,6 +63,10 @@ module.exports = async function runWxworkAdapterTest() {
     assert.equal(events[0].context.streamId, streamCalls[0].streamId);
     assert.equal(events[0].attachments.length, 1);
     assert.equal(path.extname(events[0].attachments[0].path), '.pdf');
+    assert.equal(events[0].attachments[0].extension, '.pdf');
+    assert.equal(events[0].attachments[0].mimeType, 'application/pdf');
+    assert.equal(events[0].attachments[0].kind, 'pdf');
+    assert.equal(events[0].attachments[0].sizeBytes, buffersByUrl['https://example.invalid/file'].length);
 
     const streamReply = adapter.createStreamingReply('u1', events[0].context);
     await streamReply.updateStatus('文件已下载，正在处理...');
@@ -109,6 +113,8 @@ module.exports = async function runWxworkAdapterTest() {
 
     await waitFor(() => events.length === 4);
     assert.equal(path.extname(events[3].attachments[0].path), '.csv');
+    assert.equal(events[3].attachments[0].kind, 'spreadsheet');
+    assert.equal(events[3].attachments[0].mimeType, 'text/csv');
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

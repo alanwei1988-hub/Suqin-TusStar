@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { processConfig } = require('../app');
+const { getProjectMarkItDownPython } = require('../markitdown/runtime');
 
 module.exports = async function runAppConfigTest() {
   const baseConfig = {
@@ -30,6 +31,11 @@ module.exports = async function runAppConfigTest() {
     env: {},
   });
   assert.equal(processedDefault.channel.wxwork.streamingResponse, true);
+  assert.equal(processedDefault.agent.attachmentExtraction.markitdown.enabled, false);
+  assert.equal(processedDefault.agent.attachmentExtraction.markitdown.handlerModule, '');
+  assert.equal(processedDefault.agent.attachmentExtraction.markitdown.command, getProjectMarkItDownPython(__dirname));
+  assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.args, ['-X', 'utf8', '-m', 'markitdown', '{input}']);
+  assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.supportedExtensions, ['.pdf', '.docx', '.pptx', '.xls', '.xlsx']);
 
   const processedDisabled = processConfig({
     ...baseConfig,
@@ -45,4 +51,28 @@ module.exports = async function runAppConfigTest() {
     env: {},
   });
   assert.equal(processedDisabled.channel.wxwork.streamingResponse, false);
+
+  const processedMarkItDown = processConfig({
+    ...baseConfig,
+    agent: {
+      ...baseConfig.agent,
+      attachmentExtraction: {
+        markitdown: {
+          enabled: true,
+          handlerModule: '.\\scripts\\mock-handler.js',
+          command: '{runner}',
+          args: ['.\\scripts\\runner.py', '{input}'],
+          supportedExtensions: ['.PDF'],
+        },
+      },
+    },
+  }, {
+    rootDir: __dirname,
+    env: {},
+  });
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.enabled, true);
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.handlerModule.endsWith('\\scripts\\mock-handler.js'), true);
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.command, getProjectMarkItDownPython(__dirname));
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.args[0].endsWith('\\scripts\\runner.py'), true);
+  assert.deepEqual(processedMarkItDown.agent.attachmentExtraction.markitdown.supportedExtensions, ['.pdf']);
 };

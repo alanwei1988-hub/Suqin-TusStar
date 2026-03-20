@@ -1,6 +1,8 @@
 require('./app.config.test');
 require('./contract-mcp.service.test');
 require('./agent.roles.test');
+require('./agent.tools.test');
+require('./agent.attachment-session.test');
 require('./mcp.toolkit.test');
 require('./agent.mcp.integration.test');
 require('./wxwork.adapter.test');

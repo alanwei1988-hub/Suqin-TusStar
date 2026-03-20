@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node tests/run.js"
+    "test": "node tests/run.js",
+    "markitdown:install": "node markitdown/setup.js",
+    "postinstall": "node markitdown/setup.js"
   },
   "dependencies": {
     "@ai-sdk/mcp": "^1.0.25",

@@ -24,6 +24,16 @@
         "initTimeoutMs": 8000
       }
     ],
+    "attachmentExtraction": {
+      "markitdown": {
+        "enabled": true,
+        "command": "{runner}",
+        "args": ["-X", "utf8", "-m", "markitdown", "{input}"],
+        "timeoutMs": 30000,
+        "maxOutputChars": 24000,
+        "supportedExtensions": [".pdf", ".docx", ".pptx", ".xls", ".xlsx"]
+      }
+    },
     "skillsDir": "./skills",
     "rolePromptDir": "./roles/contract-manager",
     "sessionDb": "./data/sessions.db"
