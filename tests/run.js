@@ -12,6 +12,7 @@ const tests = [
   ['wecom-bot.logging', require('./wecom-bot.logging.test')],
   ['channel.integration', require('./channel.integration.test')],
   ['channel.file-reply', require('./channel.file-reply.test')],
+  ['channel.queue', require('./channel.queue.test')],
   ['channel.streaming-status', require('./channel.streaming-status.test')],
 ];
 

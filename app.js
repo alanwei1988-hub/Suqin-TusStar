@@ -205,6 +205,48 @@ function normalizeAgentResponse(response) {
   };
 }
 
+function getConversationQueueKey(userId, context = {}) {
+  const chatType = Number.isFinite(context.chatType) ? context.chatType : 1;
+  const chatId = context.chatId || userId;
+  return `${chatType}:${chatId}`;
+}
+
+function createConversationQueue() {
+  const states = new Map();
+
+  return {
+    enqueue(key, task) {
+      const queueKey = String(key || 'default');
+      const state = states.get(queueKey) || {
+        tail: Promise.resolve(),
+        pending: 0,
+      };
+      const queuedAhead = state.pending;
+
+      state.pending += 1;
+
+      const run = state.tail
+        .catch(() => {})
+        .then(task);
+      const tracked = run.finally(() => {
+        state.pending -= 1;
+
+        if (state.tail === tracked && state.pending === 0) {
+          states.delete(queueKey);
+        }
+      });
+
+      state.tail = tracked;
+      states.set(queueKey, state);
+
+      return {
+        queuedAhead,
+        promise: run,
+      };
+    },
+  };
+}
+
 async function streamFinalReply(streamReply, response) {
   const finalResponse = response || '已处理完成。';
   const chunks = splitReplyIntoChunks(finalResponse);
@@ -222,60 +264,70 @@ async function streamFinalReply(streamReply, response) {
 }
 
 function registerChannelHandlers({ agent, channel }) {
+  const messageQueue = createConversationQueue();
+
   channel.on('message', async ({ userId, text, attachments, context }) => {
     console.log(`[Main] Message from ${userId}: ${text} (${attachments.length} files)`);
     const streamReply = typeof channel.createStreamingReply === 'function'
       ? channel.createStreamingReply(userId, context)
       : null;
+    const queueKey = getConversationQueueKey(userId, context);
+    const { queuedAhead, promise } = messageQueue.enqueue(queueKey, async () => {
+      try {
+        if (streamReply) {
+          if (context.initialStatusSent && attachments.length > 0) {
+            await streamReply.updateStatus('文件已下载，正在处理...');
+          } else if (!context.initialStatusSent) {
+            await streamReply.updateStatus('已收到，正在处理...');
+          }
+        }
 
-    try {
-      if (streamReply) {
-        if (context.initialStatusSent && attachments.length > 0) {
-          await streamReply.updateStatus('文件已下载，正在处理...');
-        } else if (!context.initialStatusSent) {
-          await streamReply.updateStatus('已收到，正在处理...');
+        const agentResponse = normalizeAgentResponse(await agent.chat(userId, text, attachments, {
+          includeArtifacts: true,
+          onToolCallStart: async event => {
+            if (streamReply) {
+              await streamReply.updateStatus(formatToolCallStatus(event));
+            }
+          },
+          onStepFinish: async step => {
+            if (step.toolCalls && step.toolCalls.length > 0) {
+              console.log('[Main] Agent tools:', step.toolCalls.map(toolCall => toolCall.toolName).join(', '));
+            }
+
+            if (streamReply && ((!step.toolCalls || step.toolCalls.length === 0) || (step.text && step.text.trim().length > 0))) {
+              await streamReply.updateStatus(formatStepStatus(step));
+            }
+          },
+        }));
+
+        if (streamReply) {
+          await streamFinalReply(streamReply, agentResponse.text);
+        } else {
+          await channel.reply(userId, agentResponse.text, context);
+        }
+
+        if (agentResponse.outboundAttachments.length > 0 && typeof channel.sendAttachments === 'function') {
+          try {
+            await channel.sendAttachments(userId, agentResponse.outboundAttachments, context);
+          } catch (attachmentError) {
+            console.error('[Main] Attachment send error:', attachmentError);
+          }
+        }
+      } catch (error) {
+        console.error('[Main] Chat error:', error);
+        if (streamReply) {
+          await streamReply.finish('抱歉，我现在处理消息时遇到了点问题。');
+        } else {
+          await channel.reply(userId, '抱歉，我现在处理消息时遇到了点问题。', context);
         }
       }
+    });
 
-      const agentResponse = normalizeAgentResponse(await agent.chat(userId, text, attachments, {
-        includeArtifacts: true,
-        onToolCallStart: async event => {
-          if (streamReply) {
-            await streamReply.updateStatus(formatToolCallStatus(event));
-          }
-        },
-        onStepFinish: async step => {
-          if (step.toolCalls && step.toolCalls.length > 0) {
-            console.log('[Main] Agent tools:', step.toolCalls.map(toolCall => toolCall.toolName).join(', '));
-          }
-
-          if (streamReply && ((!step.toolCalls || step.toolCalls.length === 0) || (step.text && step.text.trim().length > 0))) {
-            await streamReply.updateStatus(formatStepStatus(step));
-          }
-        },
-      }));
-
-      if (streamReply) {
-        await streamFinalReply(streamReply, agentResponse.text);
-      } else {
-        await channel.reply(userId, agentResponse.text, context);
-      }
-
-      if (agentResponse.outboundAttachments.length > 0 && typeof channel.sendAttachments === 'function') {
-        try {
-          await channel.sendAttachments(userId, agentResponse.outboundAttachments, context);
-        } catch (attachmentError) {
-          console.error('[Main] Attachment send error:', attachmentError);
-        }
-      }
-    } catch (error) {
-      console.error('[Main] Chat error:', error);
-      if (streamReply) {
-        await streamReply.finish('抱歉，我现在处理消息时遇到了点问题。');
-      } else {
-        await channel.reply(userId, '抱歉，我现在处理消息时遇到了点问题。', context);
-      }
+    if (streamReply && queuedAhead > 0) {
+      await streamReply.updateStatus(`前方还有 ${queuedAhead} 条消息，排队处理中...`);
     }
+
+    await promise;
   });
 
   channel.on('user_enter', async ({ userId, context }) => {
