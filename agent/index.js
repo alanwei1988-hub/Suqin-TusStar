@@ -160,9 +160,10 @@ class AgentCore {
     const contextSettings = getContextSettings(this.config);
     const toolChoice = getToolChoiceSetting(this.config);
     const fullMessages = this.sessionManager.getMessages(userId);
-    const callbacks = typeof options === 'function'
+    const normalizedOptions = typeof options === 'function'
       ? { onStepFinish: options }
       : (options || {});
+    const { includeArtifacts = false, ...callbacks } = normalizedOptions;
     const normalizedAttachments = normalizeConversationAttachments(attachments);
     const content = buildUserContent(userMessage, normalizedAttachments);
 
@@ -227,9 +228,19 @@ class AgentCore {
         },
       });
       const finalResponse = buildFinalResponse(result);
+      const outboundAttachments = typeof runtime.getOutboundAttachments === 'function'
+        ? runtime.getOutboundAttachments()
+        : [];
 
       appendFinalAssistantMessageIfNeeded(fullMessages, result.response.messages, finalResponse);
       this.sessionManager.saveMessages(userId, fullMessages);
+
+      if (includeArtifacts) {
+        return {
+          text: finalResponse,
+          outboundAttachments,
+        };
+      }
 
       return finalResponse;
     } finally {

@@ -105,6 +105,7 @@ function runShellCommand(command, cwd) {
 class MachineBackend {
   constructor(workingDir) {
     this.workingDir = path.resolve(workingDir);
+    this.outboundAttachments = [];
   }
 
   async executeCommand(command) {
@@ -131,6 +132,51 @@ class MachineBackend {
     await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
     await fs.writeFile(resolvedPath, content);
     return resolvedPath;
+  }
+
+  async registerOutboundAttachment(filePath, displayName) {
+    const resolvedPath = resolveRequestedPath(this.workingDir, filePath);
+    const stat = await fs.stat(resolvedPath);
+
+    if (!stat.isFile()) {
+      throw new Error(`Not a file: ${resolvedPath}`);
+    }
+
+    const name = typeof displayName === 'string' && displayName.trim().length > 0
+      ? displayName.trim()
+      : path.basename(resolvedPath);
+    const identityKey = `${resolvedPath}::${name}`;
+    const existing = this.outboundAttachments.find(item => item.identityKey === identityKey);
+
+    if (existing) {
+      return {
+        path: existing.path,
+        name: existing.name,
+        sizeBytes: existing.sizeBytes,
+      };
+    }
+
+    const record = {
+      identityKey,
+      path: resolvedPath,
+      name,
+      sizeBytes: stat.size,
+    };
+    this.outboundAttachments.push(record);
+
+    return {
+      path: record.path,
+      name: record.name,
+      sizeBytes: record.sizeBytes,
+    };
+  }
+
+  getOutboundAttachments() {
+    return this.outboundAttachments.map(({ path: filePath, name, sizeBytes }) => ({
+      path: filePath,
+      name,
+      sizeBytes,
+    }));
   }
 }
 
@@ -230,6 +276,28 @@ function createWriteFileTool(machine, workspaceDir) {
   });
 }
 
+function createSendFileTool(machine, workspaceDir) {
+  return tool({
+    description: [
+      'Queue a local file to be sent back to the user through the current channel after your final reply.',
+      `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
+      'Use this after creating or locating a real file the user should receive.',
+    ].join(' '),
+    inputSchema: z.object({
+      path: z.string().describe('The path to the local file that should be sent to the user'),
+      name: z.string().optional().describe('Optional filename to show to the user when sending'),
+    }),
+    execute: async ({ path: filePath, name }) => {
+      const attachment = await machine.registerOutboundAttachment(filePath, name);
+
+      return {
+        success: true,
+        attachment,
+      };
+    },
+  });
+}
+
 async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachments = [], attachmentExtraction = {} }) {
   const workingDir = path.resolve(workspaceDir);
   const machine = new MachineBackend(workingDir);
@@ -250,6 +318,7 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
     bash: createBashTool(machine, workingDir),
     readFile: createReadFileTool(machine, workingDir, attachmentToolkit.attachmentIndex),
     writeFile: createWriteFileTool(machine, workingDir),
+    sendFile: createSendFileTool(machine, workingDir),
     ...attachmentToolkit.tools,
   };
 
@@ -267,10 +336,12 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
     attachmentToolNames: attachmentToolkit.toolNames,
     promptSections: [
       `Machine\nYou are operating on a shared local machine. Default working directory: \`${toPosixPath(workingDir)}\`. You may use absolute filesystem paths when needed, but you are responsible for preserving the machine's long-term usability and file integrity.`,
+      'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent after your final text reply.',
       buildSkillsPrompt(skillsToolkit.skills),
       buildMcpPrompt(mcpToolkit.summaries),
       buildAttachmentsPrompt(normalizedAttachments),
     ].filter(Boolean),
+    getOutboundAttachments: () => machine.getOutboundAttachments(),
     close: async () => {
       await mcpToolkit.close();
     },

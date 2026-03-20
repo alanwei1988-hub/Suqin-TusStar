@@ -17,6 +17,8 @@ module.exports = async function runWxworkAdapterTest() {
   });
 
   const streamCalls = [];
+  const uploadCalls = [];
+  const sendCalls = [];
   const events = [];
   const buffersByUrl = {
     'https://example.invalid/file': Buffer.from('encrypted'),
@@ -36,6 +38,14 @@ module.exports = async function runWxworkAdapterTest() {
     };
     adapter.bot.downloadMedia = async url => buffersByUrl[url];
     adapter.bot.decryptMedia = encryptedBuffer => encryptedBuffer;
+    adapter.bot.uploadMedia = async (type, filename, buffer) => {
+      uploadCalls.push({ type, filename, size: buffer.length });
+      return `media-${uploadCalls.length}`;
+    };
+    adapter.bot.sendMsg = (chatId, chatType, msgType, content) => {
+      sendCalls.push({ chatId, chatType, msgType, content });
+      return true;
+    };
 
     adapter.on('message', payload => {
       events.push(payload);
@@ -115,6 +125,27 @@ module.exports = async function runWxworkAdapterTest() {
     assert.equal(path.extname(events[3].attachments[0].path), '.csv');
     assert.equal(events[3].attachments[0].kind, 'spreadsheet');
     assert.equal(events[3].attachments[0].mimeType, 'text/csv');
+
+    await adapter.sendAttachments('u4', [{
+      path: events[3].attachments[0].path,
+      name: 'monthly_report.csv',
+    }], events[3].context);
+
+    assert.deepEqual(uploadCalls[0], {
+      type: 'file',
+      filename: 'monthly_report.csv',
+      size: buffersByUrl['https://example.invalid/file-csv'].length,
+    });
+    assert.deepEqual(sendCalls[0], {
+      chatId: 'u4',
+      chatType: 1,
+      msgType: 'file',
+      content: {
+        file: {
+          media_id: 'media-1',
+        },
+      },
+    });
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

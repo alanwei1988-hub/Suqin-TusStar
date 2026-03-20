@@ -187,6 +187,24 @@ function formatToolCallStatus(event) {
   return `正在处理（第 ${event.stepNumber + 1} 步）：${event.toolCall.toolName}`;
 }
 
+function normalizeAgentResponse(response) {
+  if (response && typeof response === 'object' && !Array.isArray(response)) {
+    return {
+      text: typeof response.text === 'string' && response.text.trim().length > 0
+        ? response.text
+        : '已处理完成。',
+      outboundAttachments: Array.isArray(response.outboundAttachments)
+        ? response.outboundAttachments
+        : [],
+    };
+  }
+
+  return {
+    text: response || '已处理完成。',
+    outboundAttachments: [],
+  };
+}
+
 async function streamFinalReply(streamReply, response) {
   const finalResponse = response || '已处理完成。';
   const chunks = splitReplyIntoChunks(finalResponse);
@@ -219,7 +237,8 @@ function registerChannelHandlers({ agent, channel }) {
         }
       }
 
-      const response = await agent.chat(userId, text, attachments, {
+      const agentResponse = normalizeAgentResponse(await agent.chat(userId, text, attachments, {
+        includeArtifacts: true,
         onToolCallStart: async event => {
           if (streamReply) {
             await streamReply.updateStatus(formatToolCallStatus(event));
@@ -234,12 +253,20 @@ function registerChannelHandlers({ agent, channel }) {
             await streamReply.updateStatus(formatStepStatus(step));
           }
         },
-      });
+      }));
 
       if (streamReply) {
-        await streamFinalReply(streamReply, response);
+        await streamFinalReply(streamReply, agentResponse.text);
       } else {
-        await channel.reply(userId, response, context);
+        await channel.reply(userId, agentResponse.text, context);
+      }
+
+      if (agentResponse.outboundAttachments.length > 0 && typeof channel.sendAttachments === 'function') {
+        try {
+          await channel.sendAttachments(userId, agentResponse.outboundAttachments, context);
+        } catch (attachmentError) {
+          console.error('[Main] Attachment send error:', attachmentError);
+        }
       }
     } catch (error) {
       console.error('[Main] Chat error:', error);
@@ -277,6 +304,7 @@ module.exports = {
   formatToolCallStatus,
   loadChannelAdapter,
   loadRawConfig,
+  normalizeAgentResponse,
   normalizeMcpServer,
   processConfig,
   registerChannelHandlers,

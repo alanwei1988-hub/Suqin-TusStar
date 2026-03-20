@@ -86,6 +86,19 @@ module.exports = async function runAgentToolsTest() {
     assert.equal(pdfRead.success, true);
     assert.match(pdfRead.content, /fake pdf body/i);
     assert.equal(pdfRead.cursorType, 'char');
+
+    const outbound = await runtime.tools.sendFile.execute({
+      path: localPdfPath,
+      name: 'result.pdf',
+    });
+    assert.equal(outbound.success, true);
+    assert.equal(outbound.attachment.name, 'result.pdf');
+
+    assert.deepEqual(runtime.getOutboundAttachments(), [{
+      path: localPdfPath,
+      name: 'result.pdf',
+      sizeBytes: fs.statSync(localPdfPath).size,
+    }]);
   } finally {
     await runtime.close();
     fs.rmSync(rootDir, { recursive: true, force: true });

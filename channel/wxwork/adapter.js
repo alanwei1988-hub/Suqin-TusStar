@@ -203,6 +203,20 @@ function inferAttachmentKind(msgType, extension, mimeType) {
   return msgType === 'file' ? 'file' : msgType;
 }
 
+function resolveChatTarget(userId, context = {}) {
+  if (context.chatType === 2 && context.chatId) {
+    return {
+      chatId: context.chatId,
+      chatType: 2,
+    };
+  }
+
+  return {
+    chatId: context.chatId || userId,
+    chatType: context.chatType || 1,
+  };
+}
+
 /**
  * WxWorkAdapter - 将企业微信长连接协议适配为通用 Channel 接口
  */
@@ -286,6 +300,8 @@ class WxWorkAdapter extends EventEmitter {
         attachments,
         context: {
           reqId,
+          chatId: body.chattype === 'group' ? body.chatid : userId,
+          chatType: body.chattype === 'group' ? 2 : 1,
           ...(streamId ? { streamId } : {}),
           ...(initialStatusSent ? { initialStatusSent: true } : {}),
         }
@@ -338,6 +354,34 @@ class WxWorkAdapter extends EventEmitter {
 
   async sendWelcome(userId, content, context) {
     this.bot.respondWelcomeMsg(context.reqId, content);
+  }
+
+  async sendAttachments(userId, attachments = [], context = {}) {
+    const target = resolveChatTarget(userId, context);
+
+    for (const attachment of attachments) {
+      const attachmentPath = attachment?.path;
+
+      if (typeof attachmentPath !== 'string' || attachmentPath.trim().length === 0) {
+        throw new Error('Attachment path is required.');
+      }
+
+      const resolvedPath = path.isAbsolute(attachmentPath)
+        ? attachmentPath
+        : path.resolve(process.cwd(), attachmentPath);
+      const fileName = attachment?.name || path.basename(resolvedPath);
+      const buffer = fs.readFileSync(resolvedPath);
+      const mediaId = await this.bot.uploadMedia('file', fileName, buffer);
+      const sent = this.bot.sendMsg(target.chatId, target.chatType, 'file', {
+        file: {
+          media_id: mediaId,
+        },
+      });
+
+      if (!sent) {
+        throw new Error(`Failed to send attachment: ${fileName}`);
+      }
+    }
   }
 }
 

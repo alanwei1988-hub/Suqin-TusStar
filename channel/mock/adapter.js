@@ -7,6 +7,7 @@ class MockChannelAdapter extends EventEmitter {
     this.storageConfig = storageConfig;
     this.replies = [];
     this.streamReplies = [];
+    this.sentAttachments = [];
     this.welcomeMessages = [];
   }
 
@@ -59,6 +60,14 @@ class MockChannelAdapter extends EventEmitter {
     this.welcomeMessages.push({
       userId,
       content,
+      context,
+    });
+  }
+
+  async sendAttachments(userId, attachments = [], context = {}) {
+    this.sentAttachments.push({
+      userId,
+      attachments,
       context,
     });
   }

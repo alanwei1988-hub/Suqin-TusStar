@@ -11,6 +11,7 @@ const tests = [
   ['wecom-bot.callback-queue', require('./wecom-bot.callback-queue.test')],
   ['wecom-bot.logging', require('./wecom-bot.logging.test')],
   ['channel.integration', require('./channel.integration.test')],
+  ['channel.file-reply', require('./channel.file-reply.test')],
   ['channel.streaming-status', require('./channel.streaming-status.test')],
 ];
 
