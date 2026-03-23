@@ -25,6 +25,22 @@ function resolveRelativePath(rootDir, value) {
     : path.resolve(rootDir, value);
 }
 
+function ensureDirExists(dirPath) {
+  if (typeof dirPath !== 'string' || dirPath.trim().length === 0) {
+    return;
+  }
+
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function ensureParentDirExists(filePath) {
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) {
+    return;
+  }
+
+  ensureDirExists(path.dirname(filePath));
+}
+
 function normalizeMcpServer(rootDir, server) {
   const normalized = {
     ...server,
@@ -178,6 +194,8 @@ function normalizeMarkItDownConfig(rootDir, config = {}) {
 function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {}) {
   const channelType = rawConfig.channel.type;
   const channelConfig = rawConfig.channel[channelType] || {};
+  const sessionDbPath = resolveRelativePath(rootDir, rawConfig.agent.sessionDb);
+  const markitdownConfig = normalizeMarkItDownConfig(rootDir, rawConfig.agent.attachmentExtraction?.markitdown || {});
   const normalizedChannelConfig = {
     ...channelConfig,
     botId: env.BOT_ID,
@@ -188,6 +206,9 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
   if (channelType === 'wxwork') {
     normalizedChannelConfig.streamingResponse = channelConfig.streamingResponse !== false;
   }
+
+  ensureParentDirExists(sessionDbPath);
+  ensureParentDirExists(markitdownConfig.cache.dbPath);
 
   return {
     agent: {
@@ -201,10 +222,10 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       },
       skillsDir: resolveRelativePath(rootDir, rawConfig.agent.skillsDir),
       rolePromptDir: resolveRelativePath(rootDir, rawConfig.agent.rolePromptDir),
-      sessionDb: resolveRelativePath(rootDir, rawConfig.agent.sessionDb),
+      sessionDb: sessionDbPath,
       mcpServers: (rawConfig.agent.mcpServers || []).map(server => normalizeMcpServer(rootDir, server)),
       attachmentExtraction: {
-        markitdown: normalizeMarkItDownConfig(rootDir, rawConfig.agent.attachmentExtraction?.markitdown || {}),
+        markitdown: markitdownConfig,
       },
     },
     channel: {

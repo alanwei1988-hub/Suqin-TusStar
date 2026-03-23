@@ -1,4 +1,7 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { processConfig } = require('../app');
 const {
   QWEN_API_KEY_ENV,
@@ -8,6 +11,7 @@ const {
 const { getProjectMarkItDownPython } = require('../markitdown/runtime');
 
 module.exports = async function runAppConfigTest() {
+  const tempRootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wxwork-app-config-'));
   const baseConfig = {
     agent: {
       model: 'test-model',
@@ -66,6 +70,13 @@ module.exports = async function runAppConfigTest() {
   assert.equal(processedDefault.contractMcp.dbPath, `${__dirname}\\contract-library\\contracts.db`);
   assert.equal(processedDefault.contractMcp.stagingDir, `${__dirname}\\contract-library\\.staging`);
   assert.equal(processedDefault.contractMcp.libraryRoot, `${__dirname}\\contract-library`);
+  assert.equal(fs.existsSync(path.join(tempRootDir, 'data')), false);
+
+  processConfig(baseConfig, {
+    rootDir: tempRootDir,
+    env: {},
+  });
+  assert.equal(fs.existsSync(path.join(tempRootDir, 'data')), true);
 
   const processedDisabled = processConfig({
     ...baseConfig,
@@ -232,4 +243,6 @@ module.exports = async function runAppConfigTest() {
     apiKeyEnv: 'LEGACY_MARKITDOWN_OCR_KEY',
     prompt: 'Legacy OCR prompt.',
   });
+
+  fs.rmSync(tempRootDir, { recursive: true, force: true });
 };
