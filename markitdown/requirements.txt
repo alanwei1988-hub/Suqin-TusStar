@@ -1,1 +1,4 @@
 markitdown[docx,pdf,pptx,xls,xlsx]==0.1.5
+markitdown-ocr
+openai
+pypdf

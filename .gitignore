@@ -4,3 +4,4 @@ storage/
 data/
 .env
 .tools/
+tests/test_data

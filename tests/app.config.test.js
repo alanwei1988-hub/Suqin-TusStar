@@ -40,6 +40,12 @@ module.exports = async function runAppConfigTest() {
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.command, getProjectMarkItDownPython(__dirname));
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.args, ['-X', 'utf8', '-m', 'markitdown', '{input}']);
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.supportedExtensions, ['.pdf', '.docx', '.pptx', '.xls', '.xlsx']);
+  assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.llm, {
+    client: '',
+    model: '',
+    baseURL: '',
+    apiKeyEnv: '',
+  });
   assert.equal(processedDefault.contractMcp.storageRoot, `${__dirname}\\contract-library`);
   assert.equal(processedDefault.contractMcp.dbPath, `${__dirname}\\contract-library\\contracts.db`);
   assert.equal(processedDefault.contractMcp.stagingDir, `${__dirname}\\contract-library\\.staging`);
@@ -69,8 +75,14 @@ module.exports = async function runAppConfigTest() {
           enabled: true,
           handlerModule: '.\\scripts\\mock-handler.js',
           command: '{runner}',
-          args: ['.\\scripts\\runner.py', '{input}'],
+          args: ['.\\scripts\\runner.py', '--llm-client', '{llmClient}', '--llm-model', '{llmModel}', '{input}'],
           supportedExtensions: ['.PDF'],
+          llm: {
+            client: 'openai',
+            model: 'ocr-model',
+            baseURL: 'https://ocr.example.invalid/v1',
+            apiKeyEnv: 'MARKITDOWN_OCR_OPENAI_API_KEY',
+          },
         },
       },
     },
@@ -82,5 +94,13 @@ module.exports = async function runAppConfigTest() {
   assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.handlerModule.endsWith('\\scripts\\mock-handler.js'), true);
   assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.command, getProjectMarkItDownPython(__dirname));
   assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.args[0].endsWith('\\scripts\\runner.py'), true);
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.args[2], '{llmClient}');
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.args[4], '{llmModel}');
   assert.deepEqual(processedMarkItDown.agent.attachmentExtraction.markitdown.supportedExtensions, ['.pdf']);
+  assert.deepEqual(processedMarkItDown.agent.attachmentExtraction.markitdown.llm, {
+    client: 'openai',
+    model: 'ocr-model',
+    baseURL: 'https://ocr.example.invalid/v1',
+    apiKeyEnv: 'MARKITDOWN_OCR_OPENAI_API_KEY',
+  });
 };

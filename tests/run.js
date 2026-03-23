@@ -5,6 +5,7 @@ const tests = [
   ['agent.roles', require('./agent.roles.test')],
   ['agent.session', require('./agent.session.test')],
   ['agent.tools', require('./agent.tools.test')],
+  ['markitdown.extractor', require('./markitdown.extractor.test')],
   ['agent.attachment-session', require('./agent.attachment-session.test')],
   ['mcp.toolkit', require('./mcp.toolkit.test')],
   ['agent.mcp.integration', require('./agent.mcp.integration.test')],

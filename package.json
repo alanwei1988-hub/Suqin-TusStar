@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "test": "node tests/run.js",
+    "test:markitdown-ocr": "node tests/markitdown.ocr.integration.test.js",
     "markitdown:install": "node markitdown/setup.js",
     "postinstall": "node markitdown/setup.js"
   },

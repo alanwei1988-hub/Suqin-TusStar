@@ -4,6 +4,8 @@ const path = require('path');
 const { ContractMCPMockTransport } = require('../../contract-mcp/mock-transport');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
+const testDataDir = path.join(repoRoot, 'tests', 'test_data');
+const markitdownOcrSamplePdf = path.join(testDataDir, 'markitdown-ocr-scan-sample.pdf');
 
 function makeTempDir(prefix = 'wxwork-bot-test-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -129,10 +131,12 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
 module.exports = {
   createContractMcpFixture,
   generateResult,
+  markitdownOcrSamplePdf,
   makeTempDir,
   psQuote,
   repoRoot,
   textPart,
+  testDataDir,
   toolCall,
   waitFor,
 };

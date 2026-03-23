@@ -28,10 +28,26 @@
       "markitdown": {
         "enabled": true,
         "command": "{runner}",
-        "args": ["-X", "utf8", "-m", "markitdown", "{input}"],
-        "timeoutMs": 30000,
+        "args": [
+          "./markitdown/runner.py",
+          "--use-plugins",
+          "--llm-client",
+          "{llmClient}",
+          "--llm-model",
+          "{llmModel}",
+          "--llm-base-url",
+          "{llmBaseURL}",
+          "{input}"
+        ],
+        "timeoutMs": 60000,
         "maxOutputChars": 24000,
-        "supportedExtensions": [".pdf", ".docx", ".pptx", ".xls", ".xlsx"]
+        "supportedExtensions": [".pdf", ".docx", ".pptx", ".xls", ".xlsx"],
+        "llm": {
+          "client": "openai",
+          "model": "gemini-3.1-flash-lite-preview",
+          "baseURL": "https://api.zetatechs.com/v1",
+          "apiKeyEnv": "MARKITDOWN_OCR_OPENAI_API_KEY"
+        }
       }
     },
     "skillsDir": "./skills",

@@ -2,11 +2,54 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 
-function replaceArgPlaceholders(value, attachmentPath) {
-  return String(value).replaceAll('{input}', attachmentPath);
+function replaceArgPlaceholders(value, replacements) {
+  let output = String(value);
+
+  for (const [key, replacement] of Object.entries(replacements || {})) {
+    output = output.replaceAll(`{${key}}`, replacement == null ? '' : String(replacement));
+  }
+
+  return output;
 }
 
-function runCommand(command, args, timeoutMs) {
+function createCommandEnv(config = {}) {
+  const env = {
+    ...process.env,
+    PYTHONIOENCODING: 'utf-8',
+    PYTHONUTF8: '1',
+  };
+  const llmConfig = config && typeof config.llm === 'object' && !Array.isArray(config.llm)
+    ? config.llm
+    : {};
+  const isolatedOpenAIEnv = Boolean(
+    (typeof llmConfig.apiKeyEnv === 'string' && llmConfig.apiKeyEnv.trim().length > 0)
+    || (typeof llmConfig.baseURL === 'string' && llmConfig.baseURL.trim().length > 0)
+  );
+
+  if (isolatedOpenAIEnv) {
+    delete env.OPENAI_API_KEY;
+    delete env.OPENAI_BASE_URL;
+  }
+
+  if (typeof llmConfig.apiKeyEnv === 'string' && llmConfig.apiKeyEnv.trim().length > 0) {
+    const envName = llmConfig.apiKeyEnv.trim();
+    const apiKey = process.env[envName];
+
+    if (!apiKey) {
+      throw new Error(`MarkItDown OCR API key env "${envName}" is not set.`);
+    }
+
+    env.OPENAI_API_KEY = apiKey;
+  }
+
+  if (typeof llmConfig.baseURL === 'string' && llmConfig.baseURL.trim().length > 0) {
+    env.OPENAI_BASE_URL = llmConfig.baseURL.trim();
+  }
+
+  return env;
+}
+
+function runCommand(command, args, timeoutMs, envOverrides) {
   return new Promise((resolve, reject) => {
     execFile(
       command,
@@ -16,11 +59,7 @@ function runCommand(command, args, timeoutMs) {
         timeout: timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
         encoding: 'utf8',
-        env: {
-          ...process.env,
-          PYTHONIOENCODING: 'utf-8',
-          PYTHONUTF8: '1',
-        },
+        env: envOverrides,
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -86,13 +125,18 @@ function createMarkItDownExtractor(config = {}) {
         throw new Error(`Bundled MarkItDown runtime is missing at ${command}. Run npm install or npm run markitdown:install.`);
       }
       const configuredArgs = Array.isArray(config.args) ? config.args : ['-m', 'markitdown', '{input}'];
-      const args = configuredArgs.map(arg => replaceArgPlaceholders(arg, attachment.resolvedPath));
+      const args = configuredArgs.map(arg => replaceArgPlaceholders(arg, {
+        input: attachment.resolvedPath,
+        llmClient: config?.llm?.client || '',
+        llmModel: config?.llm?.model || '',
+        llmBaseURL: config?.llm?.baseURL || '',
+      }));
 
       if (!configuredArgs.some(arg => typeof arg === 'string' && arg.includes('{input}'))) {
         args.push(attachment.resolvedPath);
       }
 
-      const result = await runCommand(command, args, config.timeoutMs || 30000);
+      const result = await runCommand(command, args, config.timeoutMs || 30000, createCommandEnv(config));
       const markdown = String(result.stdout || '').trim();
 
       if (!markdown) {
@@ -124,5 +168,7 @@ function createMarkItDownExtractor(config = {}) {
 }
 
 module.exports = {
+  createCommandEnv,
   createMarkItDownExtractor,
+  replaceArgPlaceholders,
 };

@@ -17,6 +17,7 @@
 - 通过 MCP 管理合同数据，不直接绕过数据库和归档目录
 - 支持合同文件归档、元数据更新、检索、到期查询、归档标记
 - 支持附件文本读取，对 PDF / DOCX / PPTX / XLS / XLSX 可通过 MarkItDown 提取文本
+- 可选启用 MarkItDown OCR 插件，对扫描版 PDF 做额外识别
 - 具备基础测试覆盖，包含 Agent、MCP、通道和文件回传相关场景
 
 ## 项目结构
@@ -58,6 +59,8 @@ npm run markitdown:install
 ```
 
 如果自动安装失败，也可以手动执行上面的命令重新安装 MarkItDown 依赖。
+
+如果需要识别扫描版 PDF，安装时还会一并装上 `markitdown-ocr` 与 `openai` Python 依赖。
 
 ## 环境变量
 
@@ -189,6 +192,55 @@ npm test
 - `.pptx`
 - `.xls`
 - `.xlsx`
+
+如果你要支持扫描版 PDF，需要额外把 OCR 参数配到 `agent.attachmentExtraction.markitdown`。推荐把 Agent 对话模型与 OCR 模型分开配置，避免共用同一组 `OPENAI_*` 环境变量。
+
+示例：
+
+```json
+{
+  "agent": {
+    "attachmentExtraction": {
+      "markitdown": {
+        "enabled": true,
+        "command": "{runner}",
+        "args": [
+          "./markitdown/runner.py",
+          "--use-plugins",
+          "--llm-client",
+          "{llmClient}",
+          "--llm-model",
+          "{llmModel}",
+          "--llm-base-url",
+          "{llmBaseURL}",
+          "{input}"
+        ],
+        "supportedExtensions": [".pdf", ".docx", ".pptx", ".xls", ".xlsx"],
+        "llm": {
+          "client": "openai",
+          "model": "gpt-4o",
+          "baseURL": "https://your-openai-compatible-endpoint/v1",
+          "apiKeyEnv": "MARKITDOWN_OCR_OPENAI_API_KEY"
+        }
+      }
+    }
+  }
+}
+```
+
+对应的 `.env` 只需要新增 OCR 专用密钥：
+
+```env
+MARKITDOWN_OCR_OPENAI_API_KEY=your-markitdown-ocr-key
+```
+
+说明：
+
+- Agent 仍然继续使用 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `MODEL_NAME`
+- MarkItDown OCR 子进程会把 `MARKITDOWN_OCR_OPENAI_API_KEY` 映射成它自己使用的 `OPENAI_API_KEY`
+- 如果配置了 `markitdown.llm.baseURL`，MarkItDown OCR 会优先使用这里的地址，不会继承 Agent 的 `OPENAI_BASE_URL`
+- 仓库内固定了一份 OCR 测试样例 PDF：`tests/test_data/markitdown-ocr-scan-sample.pdf`
+- 需要验证真实 OCR 时，运行 `npm run test:markitdown-ocr`；这个测试会直接使用上面的固定 PDF，并调用你当前配置的 OCR 模型接口
 
 ## 典型使用场景
 

@@ -53,6 +53,9 @@ function normalizeMcpServer(rootDir, server) {
 
 function normalizeMarkItDownConfig(rootDir, config = {}) {
   const runnerPath = getProjectMarkItDownPython(rootDir);
+  const llmConfig = config && typeof config.llm === 'object' && !Array.isArray(config.llm)
+    ? config.llm
+    : {};
   const normalized = {
     enabled: config.enabled === true,
     handlerModule: typeof config.handlerModule === 'string' && config.handlerModule.trim().length > 0
@@ -69,6 +72,12 @@ function normalizeMarkItDownConfig(rootDir, config = {}) {
     supportedExtensions: Array.isArray(config.supportedExtensions) && config.supportedExtensions.length > 0
       ? config.supportedExtensions.map(value => String(value).toLowerCase())
       : ['.pdf', '.docx', '.pptx', '.xls', '.xlsx'],
+    llm: {
+      client: typeof llmConfig.client === 'string' ? llmConfig.client.trim() : '',
+      model: typeof llmConfig.model === 'string' ? llmConfig.model.trim() : '',
+      baseURL: typeof llmConfig.baseURL === 'string' ? llmConfig.baseURL.trim() : '',
+      apiKeyEnv: typeof llmConfig.apiKeyEnv === 'string' ? llmConfig.apiKeyEnv.trim() : '',
+    },
   };
 
   if (normalized.command === '{runner}') {
@@ -82,7 +91,14 @@ function normalizeMarkItDownConfig(rootDir, config = {}) {
       return arg;
     }
 
-    if (arg === '{input}' || arg === '{output}' || arg === '{runner}') {
+    if (
+      arg === '{input}'
+      || arg === '{output}'
+      || arg === '{runner}'
+      || arg === '{llmClient}'
+      || arg === '{llmModel}'
+      || arg === '{llmBaseURL}'
+    ) {
       return arg;
     }
 
