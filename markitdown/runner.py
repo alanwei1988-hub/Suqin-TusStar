@@ -1,6 +1,5 @@
 import argparse
 import base64
-import io
 import os
 import re
 import sys
@@ -376,6 +375,77 @@ def try_convert_pdf_without_ocr(input_path: str, use_plugins: bool) -> str:
     return markdown
 
 
+def normalize_pdf_page_range(input_path: str, page_start: int, page_count: int) -> tuple[int, int, int]:
+    import fitz  # PyMuPDF
+
+    doc = fitz.open(input_path)
+    try:
+        total_pages = doc.page_count
+    finally:
+        doc.close()
+
+    if total_pages <= 0:
+        return 1, 0, 0
+
+    normalized_page_start = max(1, min(page_start, total_pages))
+    normalized_page_count = page_count if page_count and page_count > 0 else max(0, total_pages - normalized_page_start + 1)
+    normalized_page_count = max(0, min(normalized_page_count, total_pages - normalized_page_start + 1))
+    return normalized_page_start, normalized_page_count, total_pages
+
+
+def try_convert_pdf_range_without_ocr(
+    input_path: str,
+    use_plugins: bool,
+    page_start: int,
+    page_count: int,
+) -> dict:
+    import fitz  # PyMuPDF
+
+    normalized_page_start, normalized_page_count, total_pages = normalize_pdf_page_range(
+        input_path, page_start, page_count
+    )
+    if normalized_page_count <= 0:
+        return {
+            "markdown": "",
+            "page_start": normalized_page_start,
+            "page_count": 0,
+            "total_pages": total_pages,
+        }
+
+    temp_root = Path(input_path).resolve().parent
+    subset_path = temp_root / (
+        f"markitdown-direct-pdf-{os.getpid()}-{int(time.time() * 1000)}-"
+        f"{normalized_page_start}-{normalized_page_count}.pdf"
+    )
+    source_doc = fitz.open(input_path)
+    subset_doc = fitz.open()
+    try:
+        subset_doc.insert_pdf(
+            source_doc,
+            from_page=normalized_page_start - 1,
+            to_page=normalized_page_start + normalized_page_count - 2,
+        )
+        subset_doc.save(str(subset_path))
+    finally:
+        subset_doc.close()
+        source_doc.close()
+
+    try:
+        markdown = try_convert_pdf_without_ocr(str(subset_path), use_plugins)
+    finally:
+        try:
+            subset_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    return {
+        "markdown": markdown,
+        "page_start": normalized_page_start,
+        "page_count": normalized_page_count,
+        "total_pages": total_pages,
+    }
+
+
 def main() -> int:
     timing_log(
         f"python_imports_ready elapsed_ms={(_PROCESS_STARTED_AT - _WALL_PROCESS_STARTED_AT) * 1000:.0f}"
@@ -399,7 +469,15 @@ def main() -> int:
     install_timing_hooks()
     input_suffix = Path(args.input).suffix.lower()
     if args.llm_client and args.llm_model and input_suffix == ".pdf":
-        direct_markdown = try_convert_pdf_without_ocr(args.input, args.use_plugins)
+        page_start = max(1, int(args.page_start or "1"))
+        page_count = max(0, int(args.page_count or "0"))
+        direct_result = try_convert_pdf_range_without_ocr(
+            args.input,
+            args.use_plugins,
+            page_start,
+            page_count,
+        )
+        direct_markdown = direct_result["markdown"]
         if should_use_direct_pdf_markdown(direct_markdown):
             timing_log("using direct PDF text extraction; OCR fallback not needed")
             sys.stdout.write(direct_markdown)
