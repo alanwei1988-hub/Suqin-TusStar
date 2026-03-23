@@ -74,9 +74,9 @@ function inferKind(extension, mimeType = '') {
 
 function truncateText(value, maxChars) {
   if (value.length <= maxChars) {
-    return { text: value, truncated: false };
+    return { text: value, contentTruncated: false };
   }
-  return { text: value.slice(0, maxChars), truncated: true };
+  return { text: value.slice(0, maxChars), contentTruncated: true };
 }
 
 async function readBufferChunk(resolvedPath, start = 0, length = SAMPLE_BYTES) {
@@ -229,6 +229,7 @@ async function inspectAttachmentFile(attachment, previewChars = DEFAULT_ATTACHME
     result.preview = readExtractedText(extracted.markdown, 0, previewChars);
     result.preview.cursorType = 'char';
     result.preview.method = 'markitdown';
+    result.preview.extractionTruncated = extracted.truncated;
     if (Number.isFinite(result.totalPageCount)) {
       result.preview.totalPageCount = result.totalPageCount;
     }
@@ -238,6 +239,7 @@ async function inspectAttachmentFile(attachment, previewChars = DEFAULT_ATTACHME
     if (typeof extracted.pageCount === 'number' && extracted.pageCount > 0) {
       result.preview.previewPageCount = extracted.pageCount;
     }
+    result.extraction.extractionTruncated = extracted.truncated;
     result.extraction.truncated = extracted.truncated;
   }
   return result;
@@ -246,9 +248,11 @@ async function inspectAttachmentFile(attachment, previewChars = DEFAULT_ATTACHME
 async function readAttachmentText(resolvedPath, totalBytes, offset = 0, maxChars = DEFAULT_ATTACHMENT_TEXT_CHARS) {
   const buffer = await readBufferChunk(resolvedPath, Math.max(0, offset), Math.min(MAX_ATTACHMENT_CHUNK_BYTES, Math.max(4096, maxChars * 4)));
   const text = truncateText(buffer.toString('utf8'), Math.min(MAX_ATTACHMENT_TEXT_CHARS, maxChars));
+  const contentTruncated = text.contentTruncated || offset + buffer.length < totalBytes;
   return {
     text: text.text,
-    truncated: text.truncated || offset + buffer.length < totalBytes,
+    contentTruncated,
+    truncated: contentTruncated,
     offset: Math.max(0, offset),
     nextOffset: Math.max(0, offset) + buffer.length,
     totalBytes,
@@ -262,6 +266,7 @@ function readExtractedText(text, offset = 0, maxChars = DEFAULT_ATTACHMENT_TEXT_
 
   return {
     text: chunk,
+    contentTruncated: safeOffset + limit < text.length,
     truncated: safeOffset + limit < text.length,
     offset: safeOffset,
     nextOffset: safeOffset + chunk.length,
@@ -303,6 +308,7 @@ async function readPagedExtractedTextWithDocumentOffset({
         extracted,
         chunk: {
           text: localChunk.text,
+          contentTruncated: localChunk.contentTruncated,
           truncated: localChunk.truncated,
           offset: effectiveOffset,
           nextOffset: consumedBeforeChunk + localChunk.nextOffset,
@@ -324,6 +330,7 @@ async function readPagedExtractedTextWithDocumentOffset({
     },
     chunk: {
       text: '',
+      contentTruncated: false,
       truncated: false,
       offset: effectiveOffset,
       nextOffset: effectiveOffset,
@@ -551,10 +558,12 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
                   extraction: {
                     available: true,
                     method: 'markitdown',
+                    extractionTruncated: extracted.truncated,
                     truncated: extracted.truncated,
                   },
                 },
                 content: chunk.text,
+                contentTruncated: chunk.contentTruncated,
                 truncated: chunk.truncated,
                 offset: chunk.offset,
                 nextOffset: chunk.nextOffset,
@@ -581,6 +590,7 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
               },
             },
             content: chunk.text,
+            contentTruncated: chunk.contentTruncated,
             truncated: chunk.truncated,
             offset: chunk.offset,
             nextOffset: chunk.nextOffset,

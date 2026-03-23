@@ -151,7 +151,10 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(pdfInspection.attachment.pageRangeSupported, true);
     assert.equal('preview' in pdfInspection.attachment, false);
     assert.equal(pdfInspection.attachment.extraction.method, 'markitdown');
+    assert.equal(pdfInspection.attachment.extraction.extractionTruncated, false);
     assert.equal(pdfInspection.preview.totalPageCount, 2);
+    assert.equal(pdfInspection.preview.extractionTruncated, false);
+    assert.equal(typeof pdfInspection.preview.contentTruncated, 'boolean');
     assert.match(pdfInspection.preview.text, /Converted scan\.pdf/i);
     assert.match(pdfInspection.preview.text, /Page count: 1/i);
 
@@ -167,6 +170,8 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(pdfRead.pageCount, 2);
     assert.equal(pdfRead.totalPageCount, 2);
     assert.equal(pdfRead.pageRangeSupported, true);
+    assert.equal(pdfRead.attachment.extraction.extractionTruncated, false);
+    assert.equal(typeof pdfRead.contentTruncated, 'boolean');
 
     const pdfTailInspection = await runtime.tools.inspectAttachment.execute({
       attachment: 'attachment-2',
