@@ -87,6 +87,9 @@ function normalizeMarkItDownConfig(rootDir, config = {}) {
   const activeLlmProfile = typeof config.activeLlmProfile === 'string'
     ? config.activeLlmProfile.trim()
     : '';
+  const cacheConfig = config && typeof config.cache === 'object' && !Array.isArray(config.cache)
+    ? config.cache
+    : {};
   const normalizedLlmProfiles = Object.fromEntries(
     Object.entries(llmProfilesConfig)
       .filter(([name]) => typeof name === 'string' && name.trim().length > 0)
@@ -116,6 +119,12 @@ function normalizeMarkItDownConfig(rootDir, config = {}) {
     supportedExtensions: Array.isArray(config.supportedExtensions) && config.supportedExtensions.length > 0
       ? config.supportedExtensions.map(value => String(value).toLowerCase())
       : ['.pdf', '.docx', '.pptx', '.xls', '.xlsx'],
+    cache: {
+      enabled: cacheConfig.enabled !== false,
+      dbPath: typeof cacheConfig.dbPath === 'string' && cacheConfig.dbPath.trim().length > 0
+        ? resolveRelativePath(rootDir, cacheConfig.dbPath.trim())
+        : path.resolve(rootDir, 'data', 'attachment-extraction-cache.db'),
+    },
     activeLlmProfile,
     llmProfiles: normalizedLlmProfiles,
     llm: activeProfileLlmConfig || fallbackLlmConfig,

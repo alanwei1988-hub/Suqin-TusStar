@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const { getDefaultBaseURLForLlmClient } = require('./llm');
+const { AttachmentExtractionCache, hashString } = require('./cache');
 
 function replaceArgPlaceholders(value, replacements) {
   let output = String(value);
@@ -82,6 +83,39 @@ function runCommand(command, args, timeoutMs, envOverrides) {
   });
 }
 
+function getHandlerModuleVersion(handlerModulePath) {
+  if (!handlerModulePath) {
+    return '';
+  }
+
+  try {
+    const stat = fs.statSync(handlerModulePath);
+    return `${path.resolve(handlerModulePath)}::${stat.size}::${stat.mtimeMs}`;
+  } catch {
+    return path.resolve(handlerModulePath);
+  }
+}
+
+function buildExtractorKey(config = {}) {
+  const llmConfig = config && typeof config.llm === 'object' && !Array.isArray(config.llm)
+    ? config.llm
+    : {};
+
+  return hashString(JSON.stringify({
+    handlerModule: getHandlerModuleVersion(config.handlerModule),
+    command: config.command || 'python',
+    args: Array.isArray(config.args) ? config.args : ['-m', 'markitdown', '{input}'],
+    timeoutMs: config.timeoutMs || 30000,
+    maxOutputChars: config.maxOutputChars || 24000,
+    ocrConcurrency: config.ocrConcurrency || 1,
+    ocrPageGroupSize: config.ocrPageGroupSize || 1,
+    llmClient: llmConfig.client || '',
+    llmModel: llmConfig.model || '',
+    llmBaseURL: llmConfig.baseURL || '',
+    llmPrompt: llmConfig.prompt || '',
+  }));
+}
+
 function createMarkItDownExtractor(config = {}) {
   const enabled = config?.enabled === true;
   const supportedExtensions = new Set((config?.supportedExtensions || []).map(value => String(value).toLowerCase()));
@@ -89,6 +123,11 @@ function createMarkItDownExtractor(config = {}) {
   const handlerModule = typeof config.handlerModule === 'string' && config.handlerModule.trim().length > 0
     ? require(config.handlerModule)
     : null;
+  const persistentCache = new AttachmentExtractionCache({
+    enabled,
+    ...(config.cache || {}),
+    extractorKey: buildExtractorKey(config),
+  });
 
   function canExtract(attachment) {
     return enabled && supportedExtensions.has(String(attachment?.extension || '').toLowerCase());
@@ -108,6 +147,21 @@ function createMarkItDownExtractor(config = {}) {
         throw new Error(`MarkItDown is not configured for ${attachment.extension || 'this file type'}.`);
       }
 
+      const cached = await persistentCache.get(attachment, {
+        pageStart,
+        pageCount,
+      });
+
+      if (cached) {
+        return {
+          method: 'markitdown',
+          markdown: cached.markdown,
+          truncated: cached.truncated,
+          pageStart: cached.pageStart,
+          pageCount: cached.pageCount,
+        };
+      }
+
       if (handlerModule) {
         const converted = await handlerModule({
           attachment,
@@ -125,13 +179,20 @@ function createMarkItDownExtractor(config = {}) {
           throw new Error(`MarkItDown handler returned no content for ${attachment.name}.`);
         }
 
-        return {
+        const result = {
           method: 'markitdown',
           markdown: markdown.slice(0, config.maxOutputChars || 24000),
           truncated: markdown.length > (config.maxOutputChars || 24000),
           pageStart,
           pageCount,
         };
+
+        await persistentCache.set(attachment, {
+          pageStart,
+          pageCount,
+        }, result);
+
+        return result;
       }
 
       const command = config.command || 'python';
@@ -162,13 +223,20 @@ function createMarkItDownExtractor(config = {}) {
         throw new Error(`MarkItDown returned no content for ${attachment.name}.`);
       }
 
-      return {
+      const normalized = {
         method: 'markitdown',
         markdown: markdown.slice(0, config.maxOutputChars || 24000),
         truncated: markdown.length > (config.maxOutputChars || 24000),
         pageStart,
         pageCount,
       };
+
+      await persistentCache.set(attachment, {
+        pageStart,
+        pageCount,
+      }, normalized);
+
+      return normalized;
     })();
 
     cache.set(cacheKey, promise);
@@ -185,6 +253,7 @@ function createMarkItDownExtractor(config = {}) {
     enabled,
     canExtract,
     extract,
+    close: () => persistentCache.close(),
   };
 }
 

@@ -49,6 +49,8 @@ module.exports = async function runAppConfigTest() {
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.ocrConcurrency, 2);
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.ocrPageGroupSize, 4);
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.supportedExtensions, ['.pdf', '.docx', '.pptx', '.xls', '.xlsx']);
+  assert.equal(processedDefault.agent.attachmentExtraction.markitdown.cache.enabled, true);
+  assert.equal(processedDefault.agent.attachmentExtraction.markitdown.cache.dbPath, `${__dirname}\\data\\attachment-extraction-cache.db`);
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.activeLlmProfile, '');
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.llmProfiles, {});
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.llm, {
@@ -93,6 +95,10 @@ module.exports = async function runAppConfigTest() {
           ocrConcurrency: 5,
           ocrPageGroupSize: 6,
           supportedExtensions: ['.PDF'],
+          cache: {
+            enabled: false,
+            dbPath: '.\\data\\custom-attachment-cache.db',
+          },
           llm: {
             client: 'openai',
             model: 'ocr-model',
@@ -123,6 +129,8 @@ module.exports = async function runAppConfigTest() {
   assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.ocrConcurrency, 5);
   assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.ocrPageGroupSize, 6);
   assert.deepEqual(processedMarkItDown.agent.attachmentExtraction.markitdown.supportedExtensions, ['.pdf']);
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.cache.enabled, false);
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.cache.dbPath, `${__dirname}\\data\\custom-attachment-cache.db`);
   assert.deepEqual(processedMarkItDown.agent.attachmentExtraction.markitdown.llm, {
     client: 'openai',
     model: 'ocr-model',

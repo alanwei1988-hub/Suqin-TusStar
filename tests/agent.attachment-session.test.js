@@ -10,6 +10,7 @@ module.exports = async function runAgentAttachmentSessionTest() {
   const attachmentPath = path.join(rootDir, 'meeting-notes.docx');
   const pdfAttachmentPath = path.join(rootDir, 'scan.pdf');
   const mockMarkItDownHandler = path.join(repoRoot, 'tests', 'helpers', 'mock-markitdown-handler.js');
+  const countingMarkItDownHandler = path.join(rootDir, 'counting-markitdown-handler.js');
   fs.writeFileSync(attachmentPath, '第一部分：项目范围。\n第二部分：验收节点。\n');
   fs.writeFileSync(pdfAttachmentPath, `%PDF-1.7
 1 0 obj
@@ -27,6 +28,16 @@ endobj
 trailer
 << /Root 1 0 R >>
 %%EOF`);
+  fs.writeFileSync(countingMarkItDownHandler, `module.exports = async function countingMarkItDownHandler({ attachmentPath, options = {} }) {
+  global.__agentAttachmentSessionHandlerCalls = (global.__agentAttachmentSessionHandlerCalls || 0) + 1;
+  const fs = require('fs');
+  const path = require('path');
+  const pageStart = Number.isFinite(options.pageStart) ? options.pageStart : 1;
+  const pageCount = Number.isFinite(options.pageCount) ? options.pageCount : 0;
+  return '# Converted ' + path.basename(attachmentPath) + '\\n\\nPage start: ' + pageStart + '\\nPage count: ' + (pageCount || 'all') + '\\n\\n' + fs.readFileSync(attachmentPath, 'utf8') + '\\n';
+};
+`, 'utf8');
+  delete global.__agentAttachmentSessionHandlerCalls;
 
   let docxCallIndex = 0;
   const docxModel = new MockLanguageModelV3({
@@ -35,17 +46,26 @@ trailer
 
       if (docxCallIndex === 1) {
         return generateResult([
-          textPart('请说明需要如何处理这份文件。'),
-        ], 'stop');
+          toolCall('attachment-read-1', 'readAttachmentText', {
+            attachment: 'meeting-notes.docx',
+            maxChars: 2000,
+          }),
+        ]);
       }
 
       if (docxCallIndex === 2) {
         const serializedPrompt = JSON.stringify(prompt);
         assert.match(serializedPrompt, /meeting-notes\.docx/);
-        assert.match(serializedPrompt, /readAttachmentText/);
+        assert.match(serializedPrompt, /第一部分：项目范围/);
 
         return generateResult([
-          toolCall('attachment-read-1', 'readAttachmentText', {
+          textPart('文档主要说明了项目范围和验收节点。'),
+        ], 'stop');
+      }
+
+      if (docxCallIndex === 3) {
+        return generateResult([
+          toolCall('attachment-read-2', 'readAttachmentText', {
             attachment: 'meeting-notes.docx',
             maxChars: 2000,
           }),
@@ -56,7 +76,7 @@ trailer
       assert.match(serializedPrompt, /第一部分：项目范围/);
 
       return generateResult([
-        textPart('文档主要说明了项目范围和验收节点。'),
+        textPart('再次读取后，文档仍然主要说明了项目范围和验收节点。'),
       ], 'stop');
     },
   });
@@ -88,7 +108,7 @@ trailer
     attachmentExtraction: {
       markitdown: {
         enabled: true,
-        handlerModule: mockMarkItDownHandler,
+        handlerModule: countingMarkItDownHandler,
         supportedExtensions: ['.docx'],
         maxOutputChars: 24000,
       },
@@ -124,10 +144,11 @@ trailer
     const firstReply = await docxAgent.chat('u1', '[Sent a file: meeting-notes.docx]', [
       { name: 'meeting-notes.docx', path: attachmentPath, kind: 'document' },
     ]);
-    assert.equal(firstReply, '请说明需要如何处理这份文件。');
+    assert.equal(firstReply, '文档主要说明了项目范围和验收节点。');
 
-    const secondReply = await docxAgent.chat('u1', '内容总结');
-    assert.equal(secondReply, '文档主要说明了项目范围和验收节点。');
+    const secondReply = await docxAgent.chat('u1', '再总结一次');
+    assert.equal(secondReply, '再次读取后，文档仍然主要说明了项目范围和验收节点。');
+    assert.equal(global.__agentAttachmentSessionHandlerCalls, 1);
 
     const thirdReply = await pdfAgent.chat('u2', '[Sent a file: scan.pdf]', [
       { name: 'scan.pdf', path: pdfAttachmentPath, kind: 'pdf', extension: '.pdf', mimeType: 'application/pdf' },
@@ -136,7 +157,7 @@ trailer
     const savedMessages = pdfAgent.sessionManager.getMessages('u2');
     assert.equal(savedMessages[0].attachments[0].pageCount, 2);
     assert.equal(savedMessages[0].attachments[0].pageRangeSupported, true);
-    assert.equal(docxCallIndex, 3);
+    assert.equal(docxCallIndex, 4);
   } finally {
     docxAgent.close();
     pdfAgent.close();

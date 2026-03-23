@@ -329,15 +329,41 @@ async function assertReadableLocalTextFile(resolvedPath, attachmentIndex) {
 
 function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, attachmentExtraction = {}) {
   const index = createAttachmentIndex(attachments);
-  const extractor = createMarkItDownExtractor(attachmentExtraction.markitdown || {});
-  extractor.previewPageCount = attachmentExtraction?.markitdown?.previewPageCount || 1;
-  extractor.readPageCount = attachmentExtraction?.markitdown?.readPageCount || 2;
+  const markitdownConfig = {
+    ...(attachmentExtraction.markitdown || {}),
+  };
+  const cacheConfig = markitdownConfig.cache && typeof markitdownConfig.cache === 'object' && !Array.isArray(markitdownConfig.cache)
+    ? markitdownConfig.cache
+    : {};
+  markitdownConfig.cache = {
+    enabled: cacheConfig.enabled !== false,
+    dbPath: typeof cacheConfig.dbPath === 'string' && cacheConfig.dbPath.trim().length > 0
+      ? cacheConfig.dbPath
+      : path.join(workspaceDir, 'data', 'attachment-extraction-cache.db'),
+  };
+  const extractor = createMarkItDownExtractor(markitdownConfig);
+  extractor.previewPageCount = markitdownConfig.previewPageCount || 1;
+  extractor.readPageCount = markitdownConfig.readPageCount || 2;
   if (attachments.length === 0) {
-    return { tools: {}, toolNames: [], attachmentIndex: index };
+    return {
+      tools: {},
+      toolNames: [],
+      attachmentIndex: index,
+      close: async () => {
+        if (typeof extractor.close === 'function') {
+          extractor.close();
+        }
+      },
+    };
   }
   return {
     attachmentIndex: index,
     toolNames: ['inspectAttachment', 'readAttachmentText'],
+    close: async () => {
+      if (typeof extractor.close === 'function') {
+        extractor.close();
+      }
+    },
     tools: {
       inspectAttachment: tool({
         description: 'Inspect a user-provided attachment by id, name, or path. Returns metadata and a bounded preview for plain text-like attachments.',

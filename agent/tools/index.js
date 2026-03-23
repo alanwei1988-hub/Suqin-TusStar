@@ -344,6 +344,9 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
     ].filter(Boolean),
     getOutboundAttachments: () => machine.getOutboundAttachments(),
     close: async () => {
+      if (typeof attachmentToolkit.close === 'function') {
+        await attachmentToolkit.close();
+      }
       await mcpToolkit.close();
     },
   };
