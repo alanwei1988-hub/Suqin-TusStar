@@ -125,6 +125,46 @@ Important attachment handling rule:
   return content;
 }
 
+function enrichToolCallWithDisplay(toolCall, runtime) {
+  if (!toolCall || typeof toolCall !== 'object') {
+    return toolCall;
+  }
+
+  const display = runtime?.toolDisplayByName?.[toolCall.toolName];
+
+  if (!display) {
+    return toolCall;
+  }
+
+  return {
+    ...toolCall,
+    displayName: display.displayName,
+    statusText: display.statusText,
+  };
+}
+
+function enrichToolEventWithDisplay(event, runtime) {
+  if (!event || typeof event !== 'object') {
+    return event;
+  }
+
+  return {
+    ...event,
+    toolCall: enrichToolCallWithDisplay(event.toolCall, runtime),
+  };
+}
+
+function enrichStepWithDisplay(step, runtime) {
+  if (!step || typeof step !== 'object' || !Array.isArray(step.toolCalls)) {
+    return step;
+  }
+
+  return {
+    ...step,
+    toolCalls: step.toolCalls.map(toolCall => enrichToolCallWithDisplay(toolCall, runtime)),
+  };
+}
+
 /**
  * AgentCore - 纯粹的通用 AI 大脑，通过配置初始化
  */
@@ -229,17 +269,17 @@ class AgentCore {
         },
         experimental_onToolCallStart: async event => {
           if (callbacks.onToolCallStart) {
-            await callbacks.onToolCallStart(event);
+            await callbacks.onToolCallStart(enrichToolEventWithDisplay(event, runtime));
           }
         },
         experimental_onToolCallFinish: async event => {
           if (callbacks.onToolCallFinish) {
-            await callbacks.onToolCallFinish(event);
+            await callbacks.onToolCallFinish(enrichToolEventWithDisplay(event, runtime));
           }
         },
         onStepFinish: async step => {
           if (callbacks.onStepFinish) {
-            await callbacks.onStepFinish(step);
+            await callbacks.onStepFinish(enrichStepWithDisplay(step, runtime));
           }
         },
       });

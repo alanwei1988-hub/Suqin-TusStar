@@ -4,6 +4,7 @@ const { tool } = require('ai');
 const { z } = require('zod');
 const { createMarkItDownExtractor } = require('../../markitdown/extractor');
 const { getPdfInfo } = require('../../markitdown/pdf-info');
+const { createToolDisplayInfo } = require('./display');
 
 const MAX_LOCAL_TEXT_FILE_BYTES = 256 * 1024;
 const MAX_LOCAL_TEXT_CHARS = 20000;
@@ -442,6 +443,7 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
     return {
       tools: {},
       toolNames: [],
+      toolDisplayByName: {},
       attachmentIndex: index,
       close: async () => {
         if (typeof extractor.close === 'function') {
@@ -453,6 +455,16 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
   return {
     attachmentIndex: index,
     toolNames: ['inspectAttachment', 'readAttachmentText'],
+    toolDisplayByName: {
+      inspectAttachment: createToolDisplayInfo('inspectAttachment', {
+        displayName: '附件分析',
+        statusText: '分析附件内容',
+      }),
+      readAttachmentText: createToolDisplayInfo('readAttachmentText', {
+        displayName: '附件读取',
+        statusText: '提取附件文本',
+      }),
+    },
     close: async () => {
       if (typeof extractor.close === 'function') {
         extractor.close();

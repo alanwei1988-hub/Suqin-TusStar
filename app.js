@@ -281,7 +281,10 @@ function formatStepStatus(step) {
 
 function formatToolCallStatus(event) {
   const stepNumber = Number.isFinite(event.stepNumber) ? event.stepNumber + 1 : '?';
-  return `正在处理（第 ${stepNumber} 步）：${event.toolCall.toolName}`;
+  const statusText = typeof event?.toolCall?.statusText === 'string' && event.toolCall.statusText.trim().length > 0
+    ? event.toolCall.statusText.trim()
+    : '调用系统工具处理';
+  return `正在处理（第 ${stepNumber} 步）：${statusText}`;
 }
 
 function normalizeAgentResponse(response) {

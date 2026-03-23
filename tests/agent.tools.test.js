@@ -107,6 +107,12 @@ module.exports = async function failingHandler({ llm, profileName }) {
   });
 
   try {
+    assert.equal(runtime.toolDisplayByName.bash.statusText, '执行命令');
+    assert.equal(runtime.toolDisplayByName.readFile.statusText, '读取文件内容');
+    assert.equal(runtime.toolDisplayByName.inspectAttachment.statusText, '分析附件内容');
+    assert.equal(runtime.toolDisplayByName.readAttachmentText.statusText, '提取附件文本');
+    assert.equal(runtime.toolDisplayByName.sendFile.statusText, '准备发送文件');
+
     const localRead = await runtime.tools.readFile.execute({ path: localTextPath });
     assert.equal(localRead.content, 'hello local file');
 

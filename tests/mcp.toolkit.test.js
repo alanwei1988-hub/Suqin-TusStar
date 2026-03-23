@@ -14,6 +14,8 @@ module.exports = async function runMcpToolkitTest() {
 
   try {
     assert.equal(typeof toolkit.tools.contract_validate.execute, 'function');
+    assert.equal(toolkit.toolDisplayByName.contract_validate.statusText, '查询合同信息');
+    assert.equal(toolkit.toolDisplayByName.contract_create.statusText, '处理合同信息');
     assert(toolkit.readOnlyToolNames.includes('contract_validate'));
     assert(toolkit.readOnlyToolNames.includes('contract_search'));
 

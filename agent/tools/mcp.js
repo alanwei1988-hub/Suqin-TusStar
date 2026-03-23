@@ -1,5 +1,6 @@
 const { createMCPClient } = require('@ai-sdk/mcp');
 const { Experimental_StdioMCPTransport } = require('@ai-sdk/mcp/mcp-stdio');
+const { createToolDisplayInfo } = require('./display');
 
 const DEFAULT_MCP_INIT_TIMEOUT_MS = 8000;
 
@@ -70,10 +71,35 @@ function assertServerConfig(server) {
   }
 }
 
+function pickMcpDisplayName(toolDefinition) {
+  const explicitName = toolDefinition.annotations?.title
+    || toolDefinition._meta?.title
+    || toolDefinition._meta?.displayName;
+
+  if (typeof explicitName === 'string' && explicitName.trim().length > 0) {
+    return explicitName.trim();
+  }
+
+  return '';
+}
+
+function pickMcpStatusText(toolName, toolDefinition) {
+  const explicitStatus = toolDefinition.annotations?.statusText
+    || toolDefinition._meta?.statusText
+    || toolDefinition._meta?.progressText;
+
+  if (typeof explicitStatus === 'string' && explicitStatus.trim().length > 0) {
+    return explicitStatus.trim();
+  }
+
+  return undefined;
+}
+
 async function createMcpToolkit(servers = []) {
   const enabledServers = servers.filter(server => server && server.enabled !== false);
   const clients = [];
   const mergedTools = {};
+  const toolDisplayByName = {};
   const readOnlyToolNames = [];
   const summaries = [];
 
@@ -121,6 +147,10 @@ async function createMcpToolkit(servers = []) {
 
           mergedTools[mergedName] = tools[tool.name];
           toolNames.push(mergedName);
+          toolDisplayByName[mergedName] = createToolDisplayInfo(mergedName, {
+            displayName: pickMcpDisplayName(tool) || undefined,
+            statusText: pickMcpStatusText(mergedName, tool),
+          });
 
           if (tool.annotations?.readOnlyHint === true || tool._meta?.readOnlyHint === true) {
             readOnlyToolNames.push(mergedName);
@@ -150,6 +180,7 @@ async function createMcpToolkit(servers = []) {
 
     return {
       tools: mergedTools,
+      toolDisplayByName,
       readOnlyToolNames,
       summaries,
       close: async () => {

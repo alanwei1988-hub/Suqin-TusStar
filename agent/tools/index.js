@@ -10,6 +10,7 @@ const {
   createAttachmentTools,
   normalizeAttachments,
 } = require('./attachments');
+const { createToolDisplayInfo } = require('./display');
 const { buildMcpPrompt, createMcpToolkit } = require('./mcp');
 const { buildSkillsPrompt, createSkillsToolkit } = require('./skills');
 
@@ -328,9 +329,31 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
     { skill: skillsToolkit.skill },
     mcpToolkit.tools,
   ]);
+  const toolDisplayByName = {
+    bash: createToolDisplayInfo('bash', {
+      displayName: '命令执行',
+      statusText: '执行命令',
+    }),
+    readFile: createToolDisplayInfo('readFile', {
+      displayName: '文件读取',
+      statusText: '读取文件内容',
+    }),
+    writeFile: createToolDisplayInfo('writeFile', {
+      displayName: '文件写入',
+      statusText: '写入文件',
+    }),
+    sendFile: createToolDisplayInfo('sendFile', {
+      displayName: '文件发送',
+      statusText: '准备发送文件',
+    }),
+    ...(attachmentToolkit.toolDisplayByName || {}),
+    ...(skillsToolkit.toolDisplayByName || {}),
+    ...(mcpToolkit.toolDisplayByName || {}),
+  };
 
   return {
     tools,
+    toolDisplayByName,
     toolNames: Object.keys(tools),
     mcpToolNames: Object.keys(mcpToolkit.tools),
     mcpReadOnlyToolNames: mcpToolkit.readOnlyToolNames || [],

@@ -3,6 +3,7 @@ const path = require('path');
 const matter = require('gray-matter');
 const { tool } = require('ai');
 const { z } = require('zod');
+const { createToolDisplayInfo } = require('./display');
 
 function normalizeSkillMetadata(content) {
   try {
@@ -172,6 +173,12 @@ async function createSkillsToolkit({ skillsDir }) {
   return {
     skills,
     skill: createSkillTool(skills),
+    toolDisplayByName: {
+      skill: createToolDisplayInfo('skill', {
+        displayName: '技能加载',
+        statusText: '加载处理技能',
+      }),
+    },
   };
 }
 

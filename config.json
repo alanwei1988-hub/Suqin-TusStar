@@ -60,7 +60,7 @@
           "enabled": true,
           "dbPath": "./data/attachment-extraction-cache.db"
         },
-        "activeLlmProfile": "qwen-vl",
+        "activeLlmProfile": "legacy-openai-compatible",
         "fallbackLlmProfile": "legacy-openai-compatible",
         "llmProfiles": {
           "legacy-openai-compatible": {
@@ -85,7 +85,8 @@
     "sessionDb": "./data/sessions.db"
   },
   "contractMcp": {
-    "libraryRoot": "\\\\192.168.20.100\\启迪之星\\技术商业化事业部\\板块-产业化\\合同管理",
+    "_libraryRoot": "\\\\192.168.20.100\\启迪之星\\技术商业化事业部\\板块-产业化\\合同管理",
+    "libraryRoot": "storage/contract-library",
     "contractIdPrefix": "CT",
     "allowedExtensions": [".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png"],
     "maxFileSizeMb": 50,
