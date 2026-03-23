@@ -144,7 +144,7 @@ function getPhaseInstructions(stepNumber, loopState) {
   }
 
   if (stepNumber === 0) {
-    return 'Inspection phase: inspect the relevant machine state, files, and possible conflicts first. Load skills when useful before making changes unless the task can be finished immediately.';
+    return 'Inspection phase: inspect the relevant machine state, files, and possible conflicts first. When attachments are present, first understand the user intent from the current message plus prior conversation; do not inspect or read an attachment on the first step unless that is already clearly necessary. Load skills when useful before making changes unless the task can be finished immediately.';
   }
 
   if (loopState.hasMutatingAction) {

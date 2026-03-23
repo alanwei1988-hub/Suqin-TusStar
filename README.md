@@ -195,6 +195,19 @@ npm test
 
 如果你要支持扫描版 PDF，需要额外把 OCR 参数配到 `agent.attachmentExtraction.markitdown`。推荐把 Agent 对话模型与 OCR 模型分开配置，避免共用同一组 `OPENAI_*` 环境变量。
 
+当前配置支持保留多套 OCR 配置并自由切换：
+
+- `llm`：兼容旧版的单套 OCR 配置，作为默认回退链路
+- `llmProfiles`：可选的多套 OCR profile
+- `activeLlmProfile`：当前启用的 profile 名称；命中时会覆盖 `llm`
+
+实际推荐写法是只维护 `llmProfiles` 和 `activeLlmProfile`。`llm` 现在仅为了兼容旧配置保留，不建议在新配置里继续重复维护一份。
+
+仓库默认同时保留了两条链路：
+
+- `legacy-openai-compatible`：之前的 OpenAI-compatible OCR 配置
+- `qwen-vl-flash`：新的 `qwen3-vl-flash` OCR 配置，按阿里百炼 OpenAI 兼容接口调用，并使用文档推荐的 `qwenvl markdown` 提示词做版面 OCR
+
 示例：
 
 ```json
@@ -213,14 +226,27 @@ npm test
           "{llmModel}",
           "--llm-base-url",
           "{llmBaseURL}",
+          "--llm-prompt",
+          "{llmPrompt}",
           "{input}"
         ],
         "supportedExtensions": [".pdf", ".docx", ".pptx", ".xls", ".xlsx"],
-        "llm": {
-          "client": "openai",
-          "model": "gpt-4o",
-          "baseURL": "https://your-openai-compatible-endpoint/v1",
-          "apiKeyEnv": "MARKITDOWN_OCR_OPENAI_API_KEY"
+        "activeLlmProfile": "qwen-vl-flash",
+        "llmProfiles": {
+          "legacy-openai-compatible": {
+            "client": "openai",
+            "model": "gemini-3.1-flash-lite-preview",
+            "baseURL": "https://api.zetatechs.com/v1",
+            "apiKeyEnv": "MARKITDOWN_OCR_OPENAI_API_KEY",
+            "prompt": "Extract all text from this image. Return ONLY the extracted text, maintaining the original layout and order. Do not add any commentary or description."
+          },
+          "qwen-vl-flash": {
+            "client": "qwen",
+            "model": "qwen3-vl-flash",
+            "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "apiKeyEnv": "DASHSCOPE_API_KEY",
+            "prompt": "qwenvl markdown"
+          }
         }
       }
     }
@@ -228,19 +254,26 @@ npm test
 }
 ```
 
-对应的 `.env` 只需要新增 OCR 专用密钥：
+对应的 `.env` 里按你启用的 profile 提供密钥：
 
 ```env
-MARKITDOWN_OCR_OPENAI_API_KEY=your-markitdown-ocr-key
+MARKITDOWN_OCR_OPENAI_API_KEY=your-openai-compatible-ocr-key
+DASHSCOPE_API_KEY=your-dashscope-key
 ```
 
 说明：
 
 - Agent 仍然继续使用 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `MODEL_NAME`
-- MarkItDown OCR 子进程会把 `MARKITDOWN_OCR_OPENAI_API_KEY` 映射成它自己使用的 `OPENAI_API_KEY`
-- 如果配置了 `markitdown.llm.baseURL`，MarkItDown OCR 会优先使用这里的地址，不会继承 Agent 的 `OPENAI_BASE_URL`
+- `activeLlmProfile` 命中某个 profile 时，会优先使用该 profile；如果没命中，则回退到 `llm`
+- `legacy-openai-compatible` 会把 `MARKITDOWN_OCR_OPENAI_API_KEY` 映射成 OCR 子进程里的 `OPENAI_API_KEY`
+- `qwen-vl-flash` 会把 `DASHSCOPE_API_KEY` 映射成 OCR 子进程里的 `OPENAI_API_KEY`
+- `client: "qwen"` 会自动走百炼兼容地址 `https://dashscope.aliyuncs.com/compatible-mode/v1`，如果你手动填了 `markitdown.llm.baseURL`，则优先使用你填的地址
+- `client: "qwen"` 且未手动指定 prompt 时，会默认使用文档推荐的 `qwenvl markdown`
+- 切换 OCR 模型时通常只需要改 `activeLlmProfile`，例如切到旧链路时改成 `legacy-openai-compatible`
 - 仓库内固定了一份 OCR 测试样例 PDF：`tests/test_data/markitdown-ocr-scan-sample.pdf`
-- 需要验证真实 OCR 时，运行 `npm run test:markitdown-ocr`；这个测试会直接使用上面的固定 PDF，并调用你当前配置的 OCR 模型接口
+- 需要验证真实 OCR 时，运行 `npm run test:markitdown-ocr`；这个测试默认会拆成单页逐页调用并输出每页结果
+- 如果要测试整份 PDF、输出 runner 分环节计时并保存完整 OCR 结果，运行 `npm run test:markitdown-ocr:full`
+- 整份 PDF 测试报告默认写到 `storage/temp/markitdown-ocr-full-report.txt`
 
 ## 典型使用场景
 

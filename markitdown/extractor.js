@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
+const { getDefaultBaseURLForLlmClient } = require('./llm');
 
 function replaceArgPlaceholders(value, replacements) {
   let output = String(value);
@@ -44,6 +45,11 @@ function createCommandEnv(config = {}) {
 
   if (typeof llmConfig.baseURL === 'string' && llmConfig.baseURL.trim().length > 0) {
     env.OPENAI_BASE_URL = llmConfig.baseURL.trim();
+  } else {
+    const defaultBaseURL = getDefaultBaseURLForLlmClient(llmConfig.client);
+    if (defaultBaseURL) {
+      env.OPENAI_BASE_URL = defaultBaseURL;
+    }
   }
 
   return env;
@@ -88,8 +94,10 @@ function createMarkItDownExtractor(config = {}) {
     return enabled && supportedExtensions.has(String(attachment?.extension || '').toLowerCase());
   }
 
-  async function extract(attachment) {
-    const cacheKey = path.normalize(attachment.resolvedPath);
+  async function extract(attachment, options = {}) {
+    const pageStart = Number.isFinite(options?.pageStart) ? Math.max(1, Math.trunc(options.pageStart)) : 1;
+    const pageCount = Number.isFinite(options?.pageCount) ? Math.max(1, Math.trunc(options.pageCount)) : 0;
+    const cacheKey = `${path.normalize(attachment.resolvedPath)}::${pageStart}::${pageCount || 'all'}`;
 
     if (cache.has(cacheKey)) {
       return cache.get(cacheKey);
@@ -104,6 +112,10 @@ function createMarkItDownExtractor(config = {}) {
         const converted = await handlerModule({
           attachment,
           attachmentPath: attachment.resolvedPath,
+          options: {
+            pageStart,
+            pageCount,
+          },
         });
         const markdown = typeof converted === 'string'
           ? converted
@@ -117,6 +129,8 @@ function createMarkItDownExtractor(config = {}) {
           method: 'markitdown',
           markdown: markdown.slice(0, config.maxOutputChars || 24000),
           truncated: markdown.length > (config.maxOutputChars || 24000),
+          pageStart,
+          pageCount,
         };
       }
 
@@ -130,6 +144,11 @@ function createMarkItDownExtractor(config = {}) {
         llmClient: config?.llm?.client || '',
         llmModel: config?.llm?.model || '',
         llmBaseURL: config?.llm?.baseURL || '',
+        llmPrompt: config?.llm?.prompt || '',
+        pageStart,
+        pageCount,
+        ocrConcurrency: config?.ocrConcurrency || 1,
+        ocrPageGroupSize: config?.ocrPageGroupSize || 1,
       }));
 
       if (!configuredArgs.some(arg => typeof arg === 'string' && arg.includes('{input}'))) {
@@ -147,6 +166,8 @@ function createMarkItDownExtractor(config = {}) {
         method: 'markitdown',
         markdown: markdown.slice(0, config.maxOutputChars || 24000),
         truncated: markdown.length > (config.maxOutputChars || 24000),
+        pageStart,
+        pageCount,
       };
     })();
 

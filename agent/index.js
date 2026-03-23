@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { ToolLoopAgent, stepCountIs } = require('ai');
 const path = require('path');
 const { createOpenAICompatible } = require('@ai-sdk/openai-compatible');
+const { enrichAttachmentMetadata } = require('./tools/attachments');
 const {
   appendFinalAssistantMessageIfNeeded,
   buildFinalResponse,
@@ -95,6 +96,10 @@ function buildUserContent(userMessage, attachments = []) {
         parts.push(`MIME: ${a.mimeType}`);
       }
 
+      if (Number.isFinite(a.pageCount)) {
+        parts.push(`Pages: ${a.pageCount}`);
+      }
+
       return `[Attachment] ${parts.join(', ')}`;
     }).join('\n');
     content = `${userMessage}
@@ -106,9 +111,11 @@ Important attachment handling rule:
 - User-provided attachments are not ordinary local text files.
 - Do not use readFile on attachment paths.
 - First infer the user's intent from the current message and prior conversation.
-- If the intended operation on the file is not clear enough, ask a clarifying question first.
-- Use inspectAttachment to inspect metadata or get a safe preview.
-- Use readAttachmentText only when bounded text extraction is actually needed.
+- Do not inspect or read an attachment immediately just because it appeared in the latest message.
+- First decide what the user is actually trying to get done, using the current message together with prior conversation.
+- If the intended operation on the file is still not clear enough, ask a clarifying question first.
+- Use inspectAttachment only when metadata, page count, file type, or a safe preview is needed for the task.
+- Use readAttachmentText only when bounded text extraction is actually needed to complete the task.
 - Only pass an attachment path to another tool when that tool explicitly requires a file path.`;
   }
 
@@ -164,7 +171,13 @@ class AgentCore {
       ? { onStepFinish: options }
       : (options || {});
     const { includeArtifacts = false, ...callbacks } = normalizedOptions;
-    const normalizedAttachments = normalizeConversationAttachments(attachments);
+    const normalizedAttachments = await enrichAttachmentMetadata(
+      normalizeConversationAttachments(attachments),
+      this.config.workspaceDir,
+      (_workspaceDir, requestedPath) => path.isAbsolute(requestedPath)
+        ? path.normalize(requestedPath)
+        : path.resolve(this.config.workspaceDir, requestedPath),
+    );
     const content = buildUserContent(userMessage, normalizedAttachments);
 
     fullMessages.push({ role: 'user', content, attachments: normalizedAttachments });

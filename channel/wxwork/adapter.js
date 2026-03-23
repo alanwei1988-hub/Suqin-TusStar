@@ -2,6 +2,7 @@ const EventEmitter = require('events');
 const WeComAIBot = require('./src/wecom-bot');
 const fs = require('fs');
 const path = require('path');
+const { getPdfInfo } = require('../../markitdown/pdf-info');
 
 const FALLBACK_MEDIA_EXTENSIONS = {
   image: '.jpg',
@@ -309,8 +310,8 @@ class WxWorkAdapter extends EventEmitter {
             fs.writeFileSync(filePath, decryptedBuffer);
             const extension = path.extname(filePath).toLowerCase();
             const mimeType = inferMimeType(extension, body.msgtype);
-            
-            attachments.push({
+
+            const attachment = {
               path: path.relative(process.cwd(), filePath),
               storedPath: path.relative(process.cwd(), filePath),
               name: originalName,
@@ -318,9 +319,25 @@ class WxWorkAdapter extends EventEmitter {
               mimeType,
               kind: inferAttachmentKind(body.msgtype, extension, mimeType),
               sizeBytes: decryptedBuffer.length,
-            });
-            
-            text = `[Sent a file: ${originalName}]`;
+            };
+
+            if (extension === '.pdf') {
+              try {
+                const pdfInfo = await getPdfInfo(filePath, {
+                  rootDir: path.resolve(__dirname, '..', '..'),
+                });
+                if (Number.isFinite(pdfInfo.pageCount) && pdfInfo.pageCount > 0) {
+                  attachment.pageCount = pdfInfo.pageCount;
+                  attachment.pageRangeSupported = true;
+                }
+              } catch {}
+            }
+
+            attachments.push(attachment);
+
+            text = Number.isFinite(attachment.pageCount)
+              ? `[Sent a file: ${originalName}, pages=${attachment.pageCount}]`
+              : `[Sent a file: ${originalName}]`;
           } catch (err) {
             console.error('[WxWorkAdapter] Media process error:', err);
           }

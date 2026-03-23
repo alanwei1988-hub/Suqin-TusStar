@@ -1,5 +1,10 @@
 const assert = require('node:assert/strict');
 const { processConfig } = require('../app');
+const {
+  QWEN_API_KEY_ENV,
+  QWEN_DOCUMENT_MARKDOWN_PROMPT,
+  QWEN_OPENAI_COMPAT_BASE_URL,
+} = require('../markitdown/llm');
 const { getProjectMarkItDownPython } = require('../markitdown/runtime');
 
 module.exports = async function runAppConfigTest() {
@@ -39,12 +44,19 @@ module.exports = async function runAppConfigTest() {
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.handlerModule, '');
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.command, getProjectMarkItDownPython(__dirname));
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.args, ['-X', 'utf8', '-m', 'markitdown', '{input}']);
+  assert.equal(processedDefault.agent.attachmentExtraction.markitdown.previewPageCount, 1);
+  assert.equal(processedDefault.agent.attachmentExtraction.markitdown.readPageCount, 2);
+  assert.equal(processedDefault.agent.attachmentExtraction.markitdown.ocrConcurrency, 2);
+  assert.equal(processedDefault.agent.attachmentExtraction.markitdown.ocrPageGroupSize, 4);
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.supportedExtensions, ['.pdf', '.docx', '.pptx', '.xls', '.xlsx']);
+  assert.equal(processedDefault.agent.attachmentExtraction.markitdown.activeLlmProfile, '');
+  assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.llmProfiles, {});
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.llm, {
     client: '',
     model: '',
     baseURL: '',
     apiKeyEnv: '',
+    prompt: '',
   });
   assert.equal(processedDefault.contractMcp.storageRoot, `${__dirname}\\contract-library`);
   assert.equal(processedDefault.contractMcp.dbPath, `${__dirname}\\contract-library\\contracts.db`);
@@ -75,13 +87,18 @@ module.exports = async function runAppConfigTest() {
           enabled: true,
           handlerModule: '.\\scripts\\mock-handler.js',
           command: '{runner}',
-          args: ['.\\scripts\\runner.py', '--llm-client', '{llmClient}', '--llm-model', '{llmModel}', '{input}'],
+          args: ['.\\scripts\\runner.py', '--llm-client', '{llmClient}', '--llm-model', '{llmModel}', '--llm-prompt', '{llmPrompt}', '--page-start', '{pageStart}', '--page-count', '{pageCount}', '--ocr-concurrency', '{ocrConcurrency}', '--ocr-page-group-size', '{ocrPageGroupSize}', '{input}'],
+          previewPageCount: 1,
+          readPageCount: 3,
+          ocrConcurrency: 5,
+          ocrPageGroupSize: 6,
           supportedExtensions: ['.PDF'],
           llm: {
             client: 'openai',
             model: 'ocr-model',
             baseURL: 'https://ocr.example.invalid/v1',
             apiKeyEnv: 'MARKITDOWN_OCR_OPENAI_API_KEY',
+            prompt: 'Extract OCR text only.',
           },
         },
       },
@@ -96,11 +113,104 @@ module.exports = async function runAppConfigTest() {
   assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.args[0].endsWith('\\scripts\\runner.py'), true);
   assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.args[2], '{llmClient}');
   assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.args[4], '{llmModel}');
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.args[6], '{llmPrompt}');
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.args[8], '{pageStart}');
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.args[10], '{pageCount}');
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.args[12], '{ocrConcurrency}');
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.args[14], '{ocrPageGroupSize}');
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.previewPageCount, 1);
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.readPageCount, 3);
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.ocrConcurrency, 5);
+  assert.equal(processedMarkItDown.agent.attachmentExtraction.markitdown.ocrPageGroupSize, 6);
   assert.deepEqual(processedMarkItDown.agent.attachmentExtraction.markitdown.supportedExtensions, ['.pdf']);
   assert.deepEqual(processedMarkItDown.agent.attachmentExtraction.markitdown.llm, {
     client: 'openai',
     model: 'ocr-model',
     baseURL: 'https://ocr.example.invalid/v1',
     apiKeyEnv: 'MARKITDOWN_OCR_OPENAI_API_KEY',
+    prompt: 'Extract OCR text only.',
+  });
+
+  const processedQwenMarkItDown = processConfig({
+    ...baseConfig,
+    agent: {
+      ...baseConfig.agent,
+      attachmentExtraction: {
+        markitdown: {
+          enabled: true,
+          activeLlmProfile: 'qwen-vl-flash',
+          llmProfiles: {
+            'legacy-openai-compatible': {
+              client: 'openai',
+              model: 'legacy-model',
+              baseURL: 'https://legacy.example.invalid/v1',
+              apiKeyEnv: 'LEGACY_MARKITDOWN_OCR_KEY',
+              prompt: 'Legacy OCR prompt.',
+            },
+            'qwen-vl-flash': {
+              client: 'qwen',
+              model: 'qwen3-vl-flash',
+            },
+          },
+        },
+      },
+    },
+  }, {
+    rootDir: __dirname,
+    env: {},
+  });
+  assert.equal(processedQwenMarkItDown.agent.attachmentExtraction.markitdown.activeLlmProfile, 'qwen-vl-flash');
+  assert.deepEqual(processedQwenMarkItDown.agent.attachmentExtraction.markitdown.llmProfiles, {
+    'legacy-openai-compatible': {
+      client: 'openai',
+      model: 'legacy-model',
+      baseURL: 'https://legacy.example.invalid/v1',
+      apiKeyEnv: 'LEGACY_MARKITDOWN_OCR_KEY',
+      prompt: 'Legacy OCR prompt.',
+    },
+    'qwen-vl-flash': {
+      client: 'qwen',
+      model: 'qwen3-vl-flash',
+      baseURL: QWEN_OPENAI_COMPAT_BASE_URL,
+      apiKeyEnv: QWEN_API_KEY_ENV,
+      prompt: QWEN_DOCUMENT_MARKDOWN_PROMPT,
+    },
+  });
+  assert.deepEqual(processedQwenMarkItDown.agent.attachmentExtraction.markitdown.llm, {
+    client: 'qwen',
+    model: 'qwen3-vl-flash',
+    baseURL: QWEN_OPENAI_COMPAT_BASE_URL,
+    apiKeyEnv: QWEN_API_KEY_ENV,
+    prompt: QWEN_DOCUMENT_MARKDOWN_PROMPT,
+  });
+
+  const processedLegacyProfileMarkItDown = processConfig({
+    ...baseConfig,
+    agent: {
+      ...baseConfig.agent,
+      attachmentExtraction: {
+        markitdown: {
+          enabled: true,
+          activeLlmProfile: 'missing-profile',
+          llm: {
+            client: 'openai',
+            model: 'legacy-model',
+            baseURL: 'https://legacy.example.invalid/v1',
+            apiKeyEnv: 'LEGACY_MARKITDOWN_OCR_KEY',
+            prompt: 'Legacy OCR prompt.',
+          },
+        },
+      },
+    },
+  }, {
+    rootDir: __dirname,
+    env: {},
+  });
+  assert.deepEqual(processedLegacyProfileMarkItDown.agent.attachmentExtraction.markitdown.llm, {
+    client: 'openai',
+    model: 'legacy-model',
+    baseURL: 'https://legacy.example.invalid/v1',
+    apiKeyEnv: 'LEGACY_MARKITDOWN_OCR_KEY',
+    prompt: 'Legacy OCR prompt.',
   });
 };

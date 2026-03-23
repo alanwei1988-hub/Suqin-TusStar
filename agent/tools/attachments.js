@@ -3,6 +3,7 @@ const path = require('path');
 const { tool } = require('ai');
 const { z } = require('zod');
 const { createMarkItDownExtractor } = require('../../markitdown/extractor');
+const { getPdfInfo } = require('../../markitdown/pdf-info');
 
 const MAX_LOCAL_TEXT_FILE_BYTES = 256 * 1024;
 const MAX_LOCAL_TEXT_CHARS = 20000;
@@ -128,6 +129,34 @@ function normalizeAttachments(attachments = [], workspaceDir, resolveRequestedPa
   });
 }
 
+async function enrichAttachmentMetadata(attachments = [], workspaceDir, resolveRequestedPath) {
+  const normalized = normalizeAttachments(attachments, workspaceDir, resolveRequestedPath);
+  const enriched = [];
+
+  for (const attachment of normalized) {
+    if (attachment.extension === '.pdf' && attachment.resolvedPath) {
+      try {
+        const pdfInfo = await getPdfInfo(attachment.resolvedPath);
+        enriched.push({
+          ...attachment,
+          ...(typeof pdfInfo.pageCount === 'number' ? {
+            pageCount: pdfInfo.pageCount,
+            pageRangeSupported: true,
+          } : {}),
+        });
+        continue;
+      } catch {
+        enriched.push(attachment);
+        continue;
+      }
+    }
+
+    enriched.push(attachment);
+  }
+
+  return enriched;
+}
+
 function createAttachmentIndex(attachments) {
   const byId = new Map();
   const byPath = new Map();
@@ -181,13 +210,34 @@ async function inspectAttachmentFile(attachment, previewChars = DEFAULT_ATTACHME
         ? { available: true, method: 'markitdown' }
         : { available: false, method: 'none' }),
   };
+  if (attachment.extension === '.pdf') {
+    const pdfInfo = await getPdfInfo(attachment.resolvedPath);
+    if (typeof pdfInfo.pageCount === 'number') {
+      result.totalPageCount = pdfInfo.pageCount;
+      result.pageRangeSupported = true;
+    }
+  }
   if (previewChars > 0 && textLike) {
     result.preview = await readAttachmentText(attachment.resolvedPath, stat.size, 0, previewChars);
   } else if (previewChars > 0 && markitdownCapable) {
-    const extracted = await extractor.extract(attachment);
+    const extracted = await extractor.extract(attachment, {
+      pageStart: 1,
+      pageCount: attachment.extension === '.pdf'
+        ? Math.max(1, extractor.previewPageCount || 1)
+        : 0,
+    });
     result.preview = readExtractedText(extracted.markdown, 0, previewChars);
     result.preview.cursorType = 'char';
     result.preview.method = 'markitdown';
+    if (Number.isFinite(result.totalPageCount)) {
+      result.preview.totalPageCount = result.totalPageCount;
+    }
+    if (typeof extracted.pageStart === 'number') {
+      result.preview.previewPageStart = extracted.pageStart;
+    }
+    if (typeof extracted.pageCount === 'number' && extracted.pageCount > 0) {
+      result.preview.previewPageCount = extracted.pageCount;
+    }
     result.extraction.truncated = extracted.truncated;
   }
   return result;
@@ -219,6 +269,46 @@ function readExtractedText(text, offset = 0, maxChars = DEFAULT_ATTACHMENT_TEXT_
   };
 }
 
+function splitAttachmentInspection(inspection) {
+  if (!inspection || typeof inspection !== 'object') {
+    return {
+      attachment: inspection,
+      preview: null,
+    };
+  }
+
+  const { preview = null, ...attachment } = inspection;
+  return {
+    attachment,
+    preview,
+  };
+}
+
+function resolvePdfPageSelection(inspection, pageStart, pageCount, pageFromEnd, defaultPageCount) {
+  const selectedPageCount = pageCount || defaultPageCount || 0;
+
+  if (!pageFromEnd) {
+    return {
+      pageStart: pageStart || 1,
+      pageCount: selectedPageCount,
+    };
+  }
+
+  if (inspection.pageRangeSupported !== true || !Number.isFinite(inspection.totalPageCount) || inspection.totalPageCount <= 0) {
+    throw new Error(`Attachment "${inspection.name}" does not expose a reliable total page count for pageFromEnd.`);
+  }
+
+  const effectivePageCount = Math.max(1, selectedPageCount || 1);
+  const computedPageStart = Math.max(1, inspection.totalPageCount - pageFromEnd + 1);
+  const boundedPageStart = Math.min(computedPageStart, inspection.totalPageCount);
+  const remainingPages = inspection.totalPageCount - boundedPageStart + 1;
+
+  return {
+    pageStart: boundedPageStart,
+    pageCount: Math.min(effectivePageCount, remainingPages),
+  };
+}
+
 async function assertReadableLocalTextFile(resolvedPath, attachmentIndex) {
   if (attachmentIndex.byPath.has(path.normalize(resolvedPath))) {
     throw new Error('This path belongs to a user-provided attachment. Use inspectAttachment or readAttachmentText instead of readFile.');
@@ -240,6 +330,8 @@ async function assertReadableLocalTextFile(resolvedPath, attachmentIndex) {
 function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, attachmentExtraction = {}) {
   const index = createAttachmentIndex(attachments);
   const extractor = createMarkItDownExtractor(attachmentExtraction.markitdown || {});
+  extractor.previewPageCount = attachmentExtraction?.markitdown?.previewPageCount || 1;
+  extractor.readPageCount = attachmentExtraction?.markitdown?.readPageCount || 2;
   if (attachments.length === 0) {
     return { tools: {}, toolNames: [], attachmentIndex: index };
   }
@@ -252,13 +344,26 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
         inputSchema: z.object({
           attachment: z.string().optional(),
           maxChars: z.number().int().min(0).max(MAX_ATTACHMENT_PREVIEW_CHARS).optional(),
+          pageStart: z.number().int().min(1).optional(),
+          pageCount: z.number().int().min(1).max(20).optional(),
+          pageFromEnd: z.number().int().min(1).max(20).optional(),
         }),
-        execute: async ({ attachment, maxChars }) => {
+        execute: async ({ attachment, maxChars, pageStart, pageCount, pageFromEnd }) => {
           const target = resolveAttachment(index, workspaceDir, resolveRequestedPath, attachment);
           let inspection;
 
           try {
-            inspection = await inspectAttachmentFile(target, maxChars ?? DEFAULT_ATTACHMENT_PREVIEW_CHARS, extractor);
+            const baseInspection = await inspectAttachmentFile(target, 0, null);
+            const pageSelection = target.extension === '.pdf'
+              ? resolvePdfPageSelection(baseInspection, pageStart, pageCount, pageFromEnd, extractor.previewPageCount || 1)
+              : { pageStart: pageStart || 1, pageCount: pageCount || 0 };
+            inspection = await inspectAttachmentFile(target, maxChars ?? DEFAULT_ATTACHMENT_PREVIEW_CHARS, {
+              ...extractor,
+              extract: (currentAttachment, options = {}) => extractor.extract(currentAttachment, {
+                pageStart: pageSelection.pageStart || options.pageStart || 1,
+                pageCount: pageSelection.pageCount || options.pageCount || 0,
+              }),
+            });
           } catch (error) {
             inspection = await inspectAttachmentFile(target, 0, null);
             inspection.extraction = {
@@ -268,17 +373,25 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
             };
           }
 
-          return { success: true, attachment: inspection, preview: inspection.preview || null };
+          const separated = splitAttachmentInspection(inspection);
+          return {
+            success: true,
+            attachment: separated.attachment,
+            preview: separated.preview,
+          };
         },
       }),
       readAttachmentText: tool({
-        description: 'Read a bounded chunk of text from a user-provided attachment. Plain text files are read directly; supported office or PDF files may be converted with MarkItDown first.',
+        description: 'Read a bounded chunk of text from a user-provided attachment. Plain text files are read directly; supported office or PDF files may be converted with MarkItDown first. For large PDFs, prefer reading selected pages instead of the whole document.',
         inputSchema: z.object({
           attachment: z.string().optional(),
           offset: z.number().int().min(0).optional(),
           maxChars: z.number().int().min(1).max(MAX_ATTACHMENT_TEXT_CHARS).optional(),
+          pageStart: z.number().int().min(1).optional(),
+          pageCount: z.number().int().min(1).max(50).optional(),
+          pageFromEnd: z.number().int().min(1).max(50).optional(),
         }),
-        execute: async ({ attachment, offset, maxChars }) => {
+        execute: async ({ attachment, offset, maxChars, pageStart, pageCount, pageFromEnd }) => {
           const target = resolveAttachment(index, workspaceDir, resolveRequestedPath, attachment);
           const inspection = await inspectAttachmentFile(target, 0, null);
           if (!inspection.textLike) {
@@ -287,7 +400,15 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
             }
 
             try {
-              const extracted = await extractor.extract(target);
+              const pageSelection = target.extension === '.pdf'
+                ? resolvePdfPageSelection(inspection, pageStart, pageCount, pageFromEnd, extractor.readPageCount)
+                : { pageStart: pageStart || 1, pageCount: pageCount || 0 };
+              const selectedPageStart = pageSelection.pageStart;
+              const selectedPageCount = pageSelection.pageCount;
+              const extracted = await extractor.extract(target, {
+                pageStart: selectedPageStart,
+                pageCount: selectedPageCount,
+              });
               const chunk = readExtractedText(extracted.markdown, offset ?? 0, maxChars ?? DEFAULT_ATTACHMENT_TEXT_CHARS);
               return {
                 success: true,
@@ -305,6 +426,11 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
                 nextOffset: chunk.nextOffset,
                 totalChars: chunk.totalChars,
                 cursorType: 'char',
+                pageStart: extracted.pageStart || selectedPageStart,
+                pageCount: extracted.pageCount || selectedPageCount || null,
+                nextPageStart: extracted.pageCount ? (extracted.pageStart + extracted.pageCount) : null,
+                totalPageCount: inspection.totalPageCount || null,
+                pageRangeSupported: inspection.pageRangeSupported === true,
               };
             } catch (error) {
               return {
@@ -343,8 +469,12 @@ function buildAttachmentsPrompt(attachments) {
   return [
     'Attachments',
     'These user-provided attachments are currently available in the conversation, including files from earlier turns that may still be relevant.',
-    'Use `inspectAttachment` and `readAttachmentText` for user-provided attachments.',
+    'Do not treat the presence of an attachment as a reason to inspect it immediately.',
+    'First infer the concrete task from the latest message and prior conversation, then decide whether any attachment access is necessary.',
+    'Use `inspectAttachment` and `readAttachmentText` for user-provided attachments only when they materially help with the current task.',
     'For supported document formats, `readAttachmentText` may convert the attachment to Markdown before returning a bounded chunk.',
+    'Prefer `inspectAttachment` before `readAttachmentText` when you need file type, page range, metadata, or a small preview.',
+    'If the user intent is still ambiguous, ask a clarifying question before touching the attachment.',
     'Do not use `readFile` on attachment paths. Only pass attachment paths to other tools when a tool explicitly requires a file path.',
     ...lines,
   ].join('\n');
@@ -355,5 +485,6 @@ module.exports = {
   assertReadableLocalTextFile,
   buildAttachmentsPrompt,
   createAttachmentTools,
+  enrichAttachmentMetadata,
   normalizeAttachments,
 };

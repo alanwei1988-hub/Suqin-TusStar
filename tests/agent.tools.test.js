@@ -16,7 +16,22 @@ module.exports = async function runAgentToolsTest() {
   fs.writeFileSync(localTextPath, 'hello local file');
   fs.writeFileSync(localPdfPath, '%PDF-1.7\nlocal pdf body');
   fs.writeFileSync(attachmentTextPath, 'alpha beta gamma delta');
-  fs.writeFileSync(attachmentPdfPath, '%PDF-1.7\nfake pdf body');
+  fs.writeFileSync(attachmentPdfPath, `%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF`);
   fs.writeFileSync(largeTextPath, 'x'.repeat(300 * 1024));
 
   const runtime = await createRuntimeTools({
@@ -62,6 +77,7 @@ module.exports = async function runAgentToolsTest() {
     });
     assert.equal(attachmentInspection.success, true);
     assert.equal(attachmentInspection.attachment.textLike, true);
+    assert.equal('preview' in attachmentInspection.attachment, false);
     assert.equal(attachmentInspection.preview.text, 'alpha beta g');
 
     const attachmentText = await runtime.tools.readAttachmentText.execute({
@@ -77,15 +93,48 @@ module.exports = async function runAgentToolsTest() {
     assert.equal(pdfInspection.success, true);
     assert.equal(pdfInspection.attachment.textLike, false);
     assert.equal(pdfInspection.attachment.kind, 'pdf');
+    assert.equal(pdfInspection.attachment.totalPageCount, 2);
+    assert.equal(pdfInspection.attachment.pageRangeSupported, true);
+    assert.equal('preview' in pdfInspection.attachment, false);
     assert.equal(pdfInspection.attachment.extraction.method, 'markitdown');
+    assert.equal(pdfInspection.preview.totalPageCount, 2);
     assert.match(pdfInspection.preview.text, /Converted scan\.pdf/i);
+    assert.match(pdfInspection.preview.text, /Page count: 1/i);
 
     const pdfRead = await runtime.tools.readAttachmentText.execute({
       attachment: 'attachment-2',
     });
     assert.equal(pdfRead.success, true);
-    assert.match(pdfRead.content, /fake pdf body/i);
+    assert.match(pdfRead.content, /%PDF-1\.7/i);
     assert.equal(pdfRead.cursorType, 'char');
+    assert.equal(pdfRead.attachment.totalPageCount, 2);
+    assert.equal('pageCount' in pdfRead.attachment, false);
+    assert.equal(pdfRead.pageStart, 1);
+    assert.equal(pdfRead.pageCount, 2);
+    assert.equal(pdfRead.totalPageCount, 2);
+    assert.equal(pdfRead.pageRangeSupported, true);
+
+    const pdfTailInspection = await runtime.tools.inspectAttachment.execute({
+      attachment: 'attachment-2',
+      pageFromEnd: 1,
+      pageCount: 1,
+    });
+    assert.equal(pdfTailInspection.success, true);
+    assert.equal(pdfTailInspection.preview.previewPageStart, 2);
+    assert.equal(pdfTailInspection.preview.previewPageCount, 1);
+    assert.match(pdfTailInspection.preview.text, /Page start: 2/i);
+    assert.match(pdfTailInspection.preview.text, /Page count: 1/i);
+
+    const pdfTailRead = await runtime.tools.readAttachmentText.execute({
+      attachment: 'attachment-2',
+      pageFromEnd: 1,
+      pageCount: 1,
+    });
+    assert.equal(pdfTailRead.success, true);
+    assert.equal(pdfTailRead.pageStart, 2);
+    assert.equal(pdfTailRead.pageCount, 1);
+    assert.equal(pdfTailRead.nextPageStart, 3);
+    assert.equal(pdfTailRead.totalPageCount, 2);
 
     const outbound = await runtime.tools.sendFile.execute({
       path: localPdfPath,

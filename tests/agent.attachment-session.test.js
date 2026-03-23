@@ -8,21 +8,38 @@ const { generateResult, makeTempDir, repoRoot, textPart, toolCall } = require('.
 module.exports = async function runAgentAttachmentSessionTest() {
   const rootDir = makeTempDir('agent-attachment-session-');
   const attachmentPath = path.join(rootDir, 'meeting-notes.docx');
+  const pdfAttachmentPath = path.join(rootDir, 'scan.pdf');
   const mockMarkItDownHandler = path.join(repoRoot, 'tests', 'helpers', 'mock-markitdown-handler.js');
   fs.writeFileSync(attachmentPath, '第一部分：项目范围。\n第二部分：验收节点。\n');
+  fs.writeFileSync(pdfAttachmentPath, `%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF`);
 
-  let callIndex = 0;
-  const model = new MockLanguageModelV3({
+  let docxCallIndex = 0;
+  const docxModel = new MockLanguageModelV3({
     doGenerate: ({ prompt }) => {
-      callIndex += 1;
+      docxCallIndex += 1;
 
-      if (callIndex === 1) {
+      if (docxCallIndex === 1) {
         return generateResult([
           textPart('请说明需要如何处理这份文件。'),
         ], 'stop');
       }
 
-      if (callIndex === 2) {
+      if (docxCallIndex === 2) {
         const serializedPrompt = JSON.stringify(prompt);
         assert.match(serializedPrompt, /meeting-notes\.docx/);
         assert.match(serializedPrompt, /readAttachmentText/);
@@ -44,7 +61,19 @@ module.exports = async function runAgentAttachmentSessionTest() {
     },
   });
 
-  const agent = new AgentCore({
+  const pdfModel = new MockLanguageModelV3({
+    doGenerate: ({ prompt }) => {
+      const serializedPrompt = JSON.stringify(prompt);
+      assert.match(serializedPrompt, /scan\.pdf/);
+      assert.match(serializedPrompt, /Pages: 2/);
+
+      return generateResult([
+        textPart('请说明需要如何处理这份文件。'),
+      ], 'stop');
+    },
+  });
+
+  const docxAgent = new AgentCore({
     model: 'mock-model',
     provider: 'openai',
     openai: {
@@ -64,21 +93,53 @@ module.exports = async function runAgentAttachmentSessionTest() {
         maxOutputChars: 24000,
       },
     },
-  }, { model });
+  }, { model: docxModel });
+
+  const pdfAgent = new AgentCore({
+    model: 'mock-model',
+    provider: 'openai',
+    openai: {
+      apiKey: 'test',
+      baseURL: 'http://example.invalid/v1',
+    },
+    workspaceDir: rootDir,
+    skillsDir: path.join(repoRoot, 'skills'),
+    rolePromptDir: path.join(repoRoot, 'roles', 'contract-manager'),
+    sessionDb: path.join(rootDir, 'pdf-sessions.db'),
+    mcpServers: [],
+    attachmentExtraction: {
+      markitdown: {
+        enabled: true,
+        handlerModule: mockMarkItDownHandler,
+        supportedExtensions: ['.docx'],
+        maxOutputChars: 24000,
+      },
+    },
+  }, { model: pdfModel });
 
   try {
-    await agent.init();
+    await docxAgent.init();
+    await pdfAgent.init();
 
-    const firstReply = await agent.chat('u1', '[Sent a file: meeting-notes.docx]', [
+    const firstReply = await docxAgent.chat('u1', '[Sent a file: meeting-notes.docx]', [
       { name: 'meeting-notes.docx', path: attachmentPath, kind: 'document' },
     ]);
     assert.equal(firstReply, '请说明需要如何处理这份文件。');
 
-    const secondReply = await agent.chat('u1', '内容总结');
+    const secondReply = await docxAgent.chat('u1', '内容总结');
     assert.equal(secondReply, '文档主要说明了项目范围和验收节点。');
-    assert.equal(callIndex, 3);
+
+    const thirdReply = await pdfAgent.chat('u2', '[Sent a file: scan.pdf]', [
+      { name: 'scan.pdf', path: pdfAttachmentPath, kind: 'pdf', extension: '.pdf', mimeType: 'application/pdf' },
+    ]);
+    assert.equal(thirdReply, '请说明需要如何处理这份文件。');
+    const savedMessages = pdfAgent.sessionManager.getMessages('u2');
+    assert.equal(savedMessages[0].attachments[0].pageCount, 2);
+    assert.equal(savedMessages[0].attachments[0].pageRangeSupported, true);
+    assert.equal(docxCallIndex, 3);
   } finally {
-    agent.close();
+    docxAgent.close();
+    pdfAgent.close();
     fs.rmSync(rootDir, { recursive: true, force: true });
   }
 };

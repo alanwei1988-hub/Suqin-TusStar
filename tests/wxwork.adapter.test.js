@@ -20,9 +20,22 @@ module.exports = async function runWxworkAdapterTest() {
   const uploadCalls = [];
   const sendCalls = [];
   const events = [];
+  const minimalPdfBuffer = Buffer.from(`%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 1 /Kids [3 0 R] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF`);
   const buffersByUrl = {
-    'https://example.invalid/file': Buffer.from('encrypted'),
-    'https://example.invalid/file-no-ext': Buffer.from('%PDF-1.7\nfake pdf body'),
+    'https://example.invalid/file': minimalPdfBuffer,
+    'https://example.invalid/file-no-ext': minimalPdfBuffer,
     'https://example.invalid/file-old-doc': Buffer.concat([
       Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]),
       Buffer.from('WordDocument', 'utf16le'),
@@ -71,12 +84,15 @@ module.exports = async function runWxworkAdapterTest() {
     assert.equal(events[0].context.reqId, 'req-1');
     assert.equal(events[0].context.initialStatusSent, true);
     assert.equal(events[0].context.streamId, streamCalls[0].streamId);
+    assert.equal(events[0].text, '[Sent a file: contract.pdf, pages=1]');
     assert.equal(events[0].attachments.length, 1);
     assert.equal(path.extname(events[0].attachments[0].path), '.pdf');
     assert.equal(events[0].attachments[0].extension, '.pdf');
     assert.equal(events[0].attachments[0].mimeType, 'application/pdf');
     assert.equal(events[0].attachments[0].kind, 'pdf');
     assert.equal(events[0].attachments[0].sizeBytes, buffersByUrl['https://example.invalid/file'].length);
+    assert.equal(events[0].attachments[0].pageCount, 1);
+    assert.equal(events[0].attachments[0].pageRangeSupported, true);
 
     const streamReply = adapter.createStreamingReply('u1', events[0].context);
     await streamReply.updateStatus('文件已下载，正在处理...');
@@ -97,6 +113,7 @@ module.exports = async function runWxworkAdapterTest() {
 
     await waitFor(() => events.length === 2);
     assert.equal(path.extname(events[1].attachments[0].path), '.pdf');
+    assert.equal(events[1].attachments[0].pageCount, 1);
 
     adapter.bot.emit('message', {
       from: { userid: 'u3' },

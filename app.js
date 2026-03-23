@@ -3,6 +3,11 @@ const fs = require('fs');
 const path = require('path');
 const AgentCore = require('./agent/index');
 const { resolveContractMcpConfig } = require('./contract-mcp/config');
+const {
+  getDefaultApiKeyEnvForLlmClient,
+  getDefaultBaseURLForLlmClient,
+  getDefaultPromptForLlmClient,
+} = require('./markitdown/llm');
 const { getProjectMarkItDownPython } = require('./markitdown/runtime');
 
 function loadRawConfig(rootDir = __dirname) {
@@ -51,11 +56,46 @@ function normalizeMcpServer(rootDir, server) {
   return normalized;
 }
 
+function normalizeMarkItDownLlmConfig(config = {}) {
+  const normalizedConfig = config && typeof config === 'object' && !Array.isArray(config)
+    ? config
+    : {};
+  const llmClient = typeof normalizedConfig.client === 'string' ? normalizedConfig.client.trim() : '';
+  return {
+    client: llmClient,
+    model: typeof normalizedConfig.model === 'string' ? normalizedConfig.model.trim() : '',
+    baseURL: typeof normalizedConfig.baseURL === 'string' && normalizedConfig.baseURL.trim().length > 0
+      ? normalizedConfig.baseURL.trim()
+      : getDefaultBaseURLForLlmClient(llmClient),
+    apiKeyEnv: typeof normalizedConfig.apiKeyEnv === 'string' && normalizedConfig.apiKeyEnv.trim().length > 0
+      ? normalizedConfig.apiKeyEnv.trim()
+      : getDefaultApiKeyEnvForLlmClient(llmClient),
+    prompt: typeof normalizedConfig.prompt === 'string' && normalizedConfig.prompt.trim().length > 0
+      ? normalizedConfig.prompt.trim()
+      : getDefaultPromptForLlmClient(llmClient),
+  };
+}
+
 function normalizeMarkItDownConfig(rootDir, config = {}) {
   const runnerPath = getProjectMarkItDownPython(rootDir);
   const llmConfig = config && typeof config.llm === 'object' && !Array.isArray(config.llm)
     ? config.llm
     : {};
+  const llmProfilesConfig = config && typeof config.llmProfiles === 'object' && !Array.isArray(config.llmProfiles)
+    ? config.llmProfiles
+    : {};
+  const activeLlmProfile = typeof config.activeLlmProfile === 'string'
+    ? config.activeLlmProfile.trim()
+    : '';
+  const normalizedLlmProfiles = Object.fromEntries(
+    Object.entries(llmProfilesConfig)
+      .filter(([name]) => typeof name === 'string' && name.trim().length > 0)
+      .map(([name, profileConfig]) => [name.trim(), normalizeMarkItDownLlmConfig(profileConfig)])
+  );
+  const fallbackLlmConfig = normalizeMarkItDownLlmConfig(llmConfig);
+  const activeProfileLlmConfig = activeLlmProfile && normalizedLlmProfiles[activeLlmProfile]
+    ? normalizedLlmProfiles[activeLlmProfile]
+    : null;
   const normalized = {
     enabled: config.enabled === true,
     handlerModule: typeof config.handlerModule === 'string' && config.handlerModule.trim().length > 0
@@ -69,15 +109,16 @@ function normalizeMarkItDownConfig(rootDir, config = {}) {
       : ['-X', 'utf8', '-m', 'markitdown', '{input}'],
     timeoutMs: Number.isFinite(config.timeoutMs) ? config.timeoutMs : 30000,
     maxOutputChars: Number.isFinite(config.maxOutputChars) ? config.maxOutputChars : 24000,
+    previewPageCount: Number.isFinite(config.previewPageCount) ? Math.max(1, Math.trunc(config.previewPageCount)) : 1,
+    readPageCount: Number.isFinite(config.readPageCount) ? Math.max(1, Math.trunc(config.readPageCount)) : 2,
+    ocrConcurrency: Number.isFinite(config.ocrConcurrency) ? Math.max(1, Math.trunc(config.ocrConcurrency)) : 2,
+    ocrPageGroupSize: Number.isFinite(config.ocrPageGroupSize) ? Math.max(1, Math.trunc(config.ocrPageGroupSize)) : 4,
     supportedExtensions: Array.isArray(config.supportedExtensions) && config.supportedExtensions.length > 0
       ? config.supportedExtensions.map(value => String(value).toLowerCase())
       : ['.pdf', '.docx', '.pptx', '.xls', '.xlsx'],
-    llm: {
-      client: typeof llmConfig.client === 'string' ? llmConfig.client.trim() : '',
-      model: typeof llmConfig.model === 'string' ? llmConfig.model.trim() : '',
-      baseURL: typeof llmConfig.baseURL === 'string' ? llmConfig.baseURL.trim() : '',
-      apiKeyEnv: typeof llmConfig.apiKeyEnv === 'string' ? llmConfig.apiKeyEnv.trim() : '',
-    },
+    activeLlmProfile,
+    llmProfiles: normalizedLlmProfiles,
+    llm: activeProfileLlmConfig || fallbackLlmConfig,
   };
 
   if (normalized.command === '{runner}') {
@@ -98,6 +139,11 @@ function normalizeMarkItDownConfig(rootDir, config = {}) {
       || arg === '{llmClient}'
       || arg === '{llmModel}'
       || arg === '{llmBaseURL}'
+      || arg === '{llmPrompt}'
+      || arg === '{pageStart}'
+      || arg === '{pageCount}'
+      || arg === '{ocrConcurrency}'
+      || arg === '{ocrPageGroupSize}'
     ) {
       return arg;
     }

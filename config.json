@@ -1,6 +1,6 @@
 {
   "agent": {
-    "model": "gemini-3.1-flash-lite-preview",
+    "model": "qwen3.5-plus",
     "provider": "openai",
     "openai": {
       "baseURL": "https://api.zetatechs.com/v1"
@@ -37,16 +37,41 @@
           "{llmModel}",
           "--llm-base-url",
           "{llmBaseURL}",
+          "--llm-prompt",
+          "{llmPrompt}",
+          "--page-start",
+          "{pageStart}",
+          "--page-count",
+          "{pageCount}",
+          "--ocr-concurrency",
+          "{ocrConcurrency}",
+          "--ocr-page-group-size",
+          "{ocrPageGroupSize}",
           "{input}"
         ],
         "timeoutMs": 60000,
         "maxOutputChars": 24000,
+        "previewPageCount": 1,
+        "readPageCount": 2,
+        "ocrConcurrency": 6,
+        "ocrPageGroupSize": 1,
         "supportedExtensions": [".pdf", ".docx", ".pptx", ".xls", ".xlsx"],
-        "llm": {
-          "client": "openai",
-          "model": "gemini-3.1-flash-lite-preview",
-          "baseURL": "https://api.zetatechs.com/v1",
-          "apiKeyEnv": "MARKITDOWN_OCR_OPENAI_API_KEY"
+        "activeLlmProfile": "qwen-vl",
+        "llmProfiles": {
+          "legacy-openai-compatible": {
+            "client": "openai",
+            "model": "gemini-3.1-flash-lite-preview",
+            "baseURL": "https://api.zetatechs.com/v1",
+            "apiKeyEnv": "MARKITDOWN_OCR_OPENAI_API_KEY",
+            "prompt": "Extract all text from this image. Return ONLY the extracted text, maintaining the original layout and order. Do not add any commentary or description."
+          },
+          "qwen-vl": {
+            "client": "qwen",
+            "model": "qwen3-vl-flash",
+            "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "apiKeyEnv": "DASHSCOPE_API_KEY",
+            "prompt": "qwenvl markdown"
+          }
         }
       }
     },
