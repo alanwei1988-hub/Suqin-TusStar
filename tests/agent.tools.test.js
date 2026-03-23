@@ -11,8 +11,10 @@ module.exports = async function runAgentToolsTest() {
   const localPdfPath = path.join(rootDir, 'local.pdf');
   const attachmentTextPath = path.join(rootDir, 'user-upload.txt');
   const attachmentPdfPath = path.join(rootDir, 'scan.pdf');
+  const attachmentPagedPdfPath = path.join(rootDir, 'paged.pdf');
   const largeTextPath = path.join(rootDir, 'large.txt');
   const failingHandlerPath = path.join(rootDir, 'failing-markitdown-handler.js');
+  const pagedHandlerPath = path.join(rootDir, 'paged-markitdown-handler.js');
 
   fs.writeFileSync(localTextPath, 'hello local file');
   fs.writeFileSync(localPdfPath, '%PDF-1.7\nlocal pdf body');
@@ -28,6 +30,28 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>
 endobj
 4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>
+endobj
+  trailer
+<< /Root 1 0 R >>
+%%EOF`);
+  fs.writeFileSync(attachmentPagedPdfPath, `%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 4 /Kids [3 0 R 4 0 R 5 0 R 6 0 R] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>
+endobj
+6 0 obj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>
 endobj
 trailer
@@ -53,6 +77,15 @@ module.exports = async function failingHandler({ llm, profileName }) {
     fallbackProfile: profileName,
   });
 };`, 'utf8');
+  fs.writeFileSync(pagedHandlerPath, `module.exports = async function pagedHandler({ options = {} }) {
+  const pageStart = Number.isFinite(options.pageStart) ? options.pageStart : 1;
+  const pageCount = Number.isFinite(options.pageCount) ? options.pageCount : 0;
+  const renderedPageCount = pageCount || 4;
+  return Array.from({ length: renderedPageCount }, (_, index) => {
+    const pageNumber = pageStart + index;
+    return 'PAGE ' + pageNumber + ' :: ' + 'content '.repeat(60);
+  }).join('\\n\\n');
+};`, 'utf8');
 
   const runtime = await createRuntimeTools({
     workspaceDir: rootDir,
@@ -69,6 +102,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
     attachments: [
       { id: 'attachment-1', name: 'user-upload.txt', path: attachmentTextPath, kind: 'text' },
       { id: 'attachment-2', name: 'scan.pdf', path: attachmentPdfPath },
+      { id: 'attachment-3', name: 'paged.pdf', path: attachmentPagedPdfPath },
     ],
   });
 
@@ -126,7 +160,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
     });
     assert.equal(pdfRead.success, true);
     assert.match(pdfRead.content, /%PDF-1\.7/i);
-    assert.equal(pdfRead.cursorType, 'char');
+    assert.equal(pdfRead.cursorType, 'document-char');
     assert.equal(pdfRead.attachment.totalPageCount, 2);
     assert.equal('pageCount' in pdfRead.attachment, false);
     assert.equal(pdfRead.pageStart, 1);
@@ -155,6 +189,55 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(pdfTailRead.pageCount, 1);
     assert.equal(pdfTailRead.nextPageStart, 3);
     assert.equal(pdfTailRead.totalPageCount, 2);
+
+    const pagedRuntime = await createRuntimeTools({
+      workspaceDir: rootDir,
+      skillsDir: path.join(repoRoot, 'skills'),
+      mcpServers: [],
+      attachmentExtraction: {
+        markitdown: {
+          enabled: true,
+          supportedExtensions: ['.pdf'],
+          handlerModule: pagedHandlerPath,
+          readPageCount: 2,
+          previewPageCount: 1,
+        },
+      },
+      attachments: [
+        { id: 'attachment-3', name: 'paged.pdf', path: attachmentPagedPdfPath },
+      ],
+    });
+
+    try {
+      const firstPagedRead = await pagedRuntime.tools.readAttachmentText.execute({
+        attachment: 'attachment-3',
+        maxChars: 12000,
+      });
+      assert.equal(firstPagedRead.success, true);
+      assert.equal(firstPagedRead.cursorType, 'document-char');
+      assert.equal(firstPagedRead.pageStart, 1);
+      assert.equal(firstPagedRead.pageCount, 2);
+      assert.equal(firstPagedRead.nextPageStart, 3);
+      assert.match(firstPagedRead.content, /PAGE 1/);
+      assert.match(firstPagedRead.content, /PAGE 2/);
+
+      const secondPagedRead = await pagedRuntime.tools.readAttachmentText.execute({
+        attachment: 'attachment-3',
+        offset: firstPagedRead.nextOffset,
+        maxChars: 12000,
+      });
+      assert.equal(secondPagedRead.success, true);
+      assert.equal(secondPagedRead.cursorType, 'document-char');
+      assert.equal(secondPagedRead.pageStart, 3);
+      assert.equal(secondPagedRead.pageCount, 2);
+      assert.equal(secondPagedRead.offset, firstPagedRead.nextOffset);
+      assert.equal(secondPagedRead.nextPageStart, 5);
+      assert.match(secondPagedRead.content, /PAGE 3/);
+      assert.match(secondPagedRead.content, /PAGE 4/);
+      assert.ok(!/PAGE 1/.test(secondPagedRead.content));
+    } finally {
+      await pagedRuntime.close();
+    }
 
     const failingRuntime = await createRuntimeTools({
       workspaceDir: rootDir,

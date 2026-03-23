@@ -375,6 +375,12 @@ def try_convert_pdf_without_ocr(input_path: str, use_plugins: bool) -> str:
     return markdown
 
 
+def strip_leading_page_heading(markdown: str) -> str:
+    normalized = (markdown or "").lstrip()
+    stripped = re.sub(r"^##\s+Page\s+\d+\s*\n+", "", normalized, count=1, flags=re.IGNORECASE)
+    return stripped.strip()
+
+
 def normalize_pdf_page_range(input_path: str, page_start: int, page_count: int) -> tuple[int, int, int]:
     import fitz  # PyMuPDF
 
@@ -413,30 +419,44 @@ def try_convert_pdf_range_without_ocr(
         }
 
     temp_root = Path(input_path).resolve().parent
-    subset_path = temp_root / (
-        f"markitdown-direct-pdf-{os.getpid()}-{int(time.time() * 1000)}-"
-        f"{normalized_page_start}-{normalized_page_count}.pdf"
-    )
     source_doc = fitz.open(input_path)
-    subset_doc = fitz.open()
+    page_markdown_parts = []
     try:
-        subset_doc.insert_pdf(
-            source_doc,
-            from_page=normalized_page_start - 1,
-            to_page=normalized_page_start + normalized_page_count - 2,
-        )
-        subset_doc.save(str(subset_path))
+        for absolute_page_number in range(
+            normalized_page_start, normalized_page_start + normalized_page_count
+        ):
+            subset_path = temp_root / (
+                f"markitdown-direct-pdf-{os.getpid()}-{int(time.time() * 1000)}-"
+                f"{absolute_page_number}-1.pdf"
+            )
+            subset_doc = fitz.open()
+            try:
+                subset_doc.insert_pdf(
+                    source_doc,
+                    from_page=absolute_page_number - 1,
+                    to_page=absolute_page_number - 1,
+                )
+                subset_doc.save(str(subset_path))
+            finally:
+                subset_doc.close()
+
+            try:
+                page_markdown = strip_leading_page_heading(
+                    try_convert_pdf_without_ocr(str(subset_path), use_plugins)
+                )
+            finally:
+                try:
+                    subset_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            page_markdown_parts.append(
+                f"## Page {absolute_page_number}\n\n{page_markdown}".strip()
+            )
     finally:
-        subset_doc.close()
         source_doc.close()
 
-    try:
-        markdown = try_convert_pdf_without_ocr(str(subset_path), use_plugins)
-    finally:
-        try:
-            subset_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+    markdown = "\n\n".join(part for part in page_markdown_parts if part.strip()).strip()
 
     return {
         "markdown": markdown,

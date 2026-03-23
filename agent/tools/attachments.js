@@ -269,6 +269,69 @@ function readExtractedText(text, offset = 0, maxChars = DEFAULT_ATTACHMENT_TEXT_
   };
 }
 
+async function readPagedExtractedTextWithDocumentOffset({
+  extractor,
+  target,
+  inspection,
+  offset = 0,
+  maxChars = DEFAULT_ATTACHMENT_TEXT_CHARS,
+}) {
+  const effectiveOffset = Math.max(0, offset);
+  const pageStep = Math.max(1, extractor.readPageCount || 1);
+  const totalPageCount = Number.isFinite(inspection.totalPageCount) ? inspection.totalPageCount : 0;
+  let remainingOffset = effectiveOffset;
+  let currentPageStart = 1;
+
+  while (totalPageCount <= 0 || currentPageStart <= totalPageCount) {
+    const selectedPageCount = totalPageCount > 0
+      ? Math.min(pageStep, totalPageCount - currentPageStart + 1)
+      : pageStep;
+    const extracted = await extractor.extract(target, {
+      pageStart: currentPageStart,
+      pageCount: selectedPageCount,
+    });
+    const extractedText = String(extracted.markdown || '');
+    const effectivePageCount = Math.max(1, extracted.pageCount || selectedPageCount || pageStep);
+    const lastWindow = totalPageCount > 0
+      ? (currentPageStart + effectivePageCount - 1) >= totalPageCount
+      : true;
+
+    if (remainingOffset < extractedText.length || lastWindow || extractedText.length === 0) {
+      const localChunk = readExtractedText(extractedText, remainingOffset, maxChars);
+      const consumedBeforeChunk = effectiveOffset - remainingOffset;
+      return {
+        extracted,
+        chunk: {
+          text: localChunk.text,
+          truncated: localChunk.truncated,
+          offset: effectiveOffset,
+          nextOffset: consumedBeforeChunk + localChunk.nextOffset,
+          totalChars: null,
+        },
+      };
+    }
+
+    remainingOffset -= extractedText.length;
+    currentPageStart += effectivePageCount;
+  }
+
+  return {
+    extracted: {
+      markdown: '',
+      pageStart: totalPageCount || 1,
+      pageCount: 0,
+      truncated: false,
+    },
+    chunk: {
+      text: '',
+      truncated: false,
+      offset: effectiveOffset,
+      nextOffset: effectiveOffset,
+      totalChars: null,
+    },
+  };
+}
+
 function splitAttachmentInspection(inspection) {
   if (!inspection || typeof inspection !== 'object') {
     return {
@@ -450,16 +513,37 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
             }
 
             try {
+              const useImplicitPagedCursor = target.extension === '.pdf'
+                && inspection.pageRangeSupported === true
+                && !pageStart
+                && !pageCount
+                && !pageFromEnd;
               const pageSelection = target.extension === '.pdf'
                 ? resolvePdfPageSelection(inspection, pageStart, pageCount, pageFromEnd, extractor.readPageCount)
                 : { pageStart: pageStart || 1, pageCount: pageCount || 0 };
+              let extracted;
+              let chunk;
+
+              if (useImplicitPagedCursor) {
+                const pagedRead = await readPagedExtractedTextWithDocumentOffset({
+                  extractor,
+                  target,
+                  inspection,
+                  offset: offset ?? 0,
+                  maxChars: maxChars ?? DEFAULT_ATTACHMENT_TEXT_CHARS,
+                });
+                extracted = pagedRead.extracted;
+                chunk = pagedRead.chunk;
+              } else {
+                extracted = await extractor.extract(target, {
+                  pageStart: pageSelection.pageStart,
+                  pageCount: pageSelection.pageCount,
+                });
+                chunk = readExtractedText(extracted.markdown, offset ?? 0, maxChars ?? DEFAULT_ATTACHMENT_TEXT_CHARS);
+              }
+
               const selectedPageStart = pageSelection.pageStart;
               const selectedPageCount = pageSelection.pageCount;
-              const extracted = await extractor.extract(target, {
-                pageStart: selectedPageStart,
-                pageCount: selectedPageCount,
-              });
-              const chunk = readExtractedText(extracted.markdown, offset ?? 0, maxChars ?? DEFAULT_ATTACHMENT_TEXT_CHARS);
               return {
                 success: true,
                 attachment: {
@@ -475,7 +559,7 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
                 offset: chunk.offset,
                 nextOffset: chunk.nextOffset,
                 totalChars: chunk.totalChars,
-                cursorType: 'char',
+                cursorType: useImplicitPagedCursor ? 'document-char' : 'char',
                 pageStart: extracted.pageStart || selectedPageStart,
                 pageCount: extracted.pageCount || selectedPageCount || null,
                 nextPageStart: extracted.pageCount ? (extracted.pageStart + extracted.pageCount) : null,
