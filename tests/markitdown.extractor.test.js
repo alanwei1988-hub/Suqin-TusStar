@@ -89,6 +89,7 @@ module.exports = async function runMarkItDownExtractorTest() {
     ]);
 
     const handlerModulePath = path.join(rootDir, 'counting-handler.js');
+    const fallbackHandlerPath = path.join(rootDir, 'fallback-handler.js');
     const cacheDbPath = path.join(rootDir, 'attachment-cache.db');
     const firstPdfPath = path.join(rootDir, 'scan-a.pdf');
     const secondPdfPath = path.join(rootDir, 'scan-b.pdf');
@@ -104,6 +105,21 @@ module.exports = async function runMarkItDownExtractorTest() {
 `, 'utf8');
     fs.writeFileSync(firstPdfPath, '%PDF-1.7\nsame content');
     fs.writeFileSync(secondPdfPath, '%PDF-1.7\nsame content');
+    fs.writeFileSync(fallbackHandlerPath, `const fs = require('fs');
+const { createExtractionError } = require(${JSON.stringify(path.join(__dirname, '..', 'markitdown', 'extractor.js'))});
+module.exports = async function fallbackHandler({ attachmentPath, llm, profileName }) {
+  if (llm && llm.model === 'primary-ocr-model') {
+    throw createExtractionError("openai.BadRequestError: Error code: 400 - {'error': {'code': 'data_inspection_failed'}}", {
+      code: 'ocr_safety_review_blocked',
+      userMessage: 'OCR 模型触发了安全审查，当前模型无法继续提取该附件内容。',
+      rawMessage: 'data_inspection_failed',
+      primaryProfile: profileName,
+      canRetryWithFallback: true,
+    });
+  }
+  return '# OCR via ' + llm.model + '\\n' + fs.readFileSync(attachmentPath, 'utf8');
+};
+`, 'utf8');
     delete global.__markitdownCacheHandlerCalls;
 
     const extractorConfig = {
@@ -156,6 +172,46 @@ module.exports = async function runMarkItDownExtractorTest() {
     } finally {
       firstExtractor.close();
       secondExtractor.close();
+    }
+
+    const fallbackExtractor = createMarkItDownExtractor({
+      enabled: true,
+      handlerModule: fallbackHandlerPath,
+      supportedExtensions: ['.pdf'],
+      llm: {
+        client: 'openai',
+        model: 'primary-ocr-model',
+        baseURL: 'https://primary.example.invalid/v1',
+        apiKeyEnv: 'MARKITDOWN_OCR_OPENAI_API_KEY',
+        prompt: 'Primary OCR prompt.',
+      },
+      activeLlmProfile: 'primary',
+      fallbackLlm: {
+        client: 'openai',
+        model: 'fallback-ocr-model',
+        baseURL: 'https://fallback.example.invalid/v1',
+        apiKeyEnv: 'MARKITDOWN_OCR_OPENAI_API_KEY',
+        prompt: 'Fallback OCR prompt.',
+      },
+      fallbackLlmProfile: 'fallback',
+    });
+
+    try {
+      const fallbackResult = await fallbackExtractor.extract({
+        resolvedPath: firstPdfPath,
+        extension: '.pdf',
+        name: 'scan-a.pdf',
+      }, {
+        pageStart: 1,
+        pageCount: 1,
+      });
+
+      assert.match(fallbackResult.markdown, /OCR via fallback-ocr-model/);
+      assert.equal(fallbackResult.profileName, 'fallback');
+      assert.equal(fallbackResult.fallbackUsed, true);
+      assert.equal(fallbackResult.primaryProfile, 'primary');
+    } finally {
+      fallbackExtractor.close();
     }
   } finally {
     for (const [key, value] of Object.entries(previousEnv)) {

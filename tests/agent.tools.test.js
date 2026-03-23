@@ -12,6 +12,7 @@ module.exports = async function runAgentToolsTest() {
   const attachmentTextPath = path.join(rootDir, 'user-upload.txt');
   const attachmentPdfPath = path.join(rootDir, 'scan.pdf');
   const largeTextPath = path.join(rootDir, 'large.txt');
+  const failingHandlerPath = path.join(rootDir, 'failing-markitdown-handler.js');
 
   fs.writeFileSync(localTextPath, 'hello local file');
   fs.writeFileSync(localPdfPath, '%PDF-1.7\nlocal pdf body');
@@ -33,6 +34,25 @@ trailer
 << /Root 1 0 R >>
 %%EOF`);
   fs.writeFileSync(largeTextPath, 'x'.repeat(300 * 1024));
+  fs.writeFileSync(failingHandlerPath, `const { createExtractionError } = require(${JSON.stringify(path.join(repoRoot, 'markitdown', 'extractor.js'))});
+module.exports = async function failingHandler({ llm, profileName }) {
+  if (llm && llm.model === 'primary-ocr-model') {
+    throw createExtractionError('primary ocr failed', {
+      code: 'ocr_safety_review_blocked',
+      userMessage: 'OCR 模型触发了安全审查，当前模型无法继续提取该附件内容。',
+      rawMessage: 'data_inspection_failed',
+      primaryProfile: profileName,
+      canRetryWithFallback: true,
+    });
+  }
+  throw createExtractionError('fallback ocr failed', {
+    code: 'ocr_request_failed',
+    userMessage: 'OCR 模型请求失败，当前未能提取附件文本。',
+    rawMessage: 'fallback request failed',
+    primaryProfile: 'qwen-vl',
+    fallbackProfile: profileName,
+  });
+};`, 'utf8');
 
   const runtime = await createRuntimeTools({
     workspaceDir: rootDir,
@@ -135,6 +155,46 @@ trailer
     assert.equal(pdfTailRead.pageCount, 1);
     assert.equal(pdfTailRead.nextPageStart, 3);
     assert.equal(pdfTailRead.totalPageCount, 2);
+
+    const failingRuntime = await createRuntimeTools({
+      workspaceDir: rootDir,
+      skillsDir: path.join(repoRoot, 'skills'),
+      mcpServers: [],
+      attachmentExtraction: {
+        markitdown: {
+          enabled: true,
+          supportedExtensions: ['.pdf'],
+          handlerModule: failingHandlerPath,
+          activeLlmProfile: 'qwen-vl',
+          fallbackLlmProfile: 'legacy-openai-compatible',
+          llm: {
+            client: 'qwen',
+            model: 'primary-ocr-model',
+          },
+          fallbackLlm: {
+            client: 'openai',
+            model: 'fallback-ocr-model',
+          },
+        },
+      },
+      attachments: [
+        { id: 'attachment-2', name: 'scan.pdf', path: attachmentPdfPath },
+      ],
+    });
+
+    try {
+      const failedPdfRead = await failingRuntime.tools.readAttachmentText.execute({
+        attachment: 'attachment-2',
+      });
+      assert.equal(failedPdfRead.success, false);
+      assert.equal(failedPdfRead.errorCode, 'ocr_safety_review_blocked');
+      assert.match(failedPdfRead.error, /安全审查/);
+      assert.equal(failedPdfRead.fallbackAttempted, true);
+      assert.equal(failedPdfRead.fallbackProfile, 'legacy-openai-compatible');
+      assert.match(failedPdfRead.errorDetails, /data_inspection_failed/i);
+    } finally {
+      await failingRuntime.close();
+    }
 
     const outbound = await runtime.tools.sendFile.execute({
       path: localPdfPath,

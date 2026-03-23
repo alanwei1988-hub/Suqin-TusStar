@@ -284,6 +284,30 @@ function splitAttachmentInspection(inspection) {
   };
 }
 
+function buildAttachmentExtractionFailurePayload(inspection, error) {
+  const errorCode = typeof error?.code === 'string' && error.code.trim().length > 0
+    ? error.code.trim()
+    : 'attachment_extraction_failed';
+  const userMessage = typeof error?.userMessage === 'string' && error.userMessage.trim().length > 0
+    ? error.userMessage.trim()
+    : `MarkItDown extraction failed for "${inspection.name}".`;
+  const rawMessage = typeof error?.rawMessage === 'string' && error.rawMessage.trim().length > 0
+    ? error.rawMessage.trim()
+    : String(error?.message || userMessage);
+
+  return {
+    success: false,
+    error: `${userMessage} 附件: "${inspection.name}"。`,
+    errorCode,
+    errorDetails: rawMessage,
+    fallbackErrorCode: error?.fallbackErrorCode || null,
+    primaryProfile: error?.primaryProfile || null,
+    fallbackProfile: error?.fallbackProfile || null,
+    fallbackAttempted: error?.fallbackAttempted === true,
+    attachment: inspection,
+  };
+}
+
 function resolvePdfPageSelection(inspection, pageStart, pageCount, pageFromEnd, defaultPageCount) {
   const selectedPageCount = pageCount || defaultPageCount || 0;
 
@@ -459,11 +483,7 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
                 pageRangeSupported: inspection.pageRangeSupported === true,
               };
             } catch (error) {
-              return {
-                success: false,
-                error: `MarkItDown extraction failed for "${inspection.name}": ${error.message}`,
-                attachment: inspection,
-              };
+              return buildAttachmentExtractionFailurePayload(inspection, error);
             }
           }
           const chunk = await readAttachmentText(inspection.path, inspection.sizeBytes, offset ?? 0, maxChars ?? DEFAULT_ATTACHMENT_TEXT_CHARS);

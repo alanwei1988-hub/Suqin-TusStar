@@ -52,6 +52,7 @@ module.exports = async function runAppConfigTest() {
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.cache.enabled, true);
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.cache.dbPath, `${__dirname}\\data\\attachment-extraction-cache.db`);
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.activeLlmProfile, '');
+  assert.equal(processedDefault.agent.attachmentExtraction.markitdown.fallbackLlmProfile, '');
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.llmProfiles, {});
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.llm, {
     client: '',
@@ -60,6 +61,7 @@ module.exports = async function runAppConfigTest() {
     apiKeyEnv: '',
     prompt: '',
   });
+  assert.equal(processedDefault.agent.attachmentExtraction.markitdown.fallbackLlm, null);
   assert.equal(processedDefault.contractMcp.storageRoot, `${__dirname}\\contract-library`);
   assert.equal(processedDefault.contractMcp.dbPath, `${__dirname}\\contract-library\\contracts.db`);
   assert.equal(processedDefault.contractMcp.stagingDir, `${__dirname}\\contract-library\\.staging`);
@@ -147,6 +149,7 @@ module.exports = async function runAppConfigTest() {
         markitdown: {
           enabled: true,
           activeLlmProfile: 'qwen-vl-flash',
+          fallbackLlmProfile: 'legacy-openai-compatible',
           llmProfiles: {
             'legacy-openai-compatible': {
               client: 'openai',
@@ -168,6 +171,7 @@ module.exports = async function runAppConfigTest() {
     env: {},
   });
   assert.equal(processedQwenMarkItDown.agent.attachmentExtraction.markitdown.activeLlmProfile, 'qwen-vl-flash');
+  assert.equal(processedQwenMarkItDown.agent.attachmentExtraction.markitdown.fallbackLlmProfile, 'legacy-openai-compatible');
   assert.deepEqual(processedQwenMarkItDown.agent.attachmentExtraction.markitdown.llmProfiles, {
     'legacy-openai-compatible': {
       client: 'openai',
@@ -190,6 +194,13 @@ module.exports = async function runAppConfigTest() {
     baseURL: QWEN_OPENAI_COMPAT_BASE_URL,
     apiKeyEnv: QWEN_API_KEY_ENV,
     prompt: QWEN_DOCUMENT_MARKDOWN_PROMPT,
+  });
+  assert.deepEqual(processedQwenMarkItDown.agent.attachmentExtraction.markitdown.fallbackLlm, {
+    client: 'openai',
+    model: 'legacy-model',
+    baseURL: 'https://legacy.example.invalid/v1',
+    apiKeyEnv: 'LEGACY_MARKITDOWN_OCR_KEY',
+    prompt: 'Legacy OCR prompt.',
   });
 
   const processedLegacyProfileMarkItDown = processConfig({

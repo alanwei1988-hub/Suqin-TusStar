@@ -87,6 +87,9 @@ function normalizeMarkItDownConfig(rootDir, config = {}) {
   const activeLlmProfile = typeof config.activeLlmProfile === 'string'
     ? config.activeLlmProfile.trim()
     : '';
+  const fallbackLlmProfile = typeof config.fallbackLlmProfile === 'string'
+    ? config.fallbackLlmProfile.trim()
+    : '';
   const cacheConfig = config && typeof config.cache === 'object' && !Array.isArray(config.cache)
     ? config.cache
     : {};
@@ -98,6 +101,9 @@ function normalizeMarkItDownConfig(rootDir, config = {}) {
   const fallbackLlmConfig = normalizeMarkItDownLlmConfig(llmConfig);
   const activeProfileLlmConfig = activeLlmProfile && normalizedLlmProfiles[activeLlmProfile]
     ? normalizedLlmProfiles[activeLlmProfile]
+    : null;
+  const fallbackProfileLlmConfig = fallbackLlmProfile && normalizedLlmProfiles[fallbackLlmProfile]
+    ? normalizedLlmProfiles[fallbackLlmProfile]
     : null;
   const normalized = {
     enabled: config.enabled === true,
@@ -126,8 +132,10 @@ function normalizeMarkItDownConfig(rootDir, config = {}) {
         : path.resolve(rootDir, 'data', 'attachment-extraction-cache.db'),
     },
     activeLlmProfile,
+    fallbackLlmProfile: fallbackProfileLlmConfig ? fallbackLlmProfile : '',
     llmProfiles: normalizedLlmProfiles,
     llm: activeProfileLlmConfig || fallbackLlmConfig,
+    fallbackLlm: fallbackProfileLlmConfig,
   };
 
   if (normalized.command === '{runner}') {
