@@ -2,6 +2,7 @@ import argparse
 import base64
 import io
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -346,6 +347,35 @@ def install_timing_hooks() -> None:
     timing_log("installed OCR timing hooks")
 
 
+def count_meaningful_text_characters(markdown: str) -> int:
+    if not markdown:
+        return 0
+
+    sanitized = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", markdown)
+    sanitized = re.sub(r"https?://\S+", " ", sanitized)
+    matches = re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", sanitized)
+    return len(matches)
+
+
+def should_use_direct_pdf_markdown(markdown: str) -> bool:
+    normalized = (markdown or "").strip()
+    if not normalized:
+        return False
+
+    return count_meaningful_text_characters(normalized) >= 20
+
+
+def try_convert_pdf_without_ocr(input_path: str, use_plugins: bool) -> str:
+    direct_started_at = time.perf_counter()
+    result = MarkItDown(enable_plugins=use_plugins).convert(input_path)
+    markdown = (result.markdown or "").strip()
+    timing_log(
+        f"markitdown_direct_pdf_convert elapsed_ms={(time.perf_counter() - direct_started_at) * 1000:.0f} "
+        f"markdown_chars={len(markdown)} meaningful_chars={count_meaningful_text_characters(markdown)}"
+    )
+    return markdown
+
+
 def main() -> int:
     timing_log(
         f"python_imports_ready elapsed_ms={(_PROCESS_STARTED_AT - _WALL_PROCESS_STARTED_AT) * 1000:.0f}"
@@ -366,6 +396,18 @@ def main() -> int:
     timing_log(f"args_parsed elapsed_ms={(time.perf_counter() - _PROCESS_STARTED_AT) * 1000:.0f}")
 
     kwargs = {}
+    install_timing_hooks()
+    input_suffix = Path(args.input).suffix.lower()
+    if args.llm_client and args.llm_model and input_suffix == ".pdf":
+        direct_markdown = try_convert_pdf_without_ocr(args.input, args.use_plugins)
+        if should_use_direct_pdf_markdown(direct_markdown):
+            timing_log("using direct PDF text extraction; OCR fallback not needed")
+            sys.stdout.write(direct_markdown)
+            timing_log(
+                f"runner_total elapsed_ms={(time.perf_counter() - _PROCESS_STARTED_AT) * 1000:.0f}"
+            )
+            return 0
+
     llm_client = None
     llm_prompt = ""
     if args.llm_client and args.llm_model:
@@ -385,8 +427,6 @@ def main() -> int:
             f"llm_client_built elapsed_ms={(time.perf_counter() - llm_started_at) * 1000:.0f}"
         )
 
-    install_timing_hooks()
-    input_suffix = Path(args.input).suffix.lower()
     if llm_client is not None and input_suffix == ".pdf":
         convert_started_at = time.perf_counter()
         page_start = max(1, int(args.page_start or "1"))
