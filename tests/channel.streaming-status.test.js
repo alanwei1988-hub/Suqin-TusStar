@@ -66,11 +66,13 @@ module.exports = async function runChannelStreamingStatusTest() {
     const stream = channel.streamReplies[0];
 
     await waitFor(() => stream.updates.some(update => update.kind === 'status' && update.content.includes('第 1 步') && update.content.includes('bash')));
+    await waitFor(() => stream.updates.some(update => update.kind === 'status' && update.content.includes('已完成第 1 步')));
     await waitFor(
       () => stream.finalContent.length === 0
         && stream.updates.some(update => update.kind === 'status' && update.content.includes('第 2 步') && update.content.includes('bash')),
       { timeoutMs: 400, intervalMs: 20 },
     );
+    await waitFor(() => stream.updates.some(update => update.kind === 'status' && update.content.includes('已完成第 2 步')));
 
     await waitFor(() => channel.replies.length > 0);
     assert.equal(channel.replies[0].content, '状态测试完成');

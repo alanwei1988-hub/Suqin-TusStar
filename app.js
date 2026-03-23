@@ -280,7 +280,8 @@ function formatStepStatus(step) {
 }
 
 function formatToolCallStatus(event) {
-  return `正在处理（第 ${event.stepNumber + 1} 步）：${event.toolCall.toolName}`;
+  const stepNumber = Number.isFinite(event.stepNumber) ? event.stepNumber + 1 : '?';
+  return `正在处理（第 ${stepNumber} 步）：${event.toolCall.toolName}`;
 }
 
 function normalizeAgentResponse(response) {
@@ -453,6 +454,7 @@ function registerChannelHandlers({ agent, channel }) {
         const agentResponse = normalizeAgentResponse(await agent.chat(userId, text, attachments, {
           includeArtifacts: true,
           onToolCallStart: async event => {
+            console.log(`[Main] Agent tool start: step ${Number.isFinite(event.stepNumber) ? event.stepNumber + 1 : '?'} -> ${event.toolCall.toolName}`);
             if (streamReply) {
               await streamReply.updateStatus(formatToolCallStatus(event));
             }
@@ -462,7 +464,7 @@ function registerChannelHandlers({ agent, channel }) {
               console.log('[Main] Agent tools:', step.toolCalls.map(toolCall => toolCall.toolName).join(', '));
             }
 
-            if (streamReply && ((!step.toolCalls || step.toolCalls.length === 0) || (step.text && step.text.trim().length > 0))) {
+            if (streamReply) {
               await streamReply.updateStatus(formatStepStatus(step));
             }
           },
