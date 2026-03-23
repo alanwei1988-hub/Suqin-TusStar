@@ -144,7 +144,7 @@ function getPhaseInstructions(stepNumber, loopState) {
   }
 
   if (stepNumber === 0) {
-    return 'Inspection phase: inspect the relevant machine state, files, and possible conflicts first. When attachments are present, first understand the user intent from the current message plus prior conversation; do not inspect or read an attachment on the first step unless that is already clearly necessary. If attachment reading becomes necessary, prefer progressive exploration with relatively larger reads rather than many tiny reads, and keep searching the file before asking the user to restate details. Load skills when useful before making changes unless the task can be finished immediately.';
+    return 'Inspection phase: inspect the relevant machine state, files, and possible conflicts first. When attachments are present, decide the task before touching them. On the first step, do not inspect or read an attachment unless the task is already clear and file access is genuinely needed. If the task is still ambiguous, ask a clarifying question instead. Once file access is justified, prefer fewer, larger reads and keep searching before asking the user to restate details. Load skills when useful before making changes unless the task can be finished immediately.';
   }
 
   if (loopState.hasMutatingAction) {

@@ -10,6 +10,7 @@ module.exports = async function runAgentRoleTest() {
   const rolePrompt = await loadRolePrompt(path.join(repoRoot, 'roles', 'contract-manager'));
   assert.match(rolePrompt, /合同管理员/);
   assert.match(rolePrompt, /不要编造/);
+  assert.match(rolePrompt, /不要因为“收到了文件”就立刻读取/);
 
   const rootDir = makeTempDir('agent-role-');
   const model = new MockLanguageModelV3({

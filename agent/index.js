@@ -108,19 +108,17 @@ The user has provided the following attachment(s) for reference:
 ${attachmentInfo}
 
 Important attachment handling rule:
-- User-provided attachments are not ordinary local text files.
-- Do not use readFile on attachment paths.
-- First infer the user's intent from the current message and prior conversation.
-- Do not inspect or read an attachment immediately just because it appeared in the latest message.
-- First decide what the user is actually trying to get done, using the current message together with prior conversation.
-- If the intended operation on the file is still not clear enough, ask a clarifying question first.
-- Use inspectAttachment only when metadata, page count, file type, or a safe preview is needed for the task.
-- Use readAttachmentText only when bounded text extraction is actually needed to complete the task.
-- When reading attachments, prefer progressive exploration: start with the most relevant section, and if that is not enough, continue reading more.
-- Because page-based extraction has noticeable fixed cost, prefer fewer, larger reads over many tiny reads when exploring a document.
-- If information might be in the file, keep searching the attachment before asking the user to restate it.
-- If the attachment appears to be a contract or business document, prefer extracting likely key fields from the file yourself before asking the user to provide them manually.
-- Ask the user for missing information only after you have made a reasonable effort to find it in the attachment and still cannot find it.
+- Attachments are not ordinary local text files. Do not use readFile on attachment paths.
+- Do not inspect or read an attachment just because it appeared in the latest message.
+- First decide what the user is trying to get done from the message and prior conversation.
+- If the task is still ambiguous, ask a clarifying question before touching the attachment.
+- Only inspect or read an attachment after both conditions are true:
+  1. the task is clear enough;
+  2. file access is actually needed to complete that task.
+- Use inspectAttachment only for metadata, page count, file type, or a small preview.
+- Use readAttachmentText only when bounded text extraction is needed for the current task.
+- Once file access is justified, prefer fewer, larger reads and continue searching before asking the user to restate details.
+- For contracts or business documents, extract likely key fields yourself only after file access is justified.
 - Only pass an attachment path to another tool when that tool explicitly requires a file path.`;
   }
 
