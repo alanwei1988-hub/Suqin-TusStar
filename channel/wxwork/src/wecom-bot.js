@@ -3,6 +3,10 @@ const crypto = require('crypto');
 const EventEmitter = require('events');
 const https = require('https');
 
+function normalizeStreamContent(content) {
+  return String(content ?? '').replace(/[ \t\u00A0\u3000]+$/u, '');
+}
+
 /**
  * WeComAIBot - Optimized for WeCom AI Bot Long Connection Protocol
  */
@@ -302,6 +306,7 @@ class WeComAIBot extends EventEmitter {
    * @param {boolean} finish - whether it's the final chunk
    */
   respondStreamMsg(reqId, content, streamId, finish = true) {
+    const normalizedContent = normalizeStreamContent(content);
     return this.sendCallbackResponse(reqId, {
       cmd: 'aibot_respond_msg',
       headers: { req_id: reqId },
@@ -309,7 +314,7 @@ class WeComAIBot extends EventEmitter {
         msgtype: 'stream',
         stream: {
           id: streamId,
-          content: content,
+          content: normalizedContent,
           finish: finish
         }
       }

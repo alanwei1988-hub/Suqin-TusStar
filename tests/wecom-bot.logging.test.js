@@ -9,6 +9,7 @@ module.exports = async function runWecomBotLoggingTest() {
   });
 
   const logs = [];
+  const sentPayloads = [];
   bot.log = (...args) => {
     logs.push(args.join(' '));
   };
@@ -18,6 +19,7 @@ module.exports = async function runWecomBotLoggingTest() {
     send: () => {},
   };
   bot.send = payload => {
+    sentPayloads.push(payload);
     bot.logOutgoingPayload(payload);
     setTimeout(() => {
       bot.handleMessage({ headers: { req_id: payload.headers.req_id }, errcode: 0, errmsg: 'ok' });
@@ -25,11 +27,13 @@ module.exports = async function runWecomBotLoggingTest() {
     return true;
   };
 
-  await bot.respondStreamMsg('req-1', '中间草稿', 'sid-1', false);
+  await bot.respondStreamMsg('req-1', '中间草稿          ', 'sid-1', false);
   assert.equal(logs.length, 0);
+  assert.equal(sentPayloads[0].body.stream.content, '中间草稿');
 
-  await bot.respondStreamMsg('req-1', '最终完整回复', 'sid-1', true);
+  await bot.respondStreamMsg('req-1', '最终完整回复          ', 'sid-1', true);
   assert.equal(logs.length, 1);
+  assert.equal(sentPayloads[1].body.stream.content, '最终完整回复');
   assert.match(logs[0], /Sending final stream:/);
   assert.match(logs[0], /最终完整回复/);
 

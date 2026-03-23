@@ -1,6 +1,6 @@
 {
   "agent": {
-    "model": "qwen3.5-plus",
+    "model": "gemini-3.1-flash-lite-preview",
     "provider": "openai",
     "openai": {
       "baseURL": "https://api.zetatechs.com/v1"
