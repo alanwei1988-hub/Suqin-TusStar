@@ -474,7 +474,12 @@ function buildAttachmentsPrompt(attachments) {
     'Use `inspectAttachment` and `readAttachmentText` for user-provided attachments only when they materially help with the current task.',
     'For supported document formats, `readAttachmentText` may convert the attachment to Markdown before returning a bounded chunk.',
     'Prefer `inspectAttachment` before `readAttachmentText` when you need file type, page range, metadata, or a small preview.',
-    'If the user intent is still ambiguous, ask a clarifying question before touching the attachment.',
+    'Once reading is justified, explore progressively: start from the most relevant section, then expand if the first pass is insufficient.',
+    'Because page-based extraction has meaningful fixed latency, prefer fewer, larger reads over many tiny reads when searching a document.',
+    'If the needed information is not in the first chunk, continue searching the file instead of giving up early.',
+    'For contracts and similar business documents, prefer extracting likely key fields from the attachment yourself before asking the user to type them out.',
+    'Prefer extracting and locating information from the attachment yourself. Only ask the user to provide missing details after a reasonable file search fails.',
+    'If the user intent is still ambiguous before any file access, ask a clarifying question before touching the attachment.',
     'Do not use `readFile` on attachment paths. Only pass attachment paths to other tools when a tool explicitly requires a file path.',
     ...lines,
   ].join('\n');

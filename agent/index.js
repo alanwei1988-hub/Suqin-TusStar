@@ -116,6 +116,11 @@ Important attachment handling rule:
 - If the intended operation on the file is still not clear enough, ask a clarifying question first.
 - Use inspectAttachment only when metadata, page count, file type, or a safe preview is needed for the task.
 - Use readAttachmentText only when bounded text extraction is actually needed to complete the task.
+- When reading attachments, prefer progressive exploration: start with the most relevant section, and if that is not enough, continue reading more.
+- Because page-based extraction has noticeable fixed cost, prefer fewer, larger reads over many tiny reads when exploring a document.
+- If information might be in the file, keep searching the attachment before asking the user to restate it.
+- If the attachment appears to be a contract or business document, prefer extracting likely key fields from the file yourself before asking the user to provide them manually.
+- Ask the user for missing information only after you have made a reasonable effort to find it in the attachment and still cannot find it.
 - Only pass an attachment path to another tool when that tool explicitly requires a file path.`;
   }
 
