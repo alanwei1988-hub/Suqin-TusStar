@@ -36,6 +36,26 @@ function resolveRelative(baseDir, value, fallback) {
     : path.resolve(baseDir, candidate);
 }
 
+function isPathInside(rootPath, candidatePath) {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolvePathUnderLibraryRoot(libraryRoot, value, fallbackName) {
+  const candidate = typeof value === 'string' ? value.trim() : '';
+  const resolved = candidate
+    ? (path.isAbsolute(candidate)
+      ? path.resolve(candidate)
+      : path.resolve(libraryRoot, candidate))
+    : path.resolve(libraryRoot, fallbackName);
+
+  if (!isPathInside(libraryRoot, resolved)) {
+    throw new Error(`contractMcp.dbPath must stay under libraryRoot: ${value}`);
+  }
+
+  return resolved;
+}
+
 function resolveContractMcpConfig(baseDir, contractMcp = {}) {
   const libraryRoot = resolveRelative(
     baseDir,
@@ -50,10 +70,8 @@ function resolveContractMcpConfig(baseDir, contractMcp = {}) {
 
   return {
     libraryRoot,
-    statePath: resolveRelative(baseDir, contractMcp.statePath, path.join(baseDir, 'data', 'contract-workflow-state.json')),
-    ledgerWorkbookPath: resolveRelative(baseDir, contractMcp.ledgerWorkbookPath, path.join(libraryRoot, '协议台账.xlsx')),
-    ledgerAdminUserId: typeof contractMcp.ledgerAdminUserId === 'string' ? contractMcp.ledgerAdminUserId.trim() : '',
-    pendingIdPrefix: contractMcp.pendingIdPrefix || contractMcp.contractIdPrefix || 'P',
+    dbPath: resolvePathUnderLibraryRoot(libraryRoot, contractMcp.dbPath, '合同归档.db'),
+    archiveIdPrefix: contractMcp.archiveIdPrefix || contractMcp.contractIdPrefix || 'A',
     allowedExtensions: Array.isArray(contractMcp.allowedExtensions) && contractMcp.allowedExtensions.length > 0
       ? contractMcp.allowedExtensions
       : DEFAULT_ALLOWED_EXTENSIONS,

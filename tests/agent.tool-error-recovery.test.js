@@ -18,7 +18,7 @@ module.exports = async function runAgentToolErrorRecoveryTest() {
 
       if (callIndex === 1) {
         return generateResult([
-          toolCall('mcp-1', 'contract_prepare_archive', {
+          toolCall('mcp-1', 'contract_archive', {
             sourceFiles: [{ path: attachmentPath, name: 'contract.pdf' }],
             archiveRelativeDir: '专业服务收入协议（活动+算力+商业化）\\算力客户协议（启迪收入）',
             sheetName: '有结算款项协议',
@@ -30,13 +30,13 @@ module.exports = async function runAgentToolErrorRecoveryTest() {
 
       if (callIndex === 2) {
         return generateResult([
-          textPart('我先帮你完成了归档判断，但还不能正式入库。'),
+          textPart('我先补全关键字段，再继续归档。'),
         ], 'stop');
       }
 
       if (callIndex === 3) {
         return generateResult([
-          toolCall('mcp-2', 'contract_prepare_archive', {
+          toolCall('mcp-2', 'contract_archive', {
             contract: {
               contractName: '算力技术服务协议',
               agreementType: '算力技术服务协议',
@@ -58,7 +58,7 @@ module.exports = async function runAgentToolErrorRecoveryTest() {
       }
 
       return generateResult([
-        textPart('已生成待确认归档记录，请确认协议归档与台账信息。'),
+        textPart('合同已归档并写入数据库。'),
       ], 'stop');
     },
   });
@@ -83,10 +83,10 @@ module.exports = async function runAgentToolErrorRecoveryTest() {
       { name: 'contract.pdf', path: attachmentPath },
     ]);
 
-    assert.match(response, /已生成待确认归档记录/);
-    const state = JSON.parse(fs.readFileSync(fixture.statePath, 'utf8'));
-    assert.equal(state.pendingRecords.length, 1);
-    assert.equal(state.pendingRecords[0].archive.relativeDir, '专业服务收入协议（活动+算力+商业化）\\算力客户协议（启迪收入）');
+    assert.match(response, /合同已归档并写入数据库/);
+    assert.equal(fs.existsSync(fixture.dbPath), true);
+    const archivedFiles = fs.readdirSync(path.join(fixture.libraryRoot, '专业服务收入协议（活动+算力+商业化）', '算力客户协议（启迪收入）'));
+    assert.equal(archivedFiles.some(name => name.includes('算力技术服务协议')), true);
     assert.equal(callIndex, 4);
   } finally {
     agent.close();

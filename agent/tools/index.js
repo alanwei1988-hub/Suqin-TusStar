@@ -161,7 +161,6 @@ class MachineBackend {
   constructor(workingDir, options = {}) {
     this.workingDir = path.resolve(workingDir);
     this.outboundAttachments = [];
-    this.outboundNotifications = [];
     this.bashTimeoutMs = Number.isFinite(options.bashTimeoutMs)
       ? Math.max(1, Math.trunc(options.bashTimeoutMs))
       : DEFAULT_BASH_TIMEOUT_MS;
@@ -243,49 +242,6 @@ class MachineBackend {
       path: filePath,
       name,
       sizeBytes,
-    }));
-  }
-
-  queueOutboundNotification(recipient, content, context = {}) {
-    const normalizedRecipient = recipient && typeof recipient === 'object'
-      ? {
-        userId: recipient.userId || '',
-        label: recipient.label || recipient.alias || recipient.userId || '',
-        alias: recipient.alias || '',
-      }
-      : {
-        userId: String(recipient || ''),
-        label: String(recipient || ''),
-        alias: '',
-      };
-
-    if (!normalizedRecipient.userId) {
-      throw new Error('Notification recipient is required.');
-    }
-
-    const normalizedContent = String(content || '').trim();
-
-    if (!normalizedContent) {
-      throw new Error('Notification content is required.');
-    }
-
-    this.outboundNotifications.push({
-      recipient: normalizedRecipient,
-      content: normalizedContent,
-      context,
-    });
-
-    return {
-      recipient: normalizedRecipient,
-      content: normalizedContent,
-    };
-  }
-
-  getOutboundNotifications() {
-    return this.outboundNotifications.map(notification => ({
-      recipient: notification.recipient,
-      content: notification.content,
-      context: notification.context,
     }));
   }
 }
@@ -421,53 +377,7 @@ function createSendFileTool(machine, workspaceDir) {
   });
 }
 
-function buildNotifyUserPrompt(messaging) {
-  const recipients = Object.entries(messaging?.recipients || {});
-  const lines = [
-    'Queue a proactive text notification to another employee through the current channel after your final reply is sent.',
-    'Use this when a workflow requires notifying the contract admin or another known recipient.',
-  ];
-
-  if (recipients.length > 0) {
-    lines.push('Available recipients:');
-
-    for (const [alias, recipient] of recipients) {
-      const label = recipient.label || recipient.userId || alias;
-      lines.push(`- ${alias}: ${label}`);
-    }
-  }
-
-  return lines.join('\n');
-}
-
-function createNotifyUserTool(machine, messaging = {}) {
-  const recipientMap = new Map(Object.entries(messaging.recipients || {}).map(([alias, value]) => [alias, {
-    ...value,
-    alias,
-  }]));
-
-  return tool({
-    description: buildNotifyUserPrompt(messaging),
-    inputSchema: z.object({
-      recipient: z.string().describe('A configured recipient alias such as contract_admin, or a direct user id'),
-      content: z.string().describe('The text message to send'),
-    }),
-    execute: async ({ recipient, content }) => {
-      const resolvedRecipient = recipientMap.get(recipient) || {
-        userId: recipient,
-        label: recipient,
-        alias: '',
-      };
-
-      return {
-        success: true,
-        queued: machine.queueOutboundNotification(resolvedRecipient, content),
-      };
-    },
-  });
-}
-
-async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachments = [], attachmentExtraction = {}, messaging = null, toolTimeouts = {} }) {
+async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachments = [], attachmentExtraction = {}, toolTimeouts = {} }) {
   const workingDir = path.resolve(workspaceDir);
   const machine = new MachineBackend(workingDir, toolTimeouts);
   const normalizedAttachments = normalizeAttachments(attachments, workingDir, resolveRequestedPath);
@@ -493,10 +403,6 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
     ...attachmentToolkit.tools,
   };
 
-  if (messaging && messaging.enabled !== false) {
-    runtimeTools.notifyUser = createNotifyUserTool(machine, messaging);
-  }
-
   const tools = mergeToolSets([
     runtimeTools,
     { skill: skillsToolkit.skill },
@@ -519,12 +425,6 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
       displayName: '文件发送',
       statusText: '准备发送文件',
     }),
-    ...(runtimeTools.notifyUser ? {
-      notifyUser: createToolDisplayInfo('notifyUser', {
-        displayName: '消息通知',
-        statusText: '通知相关同事',
-      }),
-    } : {}),
     ...(attachmentToolkit.toolDisplayByName || {}),
     ...(skillsToolkit.toolDisplayByName || {}),
     ...(mcpToolkit.toolDisplayByName || {}),
@@ -540,15 +440,11 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
     promptSections: [
       `Machine\nYou are operating on a shared local machine. Default working directory: \`${toPosixPath(workingDir)}\`. You may use absolute filesystem paths when needed, but you are responsible for preserving the machine's long-term usability and file integrity.`,
       'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
-      runtimeTools.notifyUser
-        ? 'Notifications\nIf a workflow requires alerting another employee, queue the message with `notifyUser` after the real work succeeds. Prefer configured aliases such as `contract_admin` instead of guessing user ids.'
-        : '',
       buildSkillsPrompt(skillsToolkit.skills),
       buildMcpPrompt(mcpToolkit.summaries),
       buildAttachmentsPrompt(normalizedAttachments),
     ].filter(Boolean),
     getOutboundAttachments: () => machine.getOutboundAttachments(),
-    getOutboundNotifications: () => machine.getOutboundNotifications(),
     close: async () => {
       if (typeof attachmentToolkit.close === 'function') {
         await attachmentToolkit.close();

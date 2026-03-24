@@ -235,7 +235,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
 
   ensureParentDirExists(sessionDbPath);
   ensureParentDirExists(markitdownConfig.cache.dbPath);
-  ensureParentDirExists(contractMcpConfig?.statePath);
+  ensureParentDirExists(contractMcpConfig?.dbPath);
 
   return {
     agent: {
@@ -322,16 +322,12 @@ function normalizeAgentResponse(response) {
       outboundAttachments: Array.isArray(response.outboundAttachments)
         ? response.outboundAttachments
         : [],
-      outboundNotifications: Array.isArray(response.outboundNotifications)
-        ? response.outboundNotifications
-        : [],
     };
   }
 
   return {
     text: response || '已处理完成。',
     outboundAttachments: [],
-    outboundNotifications: [],
   };
 }
 
@@ -465,51 +461,8 @@ async function sendOutboundAttachments({ channel, userId, attachments, context, 
   }
 }
 
-async function sendOutboundNotifications({ channel, notifications, currentContext, streamReply }) {
-  if (!Array.isArray(notifications) || notifications.length === 0) {
-    return { ok: true };
-  }
-
-  if (typeof channel.sendText !== 'function') {
-    return {
-      ok: false,
-      message: '相关同事通知未发送：当前通道不支持主动文本通知。',
-    };
-  }
-
-  if (streamReply) {
-    await streamReply.updateStatus('正在通知相关同事...');
-  }
-
-  try {
-    for (const notification of notifications) {
-      await channel.sendText(
-        notification?.recipient?.userId,
-        notification?.content || '',
-        notification?.context || currentContext || {},
-      );
-    }
-
-    return { ok: true };
-  } catch (error) {
-    console.error('[Main] Notification send error:', error);
-    return {
-      ok: false,
-      message: '相关同事通知发送失败，请手动转发处理结果。',
-    };
-  }
-}
-
 function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
   const messageQueue = createConversationQueue();
-  const notificationRecipients = contractMcpConfig.ledgerAdminUserId
-    ? {
-      contract_admin: {
-        userId: contractMcpConfig.ledgerAdminUserId,
-        label: `合同管理员(${contractMcpConfig.ledgerAdminUserId})`,
-      },
-    }
-    : {};
 
   channel.on('message', async ({ userId, text, attachments, context }) => {
     console.log(`[Main] Message from ${userId}: ${text} (${attachments.length} files)`);
@@ -532,10 +485,6 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
           requestContext: {
             userId,
             context,
-          },
-          messaging: {
-            enabled: true,
-            recipients: notificationRecipients,
           },
           onToolCallStart: async event => {
             console.log(`[Main] Agent tool start: step ${Number.isFinite(event.stepNumber) ? event.stepNumber + 1 : '?'} -> ${event.toolCall.toolName}`);
@@ -561,30 +510,15 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
           context,
           streamReply,
         });
-        const notificationResult = attachmentResult.ok
-          ? await sendOutboundNotifications({
-            channel,
-            notifications: agentResponse.outboundNotifications,
-            currentContext: context,
-            streamReply,
-          })
-          : { ok: true };
-        const notes = [];
 
         if (!attachmentResult.ok) {
-          notes.push(attachmentResult.message);
-        }
-
-        if (!notificationResult.ok) {
-          notes.push(notificationResult.message);
+          // Attachment failure becomes the final reply.
         }
 
         let finalText = agentResponse.text;
 
         if (!attachmentResult.ok) {
           finalText = attachmentResult.message;
-        } else if (!notificationResult.ok) {
-          finalText = `${agentResponse.text}\n\n${notificationResult.message}`;
         }
 
         if (streamReply) {

@@ -127,7 +127,7 @@ Important attachment handling rule:
   return content;
 }
 
-function buildRequestContextPrompt(requestContext = {}, messaging = null) {
+function buildRequestContextPrompt(requestContext = {}) {
   const lines = [];
 
   if (requestContext.userId) {
@@ -137,18 +137,6 @@ function buildRequestContextPrompt(requestContext = {}, messaging = null) {
 
   if (Number.isFinite(requestContext.context?.chatType) || requestContext.context?.chatId) {
     lines.push(`- Current chat target: ${requestContext.context?.chatId || requestContext.userId} (chatType=${requestContext.context?.chatType || 1})`);
-  }
-
-  if (messaging && messaging.recipients && Object.keys(messaging.recipients).length > 0) {
-    if (lines.length === 0) {
-      lines.push('Current Request');
-    }
-
-    lines.push('- Available notification aliases:');
-
-    for (const [alias, recipient] of Object.entries(messaging.recipients)) {
-      lines.push(`  - ${alias}: ${recipient.label || recipient.userId || alias}`);
-    }
   }
 
   return lines.join('\n');
@@ -246,7 +234,6 @@ class AgentCore {
     const {
       includeArtifacts = false,
       requestContext = {},
-      messaging = null,
       ...callbacks
     } = normalizedOptions;
     const normalizedAttachments = await enrichAttachmentMetadata(
@@ -272,13 +259,12 @@ class AgentCore {
       mcpServers: this.config.mcpServers || [],
       attachments: conversationAttachments,
       attachmentExtraction: this.config.attachmentExtraction || {},
-      messaging,
       toolTimeouts: this.config.toolTimeouts || {},
     });
     const rolePrompt = await loadRolePrompt(this.config.rolePromptDir);
     const promptSections = [
       rolePrompt,
-      buildRequestContextPrompt(requestContext, messaging),
+      buildRequestContextPrompt(requestContext),
       ...runtime.promptSections,
       context.summary,
     ].filter(Boolean);
@@ -354,9 +340,6 @@ class AgentCore {
       const outboundAttachments = typeof runtime.getOutboundAttachments === 'function'
         ? runtime.getOutboundAttachments()
         : [];
-      const outboundNotifications = typeof runtime.getOutboundNotifications === 'function'
-        ? runtime.getOutboundNotifications()
-        : [];
 
       appendFinalAssistantMessageIfNeeded(fullMessages, responseMessages, finalResponse);
       this.sessionManager.saveMessages(userId, fullMessages);
@@ -365,7 +348,6 @@ class AgentCore {
         return {
           text: finalResponse,
           outboundAttachments,
-          outboundNotifications,
         };
       }
 

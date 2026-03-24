@@ -116,7 +116,7 @@ async function handleMessage(message) {
             name: 'contract-manager-mcp',
             version: '1.0.0',
           },
-          instructions: 'Use these tools to inspect the real NAS contract directory, prepare uploader confirmations, archive files after confirmation, and notify the contract admin to update Excel.',
+          instructions: 'Use these tools to inspect the real NAS contract directory, archive contracts into NAS plus the structured archive database, and query archived records.',
         });
         break;
       case 'tools/list':

@@ -69,21 +69,20 @@ module.exports = async function runMcpToolkitTest() {
   const toolkit = await createMcpToolkit([fixture.mcpServer]);
 
   try {
-    assert.equal(typeof toolkit.tools.contract_prepare_archive.execute, 'function');
+    assert.equal(typeof toolkit.tools.contract_archive.execute, 'function');
+    assert.equal(toolkit.toolDisplayByName.contract_archive.statusText, '归档合同');
     assert.equal(toolkit.toolDisplayByName.contract_list_directory.statusText, '查看合同目录');
-    assert.equal(toolkit.toolDisplayByName.contract_confirm_archive.statusText, '正式归档合同');
     assert(toolkit.readOnlyToolNames.includes('contract_list_directory'));
     assert(toolkit.readOnlyToolNames.includes('contract_search'));
+    assert(toolkit.readOnlyToolNames.includes('contract_get_archive_record'));
+    assert(toolkit.readOnlyToolNames.includes('contract_search_archive_records'));
+    assert.equal(toolkit.toolSchemasByName.contract_archive.properties.contract.additionalProperties, false);
     assert.equal(
-      toolkit.toolSchemasByName.contract_prepare_archive.properties.contract.additionalProperties,
-      false,
-    );
-    assert.equal(
-      toolkit.toolSchemasByName.contract_prepare_archive.properties.contract.properties.contractName.type,
+      toolkit.toolSchemasByName.contract_archive.properties.contract.properties.contractName.type,
       'string',
     );
     assert.deepEqual(
-      toolkit.toolSchemasByName.contract_prepare_archive.properties.contract.properties.direction.enum,
+      toolkit.toolSchemasByName.contract_archive.properties.contract.properties.direction.enum,
       ['income', 'expense'],
     );
 
@@ -93,7 +92,7 @@ module.exports = async function runMcpToolkitTest() {
     });
     assert.equal(directoryResult.structuredContent.tree.name, '采购（启迪支出）');
 
-    const prepareResult = await toolkit.tools.contract_prepare_archive.execute({
+    const archiveResult = await toolkit.tools.contract_archive.execute({
       contract: {
         contractName: 'MCP 测试算力合同',
         agreementType: '采购',
@@ -106,10 +105,10 @@ module.exports = async function runMcpToolkitTest() {
       archiveRelativeDir: '采购（启迪支出）\\算力',
       operator: 'tester',
     });
-    assert.match(prepareResult.structuredContent.pending.pendingId, /^P\d{8}-\d{3}$/);
+    assert.match(archiveResult.structuredContent.archive.archiveId, /^A\d{8}-\d{4}$/);
 
     await assert.rejects(
-      () => toolkit.tools.contract_prepare_archive.execute({
+      () => toolkit.tools.contract_archive.execute({
         sourceFiles: [{ path: scanPath, name: 'scan.pdf' }],
         archiveRelativeDir: '专业服务收入协议（活动+算力+商业化）\\算力客户协议（启迪收入）',
         sheetName: '有结算款项协议',

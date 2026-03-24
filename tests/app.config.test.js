@@ -35,7 +35,6 @@ module.exports = async function runAppConfigTest() {
     },
     contractMcp: {
       libraryRoot: './contract-library',
-      pendingIdPrefix: 'P',
     },
   };
 
@@ -72,9 +71,7 @@ module.exports = async function runAppConfigTest() {
     mcpToolTimeoutMs: 30000,
   });
   assert.equal(processedDefault.contractMcp.libraryRoot, `${__dirname}\\contract-library`);
-  assert.equal(processedDefault.contractMcp.statePath, `${__dirname}\\data\\contract-workflow-state.json`);
-  assert.equal(processedDefault.contractMcp.ledgerWorkbookPath, `${__dirname}\\contract-library\\协议台账.xlsx`);
-  assert.equal(processedDefault.contractMcp.pendingIdPrefix, 'P');
+  assert.equal(processedDefault.contractMcp.dbPath, `${__dirname}\\contract-library\\合同归档.db`);
   assert.equal(fs.existsSync(path.join(tempRootDir, 'data')), false);
 
   processConfig(baseConfig, {

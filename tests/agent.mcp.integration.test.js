@@ -10,7 +10,6 @@ module.exports = async function runAgentMcpIntegrationTest() {
   const fixture = createContractMcpFixture(rootDir);
   const attachmentPath = path.join(rootDir, 'contract.pdf');
   fs.writeFileSync(attachmentPath, 'fake contract file');
-  let pendingId = '';
 
   let callIndex = 0;
   const model = new MockLanguageModelV3({
@@ -28,7 +27,7 @@ module.exports = async function runAgentMcpIntegrationTest() {
 
       if (callIndex === 2) {
         return generateResult([
-          toolCall('mcp-2', 'contract_prepare_archive', {
+          toolCall('mcp-2', 'contract_archive', {
             contract: {
               contractName: 'Agent MCP 测试算力采购合同',
               agreementType: '采购',
@@ -48,29 +47,20 @@ module.exports = async function runAgentMcpIntegrationTest() {
 
       if (callIndex === 3) {
         return generateResult([
-          textPart('请确认协议归档与台账信息'),
-        ], 'stop');
+          textPart('合同已归档'),
+        ]);
       }
 
       if (callIndex === 4) {
         return generateResult([
-          toolCall('mcp-3', 'contract_confirm_archive', {
-            pendingId,
-            operator: 'u1',
+          toolCall('mcp-3', 'contract_search_archive_records', {
+            keyword: 'Agent MCP 测试算力采购合同',
+            limit: 5,
           }),
         ]);
       }
 
-      if (callIndex === 5) {
-        return generateResult([
-          toolCall('notify-1', 'notifyUser', {
-            recipient: 'contract_admin',
-            content: `待录入协议台账\n编号：${pendingId}`,
-          }),
-        ]);
-      }
-
-      return generateResult([textPart('合同已归档')], 'stop');
+      return generateResult([textPart('归档记录已检索')], 'stop');
     },
   });
 
@@ -93,31 +83,21 @@ module.exports = async function runAgentMcpIntegrationTest() {
     const firstResponse = await agent.chat('u1', '请帮我归档这份合同', [
       { name: 'contract.pdf', path: attachmentPath },
     ]);
-    assert.match(firstResponse, /请确认协议归档与台账信息/);
-    pendingId = JSON.parse(fs.readFileSync(fixture.statePath, 'utf8')).pendingRecords[0].pendingId;
+    assert.match(firstResponse, /合同已归档/);
 
-    const secondResponse = await agent.chat('u1', `确认 ${pendingId}`, [], {
+    const searchResponse = await agent.chat('u1', '帮我查一下刚才归档的记录', [], {
       includeArtifacts: true,
       requestContext: {
         userId: 'u1',
         context: { chatId: 'u1', chatType: 1 },
       },
-      messaging: {
-        enabled: true,
-        recipients: {
-          contract_admin: {
-            userId: 'admin-1',
-            label: '合同管理员',
-          },
-        },
-      },
     });
 
-    assert.equal(secondResponse.text, '合同已归档');
-    assert.equal(secondResponse.outboundNotifications.length, 1);
-    assert.equal(secondResponse.outboundNotifications[0].recipient.userId, 'admin-1');
+    assert.equal(searchResponse.text, '归档记录已检索');
     const archivedFiles = servicePaths(fixture.libraryRoot);
     assert.equal(archivedFiles.some(filePath => filePath.includes('Agent MCP 测试算力采购合同')), true);
+    const dbPath = path.join(fixture.libraryRoot, '合同归档.db');
+    assert.equal(fs.existsSync(dbPath), true);
   } finally {
     agent.close();
     fs.rmSync(rootDir, { recursive: true, force: true });

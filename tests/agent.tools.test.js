@@ -119,7 +119,6 @@ module.exports = async function failingHandler({ llm, profileName }) {
       { id: 'attachment-3', name: 'paged.pdf', path: attachmentPagedPdfPath },
     ],
   });
-
   try {
     assert.equal(runtime.toolDisplayByName.bash.statusText, '执行命令');
     assert.equal(runtime.toolDisplayByName.readFile.statusText, '读取文件内容');

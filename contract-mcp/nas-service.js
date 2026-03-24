@@ -1,14 +1,10 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const ContractRepository = require('./repository');
 
 const DEFAULT_ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.xls', '.xlsx'];
 const DEFAULT_EXCLUDED_SEARCH_NAMES = new Set(['协议台账.xlsx', '电子协议归档规则.txt']);
-const VALID_PENDING_STATUSES = [
-  'drafted',
-  'uploader_rejected',
-  'admin_pending',
-  'completed',
-];
 const LEDGER_SHEET_TEMPLATES = {
   '有结算款项协议': {
     description: '适用于有明确结算金额的收入类或合作结算类协议。',
@@ -169,27 +165,10 @@ function resolveLibraryPath(libraryRoot, relativePath = '') {
   return path.resolve(libraryRoot, normalizedRelativePath);
 }
 
-function readJsonFile(filePath, fallbackValue) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
-    return fallbackValue;
-  }
-}
-
-function writeJsonFile(filePath, value) {
-  ensureParentDir(filePath);
-  const tempPath = `${filePath}.tmp`;
-  fs.writeFileSync(tempPath, JSON.stringify(value, null, 2), 'utf8');
-  fs.renameSync(tempPath, filePath);
-}
-
-function toDisplayValue(value) {
-  if (value == null || value === '') {
-    return '（待补充）';
-  }
-
-  return String(value);
+function computeFileSha256(filePath) {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
 }
 
 function toNumberOrNull(value) {
@@ -269,7 +248,7 @@ function hasMeaningfulContractInput(contract) {
 
 function buildMissingContractGuidance() {
   return [
-    'contract_prepare_archive 不能省略 contract，也不能传空对象。',
+    'contract_archive 不能省略 contract，也不能传空对象。',
     '请先从附件中提取合同字段后，再重试调用。',
     '至少回填这些已识别字段：contractName、partyAName、partyBName、signingDate 或 effectiveStartDate、direction、uploadedBy。',
     '如果附件里还能识别，也请一并补充：agreementType、otherPartyName、effectiveEndDate、contractAmount、hasSettlement、firstPaymentAmount、firstPaymentDate、finalPaymentAmount、finalPaymentDate、ourOwner、counterpartyContact、paymentStatus、confidentialityRequirement、keywordTags、summary、remarks。',
@@ -371,38 +350,14 @@ function inferSheetName({ sheetName, contract = {}, archiveRelativeDir = '' }) {
   return '无结算款项协议';
 }
 
-function summarizePendingRecord(record) {
-  return {
-    pendingId: record.pendingId,
-    status: record.status,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-    uploaderUserId: record.uploaderUserId,
-    uploadedBy: record.uploadedBy,
-    sheetName: record.sheetName,
-    archiveRelativeDir: record.archive.relativeDir,
-    archiveAbsoluteDir: record.archive.absoluteDir,
-    plannedFiles: record.archive.plannedFiles,
-    committedFiles: record.archive.committedFiles || [],
-    contract: record.contract,
-    ledgerFields: record.ledgerFields,
-    uncertainFields: record.uncertainFields,
-    searchKeywords: record.searchKeywords,
-  };
-}
-
 class ContractService {
   constructor(config) {
     this.config = {
       libraryRoot: path.resolve(config.libraryRoot),
-      statePath: path.resolve(config.statePath),
-      ledgerWorkbookPath: config.ledgerWorkbookPath
-        ? path.resolve(config.ledgerWorkbookPath)
-        : path.resolve(config.libraryRoot, '协议台账.xlsx'),
-      ledgerAdminUserId: typeof config.ledgerAdminUserId === 'string'
-        ? config.ledgerAdminUserId.trim()
-        : '',
-      pendingIdPrefix: config.pendingIdPrefix || config.contractIdPrefix || 'P',
+      dbPath: config.dbPath
+        ? path.resolve(config.dbPath)
+        : path.resolve(config.libraryRoot, '合同归档.db'),
+      archiveIdPrefix: config.archiveIdPrefix || config.contractIdPrefix || 'A',
       allowedExtensions: (config.allowedExtensions || DEFAULT_ALLOWED_EXTENSIONS).map(value => String(value).toLowerCase()),
       maxFileSizeMb: Number.isFinite(config.maxFileSizeMb) ? config.maxFileSizeMb : 50,
       defaultSearchLimit: Number.isFinite(config.defaultSearchLimit) ? config.defaultSearchLimit : 20,
@@ -416,66 +371,246 @@ class ContractService {
     };
 
     ensureDir(this.config.libraryRoot);
-    ensureParentDir(this.config.statePath);
-    this.ensureStateFile();
+    ensureParentDir(this.config.dbPath);
+    this.repository = new ContractRepository(this.config.dbPath);
   }
 
   close() {
+    this.repository?.close();
     return undefined;
   }
 
-  ensureStateFile() {
-    if (fs.existsSync(this.config.statePath)) {
-      return;
-    }
-
-    writeJsonFile(this.config.statePath, {
-      version: 1,
-      pendingRecords: [],
-      auditEvents: [],
-    });
+  nextArchiveId() {
+    const prefix = sanitizePathPart(this.config.archiveIdPrefix || 'A') || 'A';
+    return this.repository.nextArchiveId(prefix, dayKey());
   }
 
-  readState() {
-    const state = readJsonFile(this.config.statePath, {
-      version: 1,
-      pendingRecords: [],
-      auditEvents: [],
-    });
+  mapArchiveRecordRow(row) {
+    if (!row) {
+      return null;
+    }
 
     return {
-      version: 1,
-      pendingRecords: Array.isArray(state.pendingRecords) ? state.pendingRecords : [],
-      auditEvents: Array.isArray(state.auditEvents) ? state.auditEvents : [],
+      archiveId: row.archive_id,
+      pendingId: row.pending_id || '',
+      contractName: row.contract_name,
+      agreementType: row.agreement_type || '',
+      partyAName: row.party_a_name || '',
+      partyBName: row.party_b_name || '',
+      otherPartyName: row.other_party_name || '',
+      counterpartyName: row.counterparty_name || '',
+      direction: row.direction || '',
+      signingDate: row.signing_date || '',
+      effectiveStartDate: row.effective_start_date || '',
+      effectiveEndDate: row.effective_end_date || '',
+      contractAmount: row.contract_amount,
+      currency: row.currency || 'CNY',
+      summary: row.summary || '',
+      remarks: row.remarks || '',
+      ourOwner: row.our_owner || '',
+      counterpartyContact: row.counterparty_contact || '',
+      firstPaymentAmount: row.first_payment_amount,
+      firstPaymentDate: row.first_payment_date || '',
+      finalPaymentAmount: row.final_payment_amount,
+      finalPaymentDate: row.final_payment_date || '',
+      paymentStatus: row.payment_status || '',
+      confidentialityRequirement: row.confidentiality_requirement || '',
+      hasSettlement: row.has_settlement == null ? undefined : row.has_settlement === 1,
+      uploadedBy: row.uploaded_by || '',
+      uploaderUserId: row.uploader_user_id || '',
+      operator: row.operator || '',
+      sheetName: row.sheet_name || '',
+      archiveRelativeDir: row.archive_relative_dir,
+      archiveAbsoluteDir: row.archive_absolute_dir,
+      keywordTags: JSON.parse(row.keyword_tags_json || '[]'),
+      searchKeywords: JSON.parse(row.search_keywords_json || '[]'),
+      uncertainFields: JSON.parse(row.uncertain_fields_json || '[]'),
+      ledgerFields: JSON.parse(row.ledger_fields_json || '{}'),
+      status: row.status,
+      sourceChannel: row.source_channel || '',
+      sourceMessageId: row.source_message_id || '',
+      archivedAt: row.archived_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     };
   }
 
-  writeState(state) {
-    writeJsonFile(this.config.statePath, state);
+  mapArchiveFileRow(row) {
+    return {
+      fileId: row.file_id,
+      archiveId: row.archive_id,
+      sourceName: row.source_name,
+      storedName: row.stored_name,
+      absolutePath: row.absolute_path,
+      relativePath: row.relative_path,
+      extension: row.extension || '',
+      sizeBytes: row.size_bytes,
+      sha256: row.sha256,
+      sortOrder: row.sort_order,
+      createdAt: row.created_at,
+    };
   }
 
-  updateState(mutator) {
-    const state = this.readState();
-    const result = mutator(state);
-    this.writeState(state);
-    return result;
+  mapArchiveEventRow(row) {
+    return {
+      eventId: row.event_id,
+      archiveId: row.archive_id,
+      eventType: row.event_type,
+      operator: row.operator,
+      createdAt: row.created_at,
+      payload: JSON.parse(row.payload_json),
+    };
   }
 
-  createAuditEvent(state, eventType, payload = {}) {
-    state.auditEvents.push({
-      eventId: `${eventType}-${Date.now()}`,
-      eventType,
-      createdAt: toIsoTimestamp(),
-      payload,
+  composeArchiveRecordDetail(archiveRow) {
+    const archive = this.mapArchiveRecordRow(archiveRow);
+
+    if (!archive) {
+      return null;
+    }
+
+    return {
+      archive,
+      files: this.repository.listFiles(archive.archiveId).map(row => this.mapArchiveFileRow(row)),
+      events: this.repository.listEvents(archive.archiveId).map(row => this.mapArchiveEventRow(row)),
+    };
+  }
+
+  persistArchiveRecord({
+    pendingId = '',
+    contract,
+    sheetName,
+    ledgerFields,
+    uncertainFields,
+    searchKeywords,
+    archiveRelativeDir,
+    archiveAbsoluteDir,
+    committedFiles,
+    operator = '',
+    uploaderUserId = '',
+    idempotencyKey = '',
+    sourceChannel = '',
+    sourceMessageId = '',
+  }) {
+    const existing = this.repository.findRecordByIdempotencyKey(idempotencyKey);
+
+    if (existing) {
+      return this.composeArchiveRecordDetail(existing);
+    }
+
+    const timestamp = toIsoTimestamp();
+    const archiveId = this.nextArchiveId();
+    const counterpartyName = this.deriveCounterpartyName(contract);
+    const detail = this.repository.transaction(() => {
+      this.repository.insertRecord({
+        archive_id: archiveId,
+        pending_id: pendingId || null,
+        contract_name: contract.contractName || '',
+        agreement_type: contract.agreementType || '',
+        party_a_name: contract.partyAName || '',
+        party_b_name: contract.partyBName || '',
+        other_party_name: contract.otherPartyName || '',
+        counterparty_name: counterpartyName || '',
+        direction: contract.direction || '',
+        signing_date: contract.signingDate || null,
+        effective_start_date: contract.effectiveStartDate || null,
+        effective_end_date: contract.effectiveEndDate || null,
+        contract_amount: contract.contractAmount,
+        currency: contract.currency || 'CNY',
+        summary: contract.summary || '',
+        remarks: contract.remarks || '',
+        our_owner: contract.ourOwner || '',
+        counterparty_contact: contract.counterpartyContact || '',
+        first_payment_amount: contract.firstPaymentAmount,
+        first_payment_date: contract.firstPaymentDate || '',
+        final_payment_amount: contract.finalPaymentAmount,
+        final_payment_date: contract.finalPaymentDate || '',
+        payment_status: contract.paymentStatus || '',
+        confidentiality_requirement: contract.confidentialityRequirement || '',
+        has_settlement: typeof contract.hasSettlement === 'boolean' ? (contract.hasSettlement ? 1 : 0) : null,
+        uploaded_by: contract.uploadedBy || operator || '',
+        uploader_user_id: uploaderUserId || '',
+        operator: operator || '',
+        sheet_name: sheetName || '',
+        archive_relative_dir: archiveRelativeDir,
+        archive_absolute_dir: archiveAbsoluteDir,
+        keyword_tags_json: JSON.stringify(contract.keywordTags || []),
+        search_keywords_json: JSON.stringify(searchKeywords || []),
+        uncertain_fields_json: JSON.stringify(uncertainFields || []),
+        ledger_fields_json: JSON.stringify(ledgerFields || {}),
+        status: 'archived',
+        source_channel: sourceChannel || null,
+        source_message_id: sourceMessageId || null,
+        idempotency_key: idempotencyKey || null,
+        archived_at: timestamp,
+        created_at: timestamp,
+        updated_at: timestamp,
+      });
+
+      committedFiles.forEach((file, index) => {
+        this.repository.insertFile({
+          file_id: crypto.randomUUID(),
+          archive_id: archiveId,
+          source_name: file.sourceName,
+          stored_name: path.basename(file.absolutePath),
+          absolute_path: file.absolutePath,
+          relative_path: file.relativePath,
+          extension: path.extname(file.absolutePath).toLowerCase(),
+          size_bytes: file.sizeBytes,
+          sha256: computeFileSha256(file.absolutePath),
+          sort_order: index,
+          created_at: timestamp,
+        });
+      });
+
+      this.repository.insertEvent({
+        event_id: crypto.randomUUID(),
+        archive_id: archiveId,
+        event_type: 'archived',
+        payload_json: JSON.stringify({
+          archiveId,
+          pendingId: pendingId || null,
+          contract: {
+            ...contract,
+            counterpartyName,
+          },
+          sheetName: sheetName || '',
+          archiveRelativeDir,
+          archiveAbsoluteDir,
+          ledgerFields: ledgerFields || {},
+          uncertainFields: uncertainFields || [],
+          searchKeywords: searchKeywords || [],
+          uploaderUserId: uploaderUserId || '',
+          operator: operator || '',
+          archivedAt: timestamp,
+          committedFiles: committedFiles.map(file => ({
+            relativePath: file.relativePath,
+            absolutePath: file.absolutePath,
+            sourceName: file.sourceName,
+            sizeBytes: file.sizeBytes,
+          })),
+        }),
+        operator: operator || contract.uploadedBy || '',
+        created_at: timestamp,
+      });
+
+      return this.composeArchiveRecordDetail(this.repository.getRecordRow(archiveId));
     });
+
+    return detail;
   }
 
-  nextPendingId(state) {
-    const prefix = sanitizePathPart(this.config.pendingIdPrefix || 'P') || 'P';
-    const todayKey = dayKey();
-    const todayItems = state.pendingRecords.filter(record => String(record.pendingId || '').startsWith(`${prefix}${todayKey}-`));
-    const nextSequence = todayItems.length + 1;
-    return `${prefix}${todayKey}-${String(nextSequence).padStart(3, '0')}`;
+  rollbackCommittedFiles(committedFiles = []) {
+    for (const file of [...committedFiles].reverse()) {
+      try {
+        ensureParentDir(file.sourcePath);
+        if (fs.existsSync(file.absolutePath)) {
+          fs.renameSync(file.absolutePath, file.sourcePath);
+        }
+      } catch {
+        // Best effort rollback only.
+      }
+    }
   }
 
   normalizeContract(contract = {}) {
@@ -669,55 +804,7 @@ class ContractService {
     };
   }
 
-  formatUploaderConfirmationMessage(record) {
-    const lines = [
-      '请确认协议归档与台账信息',
-      `编号：${record.pendingId}`,
-      `拟归档目录：${record.archive.absoluteDir}`,
-      `拟录入Sheet：${record.sheetName}`,
-      '',
-      '识别结果：',
-      ...LEDGER_SHEET_TEMPLATES[record.sheetName].fields.map(field => `${field.key}：${toDisplayValue(record.ledgerFields[field.key])}`),
-    ];
-
-    if (record.uncertainFields.length > 0) {
-      lines.push('', `待上传人确认/补充：${record.uncertainFields.join('、')}`);
-    }
-
-    lines.push(
-      '',
-      '请回复：',
-      `确认 ${record.pendingId}`,
-      `或 修改 ${record.pendingId} 字段=新值`,
-      `或 驳回 ${record.pendingId} 原因=...`,
-    );
-
-    return lines.join('\n');
-  }
-
-  formatAdminLedgerMessage(record) {
-    const committedFiles = (record.archive.committedFiles || []).map(file => file.absolutePath);
-    const lines = [
-      '待录入协议台账',
-      `编号：${record.pendingId}`,
-      `上传人：${record.uploadedBy || record.uploaderUserId || '未知'}`,
-      `目标Sheet：${record.sheetName}`,
-      `NAS路径：${committedFiles.length > 0 ? committedFiles.join('；') : record.archive.absoluteDir}`,
-      '',
-      '请录入以下字段：',
-      ...LEDGER_SHEET_TEMPLATES[record.sheetName].fields.map(field => `${field.key}：${toDisplayValue(record.ledgerFields[field.key])}`),
-    ];
-
-    if (record.uncertainFields.length > 0) {
-      lines.push('', `待管理员补充：${record.uncertainFields.join('、')}`);
-    }
-
-    lines.push('', '录入完成后请回复：', `已录入 ${record.pendingId}`);
-
-    return lines.join('\n');
-  }
-
-  prepareArchive(input = {}) {
+  buildArchiveDraft(input = {}) {
     if (!hasMeaningfulContractInput(input.contract)) {
       throw new Error(buildMissingContractGuidance());
     }
@@ -752,316 +839,112 @@ class ContractService {
       ...(input.searchKeywords || []),
     ]);
 
-    return this.updateState(state => {
-      const pendingId = this.nextPendingId(state);
-      const plannedFiles = this.buildPlannedFiles(contract, sourceFiles);
-      const record = {
-        pendingId,
-        status: 'drafted',
-        createdAt: toIsoTimestamp(),
-        updatedAt: toIsoTimestamp(),
-        uploaderUserId: String(input.uploaderUserId || input.operator || '').trim(),
-        uploadedBy: contract.uploadedBy || String(input.operator || '').trim(),
-        sheetName,
-        contract,
-        ledgerFields,
-        uncertainFields,
-        searchKeywords,
-        archive: {
-          relativeDir: archiveRelativeDir,
-          absoluteDir: resolveLibraryPath(this.config.libraryRoot, archiveRelativeDir),
-          plannedFiles,
-          committedFiles: [],
-        },
-      };
-
-      state.pendingRecords.push(record);
-      this.createAuditEvent(state, 'prepare_archive', {
-        pendingId,
-        operator: input.operator || '',
-        archiveRelativeDir,
-        sheetName,
-      });
-
-      const enrichedRecord = {
-        ...record,
-        archive: this.enrichArchive(record),
-      };
-
-      return {
-        pending: summarizePendingRecord(enrichedRecord),
-        uploaderConfirmationMessage: this.formatUploaderConfirmationMessage(enrichedRecord),
-        adminLedgerMessagePreview: this.formatAdminLedgerMessage(enrichedRecord),
-        ledgerWorkbookPath: this.config.ledgerWorkbookPath,
-        ledgerAdminUserId: this.config.ledgerAdminUserId || null,
-      };
-    });
+    return {
+      contract,
+      sourceFiles,
+      archiveRelativeDir,
+      sheetName,
+      ledgerFields,
+      uncertainFields,
+      searchKeywords,
+      uploaderUserId: String(input.uploaderUserId || input.operator || '').trim(),
+      uploadedBy: contract.uploadedBy || String(input.operator || '').trim(),
+      sourceChannel: String(input.sourceChannel || '').trim(),
+      sourceMessageId: String(input.sourceMessageId || '').trim(),
+      operator: String(input.operator || '').trim(),
+    };
   }
 
-  getPending(pendingId) {
-    const state = this.readState();
-    const record = state.pendingRecords.find(item => item.pendingId === pendingId);
+  archiveContract(input = {}) {
+    const draft = this.buildArchiveDraft(input);
+    const archiveDir = resolveLibraryPath(this.config.libraryRoot, draft.archiveRelativeDir);
+    ensureDir(archiveDir);
+    const committedFiles = [];
 
-    if (!record) {
-      throw new Error(`Pending archive not found: ${pendingId}`);
+    for (const plannedFile of this.buildPlannedFiles(draft.contract, draft.sourceFiles)) {
+      let targetPath = path.join(archiveDir, plannedFile.targetName);
+
+      if (fs.existsSync(targetPath)) {
+        const extension = path.extname(plannedFile.targetName);
+        const stem = path.basename(plannedFile.targetName, extension);
+        let suffix = 2;
+
+        while (fs.existsSync(targetPath)) {
+          targetPath = path.join(archiveDir, `${stem} (${suffix})${extension}`);
+          suffix += 1;
+        }
+      }
+
+      moveFileSync(plannedFile.sourcePath, targetPath);
+      committedFiles.push({
+        sourcePath: plannedFile.sourcePath,
+        sourceName: plannedFile.sourceName,
+        absolutePath: targetPath,
+        relativePath: path.relative(this.config.libraryRoot, targetPath),
+        sizeBytes: plannedFile.sizeBytes,
+      });
     }
 
-    const enrichedRecord = {
-      ...record,
-      archive: this.enrichArchive(record),
+    let detail;
+    try {
+      detail = this.persistArchiveRecord({
+        contract: draft.contract,
+        sheetName: draft.sheetName,
+        ledgerFields: draft.ledgerFields,
+        uncertainFields: draft.uncertainFields,
+        searchKeywords: draft.searchKeywords,
+        archiveRelativeDir: draft.archiveRelativeDir,
+        archiveAbsoluteDir: archiveDir,
+        committedFiles,
+        operator: draft.operator,
+        uploaderUserId: draft.uploaderUserId,
+        idempotencyKey: input.idempotencyKey || `archive:${draft.operator}:${draft.contract.contractName}:${draft.archiveRelativeDir}:${committedFiles.map(file => file.relativePath).join('|')}`,
+        sourceChannel: draft.sourceChannel,
+        sourceMessageId: draft.sourceMessageId,
+      });
+    } catch (error) {
+      this.rollbackCommittedFiles(committedFiles);
+      throw error;
+    }
+
+    return {
+      archive: detail.archive,
+      files: detail.files,
+      userReplyMessage: [
+        `已归档：${detail.archive.archiveId}`,
+        `NAS目录：${detail.archive.archiveAbsoluteDir}`,
+        `数据库：${this.config.dbPath}`,
+      ].join('\n'),
+      archiveDatabasePath: this.config.dbPath,
+    };
+  }
+
+  getArchiveRecord(archiveId) {
+    const archiveRow = this.repository.getRecordRow(archiveId);
+
+    if (!archiveRow) {
+      throw new Error(`Archive record not found: ${archiveId}`);
+    }
+
+    return this.composeArchiveRecordDetail(archiveRow);
+  }
+
+  searchArchiveRecords(input = {}) {
+    const normalizedFilters = {
+      keyword: String(input.keyword || '').trim(),
+      archive_relative_dir: String(input.archiveRelativeDir || '').trim(),
+      direction: String(input.direction || '').trim(),
+      uploaded_by: String(input.uploadedBy || '').trim(),
+      signing_date_from: input.signingDateFrom ? normalizeDate(input.signingDateFrom) : '',
+      signing_date_to: input.signingDateTo ? normalizeDate(input.signingDateTo) : '',
+      effective_end_before: input.effectiveEndBefore ? normalizeDate(input.effectiveEndBefore) : '',
+      limit: Number.isFinite(input.limit) ? Math.max(1, Math.min(Math.trunc(input.limit), 100)) : this.config.defaultSearchLimit,
     };
 
     return {
-      pending: summarizePendingRecord(enrichedRecord),
-      uploaderConfirmationMessage: this.formatUploaderConfirmationMessage(enrichedRecord),
-      adminLedgerMessage: this.formatAdminLedgerMessage(enrichedRecord),
-      ledgerWorkbookPath: this.config.ledgerWorkbookPath,
-      ledgerAdminUserId: this.config.ledgerAdminUserId || null,
+      items: this.repository.searchRecords(normalizedFilters).map(row => this.mapArchiveRecordRow(row)),
+      archiveDatabasePath: this.config.dbPath,
     };
-  }
-
-  updatePending(input = {}) {
-    return this.updateState(state => {
-      const record = state.pendingRecords.find(item => item.pendingId === input.pendingId);
-
-      if (!record) {
-        throw new Error(`Pending archive not found: ${input.pendingId}`);
-      }
-
-      if (record.status === 'completed') {
-        throw new Error(`Pending archive already completed: ${input.pendingId}`);
-      }
-
-      const nextContract = this.normalizeContract({
-        ...record.contract,
-        ...(input.contract || {}),
-      });
-      const nextArchiveRelativeDir = input.archiveRelativeDir
-        ? normalizeRelativeLibraryPath(this.config.libraryRoot, input.archiveRelativeDir)
-        : record.archive.relativeDir;
-      const nextSheetName = inferSheetName({
-        sheetName: input.sheetName || record.sheetName,
-        contract: nextContract,
-        archiveRelativeDir: nextArchiveRelativeDir,
-      });
-      const nextLedgerFields = this.buildLedgerFields({
-        contract: nextContract,
-        sheetName: nextSheetName,
-        ledgerFields: {
-          ...record.ledgerFields,
-          ...(input.ledgerFields || {}),
-        },
-        archiveRelativeDir: nextArchiveRelativeDir,
-      });
-      const nextUncertainFields = this.collectUncertainFields(
-        nextSheetName,
-        nextLedgerFields,
-        input.uncertainFields || record.uncertainFields,
-      );
-      const nextPlannedFiles = this.buildPlannedFiles(
-        nextContract,
-        this.validateSourceFiles(record.archive.plannedFiles.map(file => ({
-          path: file.sourcePath,
-          name: file.sourceName,
-        }))),
-      );
-
-      record.contract = nextContract;
-      record.sheetName = nextSheetName;
-      record.ledgerFields = nextLedgerFields;
-      record.uncertainFields = nextUncertainFields;
-      record.updatedAt = toIsoTimestamp();
-      record.archive = {
-        ...record.archive,
-        relativeDir: nextArchiveRelativeDir,
-        absoluteDir: resolveLibraryPath(this.config.libraryRoot, nextArchiveRelativeDir),
-        plannedFiles: nextPlannedFiles,
-      };
-      record.searchKeywords = buildKeywordList([
-        ...record.searchKeywords,
-        nextContract.contractName,
-        nextContract.agreementType,
-        nextContract.partyAName,
-        nextContract.partyBName,
-        nextContract.otherPartyName,
-        ...(nextContract.keywordTags || []),
-      ]);
-
-      this.createAuditEvent(state, 'update_pending', {
-        pendingId: record.pendingId,
-        operator: input.operator || '',
-      });
-
-      const enrichedRecord = {
-        ...record,
-        archive: this.enrichArchive(record),
-      };
-
-      return {
-        pending: summarizePendingRecord(enrichedRecord),
-        uploaderConfirmationMessage: this.formatUploaderConfirmationMessage(enrichedRecord),
-        adminLedgerMessagePreview: this.formatAdminLedgerMessage(enrichedRecord),
-      };
-    });
-  }
-
-  confirmArchive(input = {}) {
-    return this.updateState(state => {
-      const record = state.pendingRecords.find(item => item.pendingId === input.pendingId);
-
-      if (!record) {
-        throw new Error(`Pending archive not found: ${input.pendingId}`);
-      }
-
-      if (record.status === 'completed') {
-        throw new Error(`Pending archive already completed: ${input.pendingId}`);
-      }
-
-      if (
-        record.uploaderUserId
-        && input.operator
-        && record.uploaderUserId !== input.operator
-        && input.force !== true
-      ) {
-        throw new Error(`Only the uploader can confirm ${input.pendingId}.`);
-      }
-
-      const archiveDir = resolveLibraryPath(this.config.libraryRoot, record.archive.relativeDir);
-      ensureDir(archiveDir);
-      const committedFiles = [];
-
-      for (const plannedFile of record.archive.plannedFiles) {
-        let targetPath = path.join(archiveDir, plannedFile.targetName);
-
-        if (fs.existsSync(targetPath)) {
-          const extension = path.extname(plannedFile.targetName);
-          const stem = path.basename(plannedFile.targetName, extension);
-          let suffix = 2;
-
-          while (fs.existsSync(targetPath)) {
-            targetPath = path.join(archiveDir, `${stem} (${suffix})${extension}`);
-            suffix += 1;
-          }
-        }
-
-        moveFileSync(plannedFile.sourcePath, targetPath);
-        committedFiles.push({
-          sourcePath: plannedFile.sourcePath,
-          sourceName: plannedFile.sourceName,
-          absolutePath: targetPath,
-          relativePath: path.relative(this.config.libraryRoot, targetPath),
-          sizeBytes: plannedFile.sizeBytes,
-        });
-      }
-
-      record.status = 'admin_pending';
-      record.updatedAt = toIsoTimestamp();
-      record.archive.committedFiles = committedFiles;
-      this.createAuditEvent(state, 'confirm_archive', {
-        pendingId: record.pendingId,
-        operator: input.operator || '',
-        committedFiles: committedFiles.map(file => file.relativePath),
-      });
-
-      const enrichedRecord = {
-        ...record,
-        archive: this.enrichArchive(record),
-      };
-
-      return {
-        pending: summarizePendingRecord(enrichedRecord),
-        adminLedgerMessage: this.formatAdminLedgerMessage(enrichedRecord),
-        ledgerAdminUserId: this.config.ledgerAdminUserId || null,
-        userReplyMessage: [
-          `已归档：${record.pendingId}`,
-          `NAS目录：${enrichedRecord.archive.absoluteDir}`,
-          `已通知合同管理员补录台账：${this.config.ledgerWorkbookPath}`,
-        ].join('\n'),
-      };
-    });
-  }
-
-  rejectPending(input = {}) {
-    return this.updateState(state => {
-      const record = state.pendingRecords.find(item => item.pendingId === input.pendingId);
-
-      if (!record) {
-        throw new Error(`Pending archive not found: ${input.pendingId}`);
-      }
-
-      if (record.status === 'completed') {
-        throw new Error(`Pending archive already completed: ${input.pendingId}`);
-      }
-
-      record.status = 'uploader_rejected';
-      record.updatedAt = toIsoTimestamp();
-      record.rejectionReason = String(input.reason || '').trim();
-
-      this.createAuditEvent(state, 'reject_pending', {
-        pendingId: record.pendingId,
-        operator: input.operator || '',
-        reason: record.rejectionReason,
-      });
-
-      const enrichedRecord = {
-        ...record,
-        archive: this.enrichArchive(record),
-      };
-
-      return {
-        pending: summarizePendingRecord(enrichedRecord),
-        message: `已驳回 ${record.pendingId}${record.rejectionReason ? `：${record.rejectionReason}` : ''}`,
-      };
-    });
-  }
-
-  completeLedger(input = {}) {
-    return this.updateState(state => {
-      const record = state.pendingRecords.find(item => item.pendingId === input.pendingId);
-
-      if (!record) {
-        throw new Error(`Pending archive not found: ${input.pendingId}`);
-      }
-
-      if (record.status === 'completed') {
-        return {
-          pending: summarizePendingRecord({
-            ...record,
-            archive: this.enrichArchive(record),
-          }),
-          message: `${record.pendingId} 已经标记为完成。`,
-        };
-      }
-
-      if (
-        this.config.ledgerAdminUserId
-        && input.operator
-        && this.config.ledgerAdminUserId !== input.operator
-        && input.force !== true
-      ) {
-        throw new Error(`Only the configured contract admin can complete ${input.pendingId}.`);
-      }
-
-      record.status = 'completed';
-      record.updatedAt = toIsoTimestamp();
-      record.ledgerCompletionNote = String(input.note || '').trim();
-
-      this.createAuditEvent(state, 'complete_ledger', {
-        pendingId: record.pendingId,
-        operator: input.operator || '',
-        note: record.ledgerCompletionNote,
-      });
-
-      const enrichedRecord = {
-        ...record,
-        archive: this.enrichArchive(record),
-      };
-
-      return {
-        pending: summarizePendingRecord(enrichedRecord),
-        message: `已完成台账补录：${record.pendingId}`,
-      };
-    });
   }
 
   listDirectory(input = {}) {
@@ -1260,5 +1143,4 @@ class ContractService {
 module.exports = {
   ContractService,
   LEDGER_SHEET_TEMPLATES,
-  VALID_PENDING_STATUSES,
 };

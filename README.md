@@ -101,9 +101,8 @@ DEBUG=true
   - 附件文本提取配置 `agent.attachmentExtraction`
 - `contractMcp`
   - `libraryRoot`：真实 NAS 合同目录根路径
-  - `statePath`：待确认归档和审计事件的本地状态文件
-  - `ledgerWorkbookPath`：人工维护的 Excel 台账路径
-  - `ledgerAdminUserId`：合同管理员用户 ID，用于主动提醒补录 Excel
+  - `dbPath`：可选；若不填写，默认使用 `libraryRoot/合同归档.db`
+  - `archiveIdPrefix`：正式归档记录编号前缀
   - `allowedExtensions`：允许归档的文件类型
   - `maxFileSizeMb`：单文件大小限制
   - `defaultSearchLimit`：默认查询上限
@@ -154,19 +153,16 @@ npm test
 
 - `contract_list_directory`：查看真实 NAS 目录结构
 - `contract_find_directories`：按关键字查相似目录
-- `contract_prepare_archive`：生成待确认归档，不提前移动文件；它不会自动替你判断收入/支出、目标目录或台账 sheet
-- `contract_get_pending`：读取待确认归档详情
-- `contract_update_pending`：根据上传人的修正更新待确认归档
-- `contract_confirm_archive`：上传人确认后，正式移动文件到 NAS
-- `contract_reject_pending`：驳回待确认归档
-- `contract_complete_ledger`：管理员录入 Excel 后关闭待办
+- `contract_archive`：正式归档入口，在上传人确认拟归档字段后完成 NAS 落档和数据库写入
+- `contract_get_archive_record`：读取数据库中的单条正式归档记录
+- `contract_search_archive_records`：检索数据库中的正式归档记录
 - `contract_search`：直接检索 NAS 目录中的合同文件
 
 合同服务的持久化方式：
 
 - 合同文件直接存放在真实 NAS 目录
-- 待确认归档和审计事件保存在 `contractMcp.statePath`
-- Excel 台账继续由人工维护，Agent 只负责生成待补录提醒
+- Agent 正式归档记录写入 `libraryRoot` 下的 SQLite 数据库，默认文件名为 `合同归档.db`
+- Excel 台账继续由人工维护，但不再是 Agent 默认归档链路的一部分
 
 ## Agent 工作方式
 
@@ -180,10 +176,9 @@ npm test
 - 先识别任务类型，再决定调用什么工具
 - 缺字段时继续追问，不编造
 - 字段与文件内容冲突时先核实
-- 先让上传人确认，再正式归档
-- 归档后通知合同管理员补录 Excel
-- 查询尽量直接基于 NAS 目录返回结构化摘要
-- 不伪造目录状态、归档结果或台账状态
+- 归档类请求默认先整理拟归档字段给上传人确认，再正式归档到 NAS + 数据库
+- 查询尽量区分 NAS 文件检索和数据库字段检索
+- 不伪造目录状态、归档结果、数据库状态或台账状态
 
 ## 附件处理
 

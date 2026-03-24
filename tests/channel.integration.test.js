@@ -12,7 +12,6 @@ module.exports = async function runChannelIntegrationTest() {
   const fixture = createContractMcpFixture(rootDir);
   const attachmentPath = path.join(rootDir, 'contract.pdf');
   fs.writeFileSync(attachmentPath, 'channel contract file');
-  let pendingId = '';
 
   let callIndex = 0;
   const model = new MockLanguageModelV3({
@@ -30,7 +29,7 @@ module.exports = async function runChannelIntegrationTest() {
 
       if (callIndex === 2) {
         return generateResult([
-          toolCall('mcp-2', 'contract_prepare_archive', {
+          toolCall('mcp-2', 'contract_archive', {
             contract: {
               contractName: '渠道联调算力合同',
               agreementType: '采购',
@@ -49,26 +48,8 @@ module.exports = async function runChannelIntegrationTest() {
 
       if (callIndex === 3) {
         return generateResult([
-          textPart('请确认协议归档与台账信息'),
+          textPart('渠道测试完成'),
         ], 'stop');
-      }
-
-      if (callIndex === 4) {
-        return generateResult([
-          toolCall('mcp-3', 'contract_confirm_archive', {
-            pendingId,
-            operator: 'user-1',
-          }),
-        ]);
-      }
-
-      if (callIndex === 5) {
-        return generateResult([
-          toolCall('notify-1', 'notifyUser', {
-            recipient: 'contract_admin',
-            content: `待录入协议台账\n编号：${pendingId}`,
-          }),
-        ]);
       }
 
       return generateResult([textPart('渠道测试完成')], 'stop');
@@ -106,22 +87,10 @@ module.exports = async function runChannelIntegrationTest() {
     });
 
     await waitFor(() => channel.replies.length > 0);
-    assert.match(channel.replies[0].content, /请确认协议归档与台账信息/);
-    pendingId = JSON.parse(fs.readFileSync(fixture.statePath, 'utf8')).pendingRecords[0].pendingId;
-
-    await channel.simulateMessage({
-      userId: 'user-1',
-      text: `确认 ${pendingId}`,
-      attachments: [],
-      context: { reqId: 'mock-req-2' },
-    });
-
-    await waitFor(() => channel.replies.length > 1);
-    assert.equal(channel.replies[1].content, '渠道测试完成');
-    assert.equal(channel.streamReplies.length, 2);
+    assert.equal(channel.replies[0].content, '渠道测试完成');
+    assert.equal(channel.streamReplies.length, 1);
     assert.equal(channel.streamReplies[0].updates.length > 1, true);
-    assert.equal(channel.sentTexts.length, 1);
-    assert.equal(channel.sentTexts[0].userId, 'admin-1');
+    assert.equal(channel.sentTexts.length, 0);
   } finally {
     agent.close();
     fs.rmSync(rootDir, { recursive: true, force: true });

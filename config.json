@@ -93,10 +93,8 @@
   "contractMcp": {
     "_libraryRoot": "\\\\192.168.20.100\\启迪之星\\技术商业化事业部\\板块-产业化\\合同管理",
     "libraryRoot": "storage/已签署协议电子档",
-    "statePath": "data/contract-workflow-state.json",
-    "ledgerWorkbookPath": "storage/已签署协议电子档/协议台账.xlsx",
-    "ledgerAdminUserId": "XiaoDao",
-    "pendingIdPrefix": "P",
+    "dbPath": "协议台账_agent.db",
+    "archiveIdPrefix": "Agent_",
     "ourCompanyAliases": ["上海启迪创业孵化器有限公司", "上海启迪创业孵化器", "上海启迪"],
     "allowedExtensions": [".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".xls", ".xlsx"],
     "maxFileSizeMb": 50,
