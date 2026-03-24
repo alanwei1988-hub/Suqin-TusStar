@@ -1,6 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { execFile } = require('child_process');
+const { TextDecoder } = require('util');
 const { tool } = require('ai');
 const { z } = require('zod');
 const {
@@ -38,7 +39,7 @@ const BLOCKED_COMMAND_RULES = [
     reason: 'Refusing to run a destructive absolute delete command.',
   },
   {
-    pattern: /\b(format|mkfs|diskpart|shutdown|reboot)\b/i,
+    pattern: /(^|[\s;|&])(?:format(?:\.com|\.exe)?|mkfs|diskpart|shutdown|reboot|format-volume)(?=$|[\s/])/i,
     reason: 'Refusing to run a destructive system command.',
   },
 ];
@@ -76,11 +77,51 @@ function resolveRequestedPath(baseDir, requestedPath) {
     : path.resolve(baseDir, requestedPath);
 }
 
+function wrapWindowsPowerShellCommand(command) {
+  return [
+    '[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    '$OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    'chcp.com 65001 > $null',
+    command,
+  ].join('\n');
+}
+
+function decodeShellOutput(output) {
+  if (!output) {
+    return '';
+  }
+
+  if (typeof output === 'string') {
+    return output;
+  }
+
+  const buffer = Buffer.isBuffer(output) ? output : Buffer.from(output);
+
+  if (buffer.length === 0) {
+    return '';
+  }
+
+  if (buffer.includes(0)) {
+    return new TextDecoder('utf-16le').decode(buffer);
+  }
+
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  } catch (_error) {
+    try {
+      return new TextDecoder('gb18030').decode(buffer);
+    } catch (_fallbackError) {
+      return buffer.toString('utf8');
+    }
+  }
+}
+
 function runShellCommand(command, cwd) {
   const isWindows = process.platform === 'win32';
   const shell = isWindows ? 'powershell.exe' : '/bin/sh';
   const args = isWindows
-    ? ['-NoProfile', '-NonInteractive', '-Command', command]
+    ? ['-NoProfile', '-NonInteractive', '-Command', wrapWindowsPowerShellCommand(command)]
     : ['-lc', command];
 
   return new Promise(resolve => {
@@ -89,13 +130,17 @@ function runShellCommand(command, cwd) {
       args,
       {
         cwd,
+        encoding: 'buffer',
         windowsHide: true,
         maxBuffer: 1024 * 1024,
       },
       (error, stdout, stderr) => {
+        const decodedStdout = decodeShellOutput(stdout);
+        const decodedStderr = decodeShellOutput(stderr);
+
         resolve({
-          stdout: stdout || '',
-          stderr: stderr || error?.message || '',
+          stdout: decodedStdout,
+          stderr: decodedStderr || error?.message || '',
           exitCode: typeof error?.code === 'number' ? error.code : 0,
         });
       },
@@ -198,7 +243,7 @@ function mergeToolSets(toolSets) {
 }
 
 function buildBashToolPrompt(workspaceDir) {
-  return [
+  const promptLines = [
     'Use the bash tool to inspect and operate on the local machine you are responsible for maintaining.',
     `Default working directory: ${toPosixPath(path.resolve(workspaceDir))}`,
     '- This is a shared working environment used to serve multiple employees.',
@@ -209,7 +254,17 @@ function buildBashToolPrompt(workspaceDir) {
     '- Inspect first, then act. Confirm target paths and current state before mutating files or running impactful commands.',
     '- Prefer the smallest effective action and avoid unnecessary disruption to the environment.',
     '- Use `readFile` for precise inspection of local text files and `writeFile` for direct edits.',
-  ].join('\n');
+  ];
+
+  if (process.platform === 'win32') {
+    promptLines.push('- On Windows, this tool runs in Windows PowerShell, not bash and not cmd.exe.');
+    promptLines.push('- Use PowerShell syntax and cmdlets such as `Get-ChildItem`, `Get-Content`, `Select-String`, and `ConvertTo-Json`.');
+    promptLines.push('- Do not use bash/cmd-only syntax like `&&`, `ls -la`, `dir /a`, or `chcp` unless you explicitly invoke the correct shell yourself.');
+    promptLines.push('- Prefer `-LiteralPath` for Windows paths and UNC paths that may contain spaces or non-ASCII characters.');
+    promptLines.push('- When you need machine-readable results, prefer structured PowerShell output over formatted tables.');
+  }
+
+  return promptLines.join('\n');
 }
 
 function createBashTool(machine, workspaceDir) {
@@ -376,5 +431,9 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
 }
 
 module.exports = {
+  buildBashToolPrompt,
   createRuntimeTools,
+  decodeShellOutput,
+  getBlockedCommandReason,
+  wrapWindowsPowerShellCommand,
 };

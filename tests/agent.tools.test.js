@@ -1,7 +1,13 @@
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { createRuntimeTools } = require('../agent/tools');
+const {
+  buildBashToolPrompt,
+  createRuntimeTools,
+  decodeShellOutput,
+  getBlockedCommandReason,
+  wrapWindowsPowerShellCommand,
+} = require('../agent/tools');
 const { makeTempDir, repoRoot } = require('./helpers/test-helpers');
 
 module.exports = async function runAgentToolsTest() {
@@ -112,6 +118,23 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(runtime.toolDisplayByName.inspectAttachment.statusText, '分析附件内容');
     assert.equal(runtime.toolDisplayByName.readAttachmentText.statusText, '提取附件文本');
     assert.equal(runtime.toolDisplayByName.sendFile.statusText, '准备发送文件');
+
+    if (process.platform === 'win32') {
+      const wrappedCommand = wrapWindowsPowerShellCommand("Get-ChildItem -LiteralPath '\\\\server\\共享'");
+      assert.match(wrappedCommand, /\[Console\]::OutputEncoding = \[System\.Text\.UTF8Encoding\]::new\(\$false\)/);
+      assert.match(wrappedCommand, /\$OutputEncoding = \[System\.Text\.UTF8Encoding\]::new\(\$false\)/);
+      assert.match(wrappedCommand, /chcp\.com 65001 > \$null/);
+
+      const prompt = buildBashToolPrompt(rootDir);
+      assert.match(prompt, /runs in Windows PowerShell/i);
+      assert.match(prompt, /Do not use bash\/cmd-only syntax like `&&`, `ls -la`, `dir \/a`, or `chcp`/i);
+
+      assert.equal(getBlockedCommandReason("'ok' | Format-Table"), null);
+      assert.match(getBlockedCommandReason('format C:'), /destructive system command/i);
+
+      const unicodeOutput = decodeShellOutput(Buffer.from('已签署协议电子档', 'utf8'));
+      assert.equal(unicodeOutput, '已签署协议电子档');
+    }
 
     const localRead = await runtime.tools.readFile.execute({ path: localTextPath });
     assert.equal(localRead.content, 'hello local file');
