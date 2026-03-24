@@ -7,7 +7,7 @@ const { makeTempDir } = require('./helpers/test-helpers');
 module.exports = async function runContractServiceTest() {
   const rootDir = makeTempDir('contract-service-');
   const libraryRoot = path.join(rootDir, '已签署协议电子档');
-  const service = new ContractService({
+  const serviceConfig = {
     libraryRoot,
     dbPath: path.join(libraryRoot, '合同归档.db'),
     archiveIdPrefix: 'A',
@@ -15,7 +15,8 @@ module.exports = async function runContractServiceTest() {
     allowedExtensions: ['.pdf', '.docx', '.doc'],
     maxFileSizeMb: 10,
     defaultSearchLimit: 20,
-  });
+  };
+  let service = new ContractService(serviceConfig);
 
   try {
     fs.mkdirSync(path.join(libraryRoot, '采购（启迪支出）', '算力'), { recursive: true });
@@ -109,6 +110,95 @@ module.exports = async function runContractServiceTest() {
     });
     assert.match(incomeArchived.files[0].storedName, /艾哎思维/);
     assert.doesNotMatch(incomeArchived.files[0].storedName, /上海启迪创业孵化器有限公司/);
+
+    const paymentArchived = service.archiveContract({
+      contract: {
+        contractName: '分期付款测试协议',
+        agreementType: '采购',
+        partyAName: '上海启迪',
+        partyBName: '付款供应商',
+        signingDate: '2026-03-20',
+        contractAmount: '3000',
+        firstPaymentAmount: '1000',
+        firstPaymentDate: '2026.3.4',
+        finalPaymentAmount: '2000',
+        finalPaymentDate: '2026.12.5',
+        paymentStatus: '首期已付',
+        hasSettlement: true,
+        ourOwner: '张三',
+        uploadedBy: 'tester',
+      },
+      sourceFiles: [{ path: wordPath, name: 'contract.docx' }],
+      archiveRelativeDir: path.join('采购（启迪支出）', '算力'),
+      sheetName: '费用支出协议',
+      operator: 'tester',
+      uploaderUserId: 'tester',
+    });
+    assert.equal(paymentArchived.archive.firstPaymentDate, '2026-03-04');
+    assert.equal(paymentArchived.archive.finalPaymentDate, '2026-12-05');
+
+    const loadedPaymentArchive = service.getArchiveRecord(paymentArchived.archive.archiveId);
+    assert.equal(loadedPaymentArchive.archive.firstPaymentDate, '2026-03-04');
+    assert.equal(loadedPaymentArchive.archive.finalPaymentDate, '2026-12-05');
+    assert.equal(loadedPaymentArchive.events[0].payload.contract.firstPaymentDate, '2026-03-04');
+    assert.equal(loadedPaymentArchive.events[0].payload.contract.finalPaymentDate, '2026-12-05');
+
+    const filteredArchiveSearch = service.searchArchiveRecords({
+      contractName: '分期付款测试',
+      counterpartyName: '付款供应商',
+      agreementType: '采购',
+      ourOwner: '张三',
+      paymentStatus: '首期已付',
+      hasSettlement: true,
+      firstPaymentDateFrom: '2026-03-01',
+      firstPaymentDateTo: '2026-03-31',
+      finalPaymentDateFrom: '2026-12-01',
+      finalPaymentDateTo: '2026-12-31',
+      minAmount: '2500',
+      maxAmount: '3500',
+      archivedAtFrom: loadedPaymentArchive.archive.archivedAt,
+      archivedAtTo: loadedPaymentArchive.archive.archivedAt,
+      limit: 5,
+    });
+    assert.equal(filteredArchiveSearch.items.length, 1);
+    assert.equal(filteredArchiveSearch.items[0].archiveId, paymentArchived.archive.archiveId);
+
+    service.repository.db.prepare(`
+      UPDATE archive_records
+      SET archived_at = ?, created_at = ?, updated_at = ?
+      WHERE archive_id = ?
+    `).run(
+      '2026-03-23T16:30:00.000Z',
+      '2026-03-23T16:30:00.000Z',
+      '2026-03-23T16:30:00.000Z',
+      paymentArchived.archive.archiveId,
+    );
+
+    const beijingDaySearch = service.searchArchiveRecords({
+      contractName: '分期付款测试',
+      archivedAtFrom: '2026-03-24',
+      archivedAtTo: '2026-03-24',
+      createdAtFrom: '2026-03-24',
+      createdAtTo: '2026-03-24',
+      updatedAtFrom: '2026-03-24',
+      updatedAtTo: '2026-03-24',
+      limit: 5,
+    });
+    assert.equal(beijingDaySearch.items.length, 1);
+    assert.equal(beijingDaySearch.items[0].archiveId, paymentArchived.archive.archiveId);
+
+    service.repository.db.prepare(`
+      UPDATE archive_records
+      SET first_payment_date = ?, final_payment_date = ?
+      WHERE archive_id = ?
+    `).run('2026.3.6', '2026.12.7', paymentArchived.archive.archiveId);
+
+    service.close();
+    service = new ContractService(serviceConfig);
+
+    const migratedArchive = service.getArchiveRecord(paymentArchived.archive.archiveId);
+    assert.equal(migratedArchive.archive.firstPaymentDate, '2026-03-06');
+    assert.equal(migratedArchive.archive.finalPaymentDate, '2026-12-07');
   } finally {
     service.close();
     fs.rmSync(rootDir, { recursive: true, force: true });

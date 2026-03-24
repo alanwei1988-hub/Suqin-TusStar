@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
+const { normalizeDateText } = require('./date-normalize');
 
 function ensureParentDir(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -95,15 +96,28 @@ class ContractRepository {
       );
 
       CREATE INDEX IF NOT EXISTS idx_archive_records_contract_name ON archive_records(contract_name);
+      CREATE INDEX IF NOT EXISTS idx_archive_records_agreement_type ON archive_records(agreement_type);
       CREATE INDEX IF NOT EXISTS idx_archive_records_counterparty_name ON archive_records(counterparty_name);
       CREATE INDEX IF NOT EXISTS idx_archive_records_signing_date ON archive_records(signing_date);
+      CREATE INDEX IF NOT EXISTS idx_archive_records_effective_start_date ON archive_records(effective_start_date);
       CREATE INDEX IF NOT EXISTS idx_archive_records_effective_end_date ON archive_records(effective_end_date);
+      CREATE INDEX IF NOT EXISTS idx_archive_records_first_payment_date ON archive_records(first_payment_date);
+      CREATE INDEX IF NOT EXISTS idx_archive_records_final_payment_date ON archive_records(final_payment_date);
+      CREATE INDEX IF NOT EXISTS idx_archive_records_contract_amount ON archive_records(contract_amount);
       CREATE INDEX IF NOT EXISTS idx_archive_records_uploaded_by ON archive_records(uploaded_by);
+      CREATE INDEX IF NOT EXISTS idx_archive_records_our_owner ON archive_records(our_owner);
+      CREATE INDEX IF NOT EXISTS idx_archive_records_payment_status ON archive_records(payment_status);
+      CREATE INDEX IF NOT EXISTS idx_archive_records_has_settlement ON archive_records(has_settlement);
       CREATE INDEX IF NOT EXISTS idx_archive_records_status ON archive_records(status);
       CREATE INDEX IF NOT EXISTS idx_archive_records_archive_relative_dir ON archive_records(archive_relative_dir);
+      CREATE INDEX IF NOT EXISTS idx_archive_records_archived_at ON archive_records(archived_at);
+      CREATE INDEX IF NOT EXISTS idx_archive_records_created_at ON archive_records(created_at);
+      CREATE INDEX IF NOT EXISTS idx_archive_records_updated_at ON archive_records(updated_at);
       CREATE INDEX IF NOT EXISTS idx_archive_files_archive_id ON archive_files(archive_id);
       CREATE INDEX IF NOT EXISTS idx_archive_events_archive_id ON archive_events(archive_id);
     `);
+
+    this.normalizeLegacyArchiveDates();
   }
 
   close() {
@@ -112,6 +126,61 @@ class ContractRepository {
 
   transaction(callback) {
     return this.db.transaction(callback)();
+  }
+
+  normalizeLegacyArchiveDates() {
+    const rows = this.db.prepare(`
+      SELECT
+        archive_id,
+        signing_date,
+        effective_start_date,
+        effective_end_date,
+        first_payment_date,
+        final_payment_date
+      FROM archive_records
+    `).all();
+
+    if (rows.length === 0) {
+      return;
+    }
+
+    const update = this.db.prepare(`
+      UPDATE archive_records
+      SET
+        signing_date = @signing_date,
+        effective_start_date = @effective_start_date,
+        effective_end_date = @effective_end_date,
+        first_payment_date = @first_payment_date,
+        final_payment_date = @final_payment_date
+      WHERE archive_id = @archive_id
+    `);
+
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const normalized = {
+          signing_date: normalizeLegacyDateValue(row.signing_date),
+          effective_start_date: normalizeLegacyDateValue(row.effective_start_date),
+          effective_end_date: normalizeLegacyDateValue(row.effective_end_date),
+          first_payment_date: normalizeLegacyDateValue(row.first_payment_date),
+          final_payment_date: normalizeLegacyDateValue(row.final_payment_date),
+        };
+
+        if (
+          normalized.signing_date === row.signing_date
+          && normalized.effective_start_date === row.effective_start_date
+          && normalized.effective_end_date === row.effective_end_date
+          && normalized.first_payment_date === row.first_payment_date
+          && normalized.final_payment_date === row.final_payment_date
+        ) {
+          continue;
+        }
+
+        update.run({
+          archive_id: row.archive_id,
+          ...normalized,
+        });
+      }
+    })();
   }
 
   nextArchiveId(prefix, dateKey) {
@@ -248,6 +317,21 @@ class ContractRepository {
       params.archive_relative_dir = `%${filters.archive_relative_dir}%`;
     }
 
+    if (filters.contract_name) {
+      where.push('contract_name LIKE @contract_name');
+      params.contract_name = `%${filters.contract_name}%`;
+    }
+
+    if (filters.counterparty_name) {
+      where.push('counterparty_name LIKE @counterparty_name');
+      params.counterparty_name = `%${filters.counterparty_name}%`;
+    }
+
+    if (filters.agreement_type) {
+      where.push('agreement_type LIKE @agreement_type');
+      params.agreement_type = `%${filters.agreement_type}%`;
+    }
+
     if (filters.direction) {
       where.push('direction = @direction');
       params.direction = filters.direction;
@@ -256,6 +340,21 @@ class ContractRepository {
     if (filters.uploaded_by) {
       where.push('uploaded_by LIKE @uploaded_by');
       params.uploaded_by = `%${filters.uploaded_by}%`;
+    }
+
+    if (filters.our_owner) {
+      where.push('our_owner LIKE @our_owner');
+      params.our_owner = `%${filters.our_owner}%`;
+    }
+
+    if (filters.payment_status) {
+      where.push('payment_status LIKE @payment_status');
+      params.payment_status = `%${filters.payment_status}%`;
+    }
+
+    if (typeof filters.has_settlement === 'number') {
+      where.push('has_settlement = @has_settlement');
+      params.has_settlement = filters.has_settlement;
     }
 
     if (filters.signing_date_from) {
@@ -271,6 +370,86 @@ class ContractRepository {
     if (filters.effective_end_before) {
       where.push('effective_end_date <= @effective_end_before');
       params.effective_end_before = filters.effective_end_before;
+    }
+
+    if (filters.effective_start_from) {
+      where.push('effective_start_date >= @effective_start_from');
+      params.effective_start_from = filters.effective_start_from;
+    }
+
+    if (filters.effective_start_to) {
+      where.push('effective_start_date <= @effective_start_to');
+      params.effective_start_to = filters.effective_start_to;
+    }
+
+    if (filters.effective_end_from) {
+      where.push('effective_end_date >= @effective_end_from');
+      params.effective_end_from = filters.effective_end_from;
+    }
+
+    if (filters.effective_end_to) {
+      where.push('effective_end_date <= @effective_end_to');
+      params.effective_end_to = filters.effective_end_to;
+    }
+
+    if (filters.first_payment_date_from) {
+      where.push('first_payment_date >= @first_payment_date_from');
+      params.first_payment_date_from = filters.first_payment_date_from;
+    }
+
+    if (filters.first_payment_date_to) {
+      where.push('first_payment_date <= @first_payment_date_to');
+      params.first_payment_date_to = filters.first_payment_date_to;
+    }
+
+    if (filters.final_payment_date_from) {
+      where.push('final_payment_date >= @final_payment_date_from');
+      params.final_payment_date_from = filters.final_payment_date_from;
+    }
+
+    if (filters.final_payment_date_to) {
+      where.push('final_payment_date <= @final_payment_date_to');
+      params.final_payment_date_to = filters.final_payment_date_to;
+    }
+
+    if (typeof filters.min_amount === 'number') {
+      where.push('contract_amount >= @min_amount');
+      params.min_amount = filters.min_amount;
+    }
+
+    if (typeof filters.max_amount === 'number') {
+      where.push('contract_amount <= @max_amount');
+      params.max_amount = filters.max_amount;
+    }
+
+    if (filters.archived_at_from) {
+      where.push('archived_at >= @archived_at_from');
+      params.archived_at_from = filters.archived_at_from;
+    }
+
+    if (filters.archived_at_to) {
+      where.push('archived_at <= @archived_at_to');
+      params.archived_at_to = filters.archived_at_to;
+    }
+
+    if (filters.created_at_from) {
+      where.push('created_at >= @created_at_from');
+      params.created_at_from = filters.created_at_from;
+    }
+
+    if (filters.created_at_to) {
+      where.push('created_at <= @created_at_to');
+      params.created_at_to = filters.created_at_to;
+    }
+
+    if (filters.updated_at_from) {
+      where.push('updated_at >= @updated_at_from');
+      params.updated_at_from = filters.updated_at_from;
+    }
+
+    if (filters.updated_at_to) {
+      where.push('updated_at <= @updated_at_to');
+      params.updated_at_to = filters.updated_at_to;
     }
 
     if (typeof filters.limit !== 'number' || !Number.isFinite(filters.limit)) {
@@ -291,3 +470,15 @@ class ContractRepository {
 }
 
 module.exports = ContractRepository;
+
+function normalizeLegacyDateValue(value) {
+  if (value == null) {
+    return null;
+  }
+
+  if (value === '') {
+    return '';
+  }
+
+  return normalizeDateText(value);
+}

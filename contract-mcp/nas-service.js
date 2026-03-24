@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const ContractRepository = require('./repository');
+const { normalizeDateText, normalizeTimestampText } = require('./date-normalize');
 
 const DEFAULT_ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.xls', '.xlsx'];
 const DEFAULT_EXCLUDED_SEARCH_NAMES = new Set(['协议台账.xlsx', '电子协议归档规则.txt']);
@@ -83,32 +84,11 @@ function ensureParentDir(filePath) {
 }
 
 function normalizeDate(value) {
-  if (value == null || value === '') {
-    return null;
-  }
+  return normalizeDateText(value);
+}
 
-  const text = String(value).trim();
-
-  if (!text) {
-    return null;
-  }
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
-    return text;
-  }
-
-  if (/^\d{4}\.\d{1,2}\.\d{1,2}$/.test(text)) {
-    const [year, month, day] = text.split('.');
-    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-  }
-
-  const parsed = new Date(text);
-
-  if (Number.isNaN(parsed.getTime())) {
-    return text;
-  }
-
-  return parsed.toISOString().slice(0, 10);
+function normalizeTimestamp(value, { endOfDay = false } = {}) {
+  return normalizeTimestampText(value, { endOfDay });
 }
 
 function formatDateForMessage(value) {
@@ -522,9 +502,9 @@ class ContractService {
         our_owner: contract.ourOwner || '',
         counterparty_contact: contract.counterpartyContact || '',
         first_payment_amount: contract.firstPaymentAmount,
-        first_payment_date: contract.firstPaymentDate || '',
+        first_payment_date: contract.firstPaymentDate || null,
         final_payment_amount: contract.finalPaymentAmount,
-        final_payment_date: contract.finalPaymentDate || '',
+        final_payment_date: contract.finalPaymentDate || null,
         payment_status: contract.paymentStatus || '',
         confidentiality_requirement: contract.confidentialityRequirement || '',
         has_settlement: typeof contract.hasSettlement === 'boolean' ? (contract.hasSettlement ? 1 : 0) : null,
@@ -630,9 +610,9 @@ class ContractService {
       ourOwner: contract.ourOwner || '',
       counterpartyContact: contract.counterpartyContact || '',
       firstPaymentAmount: toNumberOrNull(contract.firstPaymentAmount),
-      firstPaymentDate: contract.firstPaymentDate || '',
+      firstPaymentDate: normalizeDate(contract.firstPaymentDate),
       finalPaymentAmount: toNumberOrNull(contract.finalPaymentAmount),
-      finalPaymentDate: contract.finalPaymentDate || '',
+      finalPaymentDate: normalizeDate(contract.finalPaymentDate),
       paymentStatus: contract.paymentStatus || '',
       confidentialityRequirement: contract.confidentialityRequirement || '',
       hasSettlement: typeof contract.hasSettlement === 'boolean' ? contract.hasSettlement : undefined,
@@ -731,9 +711,9 @@ class ContractService {
       他方负责人及联系方式: contract.counterpartyContact,
       总金额: formatAmount(contract.contractAmount),
       首期款: formatAmount(contract.firstPaymentAmount),
-      首期付款时间: contract.firstPaymentDate || '',
+      首期付款时间: formatDateForMessage(contract.firstPaymentDate),
       尾款: formatAmount(contract.finalPaymentAmount),
-      尾款付款时间: contract.finalPaymentDate || '',
+      尾款付款时间: formatDateForMessage(contract.finalPaymentDate),
       支付结算情况: contract.paymentStatus,
       备注: contract.remarks || contract.summary,
       保密要求: contract.confidentialityRequirement,
@@ -933,13 +913,50 @@ class ContractService {
     const normalizedFilters = {
       keyword: String(input.keyword || '').trim(),
       archive_relative_dir: String(input.archiveRelativeDir || '').trim(),
+      contract_name: String(input.contractName || '').trim(),
+      counterparty_name: String(input.counterpartyName || '').trim(),
+      agreement_type: String(input.agreementType || '').trim(),
       direction: String(input.direction || '').trim(),
       uploaded_by: String(input.uploadedBy || '').trim(),
+      our_owner: String(input.ourOwner || '').trim(),
+      payment_status: String(input.paymentStatus || '').trim(),
+      has_settlement: typeof input.hasSettlement === 'boolean'
+        ? (input.hasSettlement ? 1 : 0)
+        : undefined,
       signing_date_from: input.signingDateFrom ? normalizeDate(input.signingDateFrom) : '',
       signing_date_to: input.signingDateTo ? normalizeDate(input.signingDateTo) : '',
-      effective_end_before: input.effectiveEndBefore ? normalizeDate(input.effectiveEndBefore) : '',
+      effective_start_from: input.effectiveStartFrom ? normalizeDate(input.effectiveStartFrom) : '',
+      effective_start_to: input.effectiveStartTo ? normalizeDate(input.effectiveStartTo) : '',
+      effective_end_from: input.effectiveEndFrom ? normalizeDate(input.effectiveEndFrom) : '',
+      effective_end_to: input.effectiveEndTo
+        ? normalizeDate(input.effectiveEndTo)
+        : (input.effectiveEndBefore ? normalizeDate(input.effectiveEndBefore) : ''),
+      first_payment_date_from: input.firstPaymentDateFrom ? normalizeDate(input.firstPaymentDateFrom) : '',
+      first_payment_date_to: input.firstPaymentDateTo ? normalizeDate(input.firstPaymentDateTo) : '',
+      final_payment_date_from: input.finalPaymentDateFrom ? normalizeDate(input.finalPaymentDateFrom) : '',
+      final_payment_date_to: input.finalPaymentDateTo ? normalizeDate(input.finalPaymentDateTo) : '',
+      min_amount: typeof input.minAmount === 'number'
+        ? input.minAmount
+        : (input.minAmount == null || input.minAmount === '' ? undefined : Number(input.minAmount)),
+      max_amount: typeof input.maxAmount === 'number'
+        ? input.maxAmount
+        : (input.maxAmount == null || input.maxAmount === '' ? undefined : Number(input.maxAmount)),
+      archived_at_from: input.archivedAtFrom ? normalizeTimestamp(input.archivedAtFrom) : '',
+      archived_at_to: input.archivedAtTo ? normalizeTimestamp(input.archivedAtTo, { endOfDay: true }) : '',
+      created_at_from: input.createdAtFrom ? normalizeTimestamp(input.createdAtFrom) : '',
+      created_at_to: input.createdAtTo ? normalizeTimestamp(input.createdAtTo, { endOfDay: true }) : '',
+      updated_at_from: input.updatedAtFrom ? normalizeTimestamp(input.updatedAtFrom) : '',
+      updated_at_to: input.updatedAtTo ? normalizeTimestamp(input.updatedAtTo, { endOfDay: true }) : '',
       limit: Number.isFinite(input.limit) ? Math.max(1, Math.min(Math.trunc(input.limit), 100)) : this.config.defaultSearchLimit,
     };
+
+    if (normalizedFilters.min_amount != null && !Number.isFinite(normalizedFilters.min_amount)) {
+      throw new Error(`Invalid minAmount: ${input.minAmount}`);
+    }
+
+    if (normalizedFilters.max_amount != null && !Number.isFinite(normalizedFilters.max_amount)) {
+      throw new Error(`Invalid maxAmount: ${input.maxAmount}`);
+    }
 
     return {
       items: this.repository.searchRecords(normalizedFilters).map(row => this.mapArchiveRecordRow(row)),
