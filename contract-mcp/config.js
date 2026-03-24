@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png'];
+const DEFAULT_ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.xls', '.xlsx'];
 
 function parseCliArgs(argv = process.argv.slice(2)) {
   const result = {};
@@ -40,15 +40,20 @@ function resolveContractMcpConfig(baseDir, contractMcp = {}) {
   const libraryRoot = resolveRelative(
     baseDir,
     contractMcp.libraryRoot || contractMcp.storageRoot,
-    './storage/contracts',
+    './storage/已签署协议电子档',
   );
+  const ourCompanyAliases = Array.isArray(contractMcp.ourCompanyAliases)
+    ? contractMcp.ourCompanyAliases
+      .map(value => String(value || '').trim())
+      .filter(Boolean)
+    : [];
 
   return {
     libraryRoot,
-    dbPath: resolveRelative(baseDir, contractMcp.dbPath, path.join(libraryRoot, 'contracts.db')),
-    storageRoot: resolveRelative(baseDir, contractMcp.storageRoot, libraryRoot),
-    stagingDir: resolveRelative(baseDir, contractMcp.stagingDir, path.join(libraryRoot, '.staging')),
-    contractIdPrefix: contractMcp.contractIdPrefix || 'CT',
+    statePath: resolveRelative(baseDir, contractMcp.statePath, path.join(baseDir, 'data', 'contract-workflow-state.json')),
+    ledgerWorkbookPath: resolveRelative(baseDir, contractMcp.ledgerWorkbookPath, path.join(libraryRoot, '协议台账.xlsx')),
+    ledgerAdminUserId: typeof contractMcp.ledgerAdminUserId === 'string' ? contractMcp.ledgerAdminUserId.trim() : '',
+    pendingIdPrefix: contractMcp.pendingIdPrefix || contractMcp.contractIdPrefix || 'P',
     allowedExtensions: Array.isArray(contractMcp.allowedExtensions) && contractMcp.allowedExtensions.length > 0
       ? contractMcp.allowedExtensions
       : DEFAULT_ALLOWED_EXTENSIONS,
@@ -58,6 +63,7 @@ function resolveContractMcpConfig(baseDir, contractMcp = {}) {
     defaultSearchLimit: Number.isFinite(contractMcp.defaultSearchLimit)
       ? contractMcp.defaultSearchLimit
       : 20,
+    ourCompanyAliases,
   };
 }
 

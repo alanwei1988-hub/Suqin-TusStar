@@ -15,7 +15,11 @@ async function main() {
   const ChannelAdapter = await loadChannelAdapter(channelType);
   const channelConfig = processedConfig.channel[channelType];
   const channel = new ChannelAdapter(channelConfig, processedConfig.storage);
-  registerChannelHandlers({ agent, channel });
+  registerChannelHandlers({
+    agent,
+    channel,
+    contractMcpConfig: processedConfig.contractMcp,
+  });
 
   await channel.start();
   console.log(`[Main] System is up with channel: ${channelType}`);

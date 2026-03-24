@@ -379,28 +379,40 @@ function buildAttachmentExtractionFailurePayload(inspection, error) {
   };
 }
 
-function resolvePdfPageSelection(inspection, pageStart, pageCount, pageFromEnd, defaultPageCount) {
+function createAttachmentPageInputSchema({
+  maxCharsLimit,
+  pageLimit,
+  includeOffset = false,
+}) {
+  const shape = {
+    attachment: z.string().optional(),
+    maxChars: z.number().int().min(1).max(maxCharsLimit).optional(),
+  };
+
+  if (includeOffset) {
+    shape.offset = z.number().int().min(0).optional();
+  }
+
+  return z.object({
+    ...shape,
+    pageStart: z.number().int().min(1).optional(),
+    pageCount: z.number().int().min(1).max(pageLimit).optional(),
+  });
+}
+
+function resolvePdfPageSelection(_inspection, pageStart, pageCount, defaultPageCount) {
   const selectedPageCount = pageCount || defaultPageCount || 0;
 
-  if (!pageFromEnd) {
+  if (pageStart) {
     return {
-      pageStart: pageStart || 1,
+      pageStart,
       pageCount: selectedPageCount,
     };
   }
 
-  if (inspection.pageRangeSupported !== true || !Number.isFinite(inspection.totalPageCount) || inspection.totalPageCount <= 0) {
-    throw new Error(`Attachment "${inspection.name}" does not expose a reliable total page count for pageFromEnd.`);
-  }
-
-  const effectivePageCount = Math.max(1, selectedPageCount || 1);
-  const computedPageStart = Math.max(1, inspection.totalPageCount - pageFromEnd + 1);
-  const boundedPageStart = Math.min(computedPageStart, inspection.totalPageCount);
-  const remainingPages = inspection.totalPageCount - boundedPageStart + 1;
-
   return {
-    pageStart: boundedPageStart,
-    pageCount: Math.min(effectivePageCount, remainingPages),
+    pageStart: 1,
+    pageCount: selectedPageCount,
   };
 }
 
@@ -472,28 +484,21 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
     },
     tools: {
       inspectAttachment: tool({
-        description: 'Inspect a user-provided attachment by id, name, or path. Returns metadata and a bounded preview for plain text-like attachments.',
+        description: 'Inspect a user-provided attachment by id, name, or path. Returns metadata and a bounded preview. Do not pass page selectors here; use readAttachmentText when you need specific PDF pages.',
         inputSchema: z.object({
           attachment: z.string().optional(),
           maxChars: z.number().int().min(0).max(MAX_ATTACHMENT_PREVIEW_CHARS).optional(),
-          pageStart: z.number().int().min(1).optional(),
-          pageCount: z.number().int().min(1).max(20).optional(),
-          pageFromEnd: z.number().int().min(1).max(20).optional(),
         }),
-        execute: async ({ attachment, maxChars, pageStart, pageCount, pageFromEnd }) => {
+        execute: async ({ attachment, maxChars }) => {
           const target = resolveAttachment(index, workspaceDir, resolveRequestedPath, attachment);
           let inspection;
 
           try {
-            const baseInspection = await inspectAttachmentFile(target, 0, null);
-            const pageSelection = target.extension === '.pdf'
-              ? resolvePdfPageSelection(baseInspection, pageStart, pageCount, pageFromEnd, extractor.previewPageCount || 1)
-              : { pageStart: pageStart || 1, pageCount: pageCount || 0 };
             inspection = await inspectAttachmentFile(target, maxChars ?? DEFAULT_ATTACHMENT_PREVIEW_CHARS, {
               ...extractor,
               extract: (currentAttachment, options = {}) => extractor.extract(currentAttachment, {
-                pageStart: pageSelection.pageStart || options.pageStart || 1,
-                pageCount: pageSelection.pageCount || options.pageCount || 0,
+                pageStart: options.pageStart || 1,
+                pageCount: options.pageCount || 0,
               }),
             });
           } catch (error) {
@@ -514,16 +519,13 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
         },
       }),
       readAttachmentText: tool({
-        description: 'Read a bounded chunk of text from a user-provided attachment. Plain text files are read directly; supported office or PDF files may be converted with MarkItDown first. For large PDFs, prefer reading selected pages instead of the whole document.',
-        inputSchema: z.object({
-          attachment: z.string().optional(),
-          offset: z.number().int().min(0).optional(),
-          maxChars: z.number().int().min(1).max(MAX_ATTACHMENT_TEXT_CHARS).optional(),
-          pageStart: z.number().int().min(1).optional(),
-          pageCount: z.number().int().min(1).max(50).optional(),
-          pageFromEnd: z.number().int().min(1).max(50).optional(),
+        description: 'Read a bounded chunk of text from a user-provided attachment. Plain text files are read directly; supported office or PDF files may be converted with MarkItDown first. For PDFs, use pageStart and pageCount to read specific pages.',
+        inputSchema: createAttachmentPageInputSchema({
+          maxCharsLimit: MAX_ATTACHMENT_TEXT_CHARS,
+          pageLimit: 50,
+          includeOffset: true,
         }),
-        execute: async ({ attachment, offset, maxChars, pageStart, pageCount, pageFromEnd }) => {
+        execute: async ({ attachment, offset, maxChars, pageStart, pageCount }) => {
           const target = resolveAttachment(index, workspaceDir, resolveRequestedPath, attachment);
           const inspection = await inspectAttachmentFile(target, 0, null);
           if (!inspection.textLike) {
@@ -535,10 +537,9 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
               const useImplicitPagedCursor = target.extension === '.pdf'
                 && inspection.pageRangeSupported === true
                 && !pageStart
-                && !pageCount
-                && !pageFromEnd;
+                && !pageCount;
               const pageSelection = target.extension === '.pdf'
-                ? resolvePdfPageSelection(inspection, pageStart, pageCount, pageFromEnd, extractor.readPageCount)
+                ? resolvePdfPageSelection(inspection, pageStart, pageCount, extractor.readPageCount)
                 : { pageStart: pageStart || 1, pageCount: pageCount || 0 };
               let extracted;
               let chunk;

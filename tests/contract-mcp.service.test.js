@@ -1,23 +1,28 @@
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { ContractService } = require('../contract-mcp/service');
+const { ContractService } = require('../contract-mcp/nas-service');
 const { makeTempDir } = require('./helpers/test-helpers');
 
 module.exports = async function runContractServiceTest() {
   const rootDir = makeTempDir('contract-service-');
-  const storageRoot = path.join(rootDir, 'storage');
+  const libraryRoot = path.join(rootDir, '已签署协议电子档');
   const service = new ContractService({
-    dbPath: path.join(rootDir, 'contracts.db'),
-    storageRoot,
-    stagingDir: path.join(storageRoot, '.staging'),
-    contractIdPrefix: 'CT',
+    libraryRoot,
+    statePath: path.join(rootDir, 'data', 'contract-workflow-state.json'),
+    ledgerWorkbookPath: path.join(libraryRoot, '协议台账.xlsx'),
+    ledgerAdminUserId: 'admin-1',
+    pendingIdPrefix: 'P',
+    ourCompanyAliases: ['上海启迪创业孵化器有限公司', '上海启迪'],
     allowedExtensions: ['.pdf', '.docx', '.doc'],
     maxFileSizeMb: 10,
     defaultSearchLimit: 20,
   });
 
   try {
+    fs.mkdirSync(path.join(libraryRoot, '采购（启迪支出）', '算力'), { recursive: true });
+    fs.mkdirSync(path.join(libraryRoot, '专业服务收入协议（活动+算力+商业化）', '算力客户协议（启迪收入）'), { recursive: true });
+    fs.writeFileSync(path.join(libraryRoot, '协议台账.xlsx'), 'placeholder');
     const scanPath = path.join(rootDir, 'scan.pdf');
     const wordPath = path.join(rootDir, 'contract.docx');
     const appendixPath = path.join(rootDir, 'appendix.pdf');
@@ -25,87 +30,122 @@ module.exports = async function runContractServiceTest() {
     fs.writeFileSync(wordPath, 'word-file');
     fs.writeFileSync(appendixPath, 'appendix-file');
 
-    const validation = service.validateContractPayload({
-      contract: {
-        contractName: '测试合同',
-        partyAName: '甲方公司',
-      },
-      files: [],
+    const directoryTree = service.listDirectory({
+      relativePath: '采购（启迪支出）',
+      depth: 2,
     });
-    assert.equal(validation.ok, false);
-    assert(validation.missingFields.includes('contract.partyBName'));
-    assert(validation.missingFields.includes('files'));
+    assert.equal(directoryTree.tree.name, '采购（启迪支出）');
 
-    const created = service.createContract({
+    assert.throws(
+      () => service.prepareArchive({
+        sourceFiles: [{ path: scanPath, name: 'scan.pdf' }],
+        archiveRelativeDir: path.join('采购（启迪支出）', '算力'),
+        operator: 'tester',
+        uploaderUserId: 'tester',
+      }),
+      /不能省略 contract.*至少回填这些已识别字段/u,
+    );
+
+    const prepared = service.prepareArchive({
       contract: {
-        contractName: '测试合同',
-        partyAName: '甲方公司',
-        partyBName: '乙方公司',
+        contractName: '测试算力采购协议',
+        agreementType: '采购',
+        partyAName: '上海启迪',
+        partyBName: '算力供应商',
         signingDate: '2026-03-19',
         effectiveEndDate: '2026-12-31',
         contractAmount: 12888,
-        summary: '合同归档测试',
         uploadedBy: 'tester',
       },
-      files: [
-        { path: scanPath, role: 'scan' },
-        { path: wordPath, role: 'original_word' },
+      sourceFiles: [
+        { path: scanPath, name: 'scan.pdf' },
+        { path: wordPath, name: 'contract.docx' },
       ],
+      archiveRelativeDir: path.join('采购（启迪支出）', '算力'),
+      sheetName: '费用支出协议',
       operator: 'tester',
-      idempotencyKey: 'create-001',
+      uploaderUserId: 'tester',
     });
 
-    assert.equal(created.reused, false);
-    assert.match(created.contract.contractId, /^CT-\d{8}-\d{4}$/);
-    assert.equal(created.files.length, 2);
-    assert.equal(fs.existsSync(path.join(storageRoot, 'contracts', created.contract.contractId, 'metadata.json')), true);
+    assert.match(prepared.pending.pendingId, /^P\d{8}-\d{3}$/);
+    assert.equal(prepared.pending.status, 'drafted');
+    assert.equal(prepared.pending.sheetName, '费用支出协议');
+    assert.match(prepared.pending.plannedFiles[0].targetName, /算力供应商/);
+    assert.match(prepared.uploaderConfirmationMessage, /请确认协议归档与台账信息/);
 
-    const reused = service.createContract({
+    const updated = service.updatePending({
+      pendingId: prepared.pending.pendingId,
+      operator: 'tester',
+      contract: {
+        counterpartyContact: '张三 13800000000',
+      },
+      ledgerFields: {
+        总金额: '25600',
+      },
+    });
+    assert.equal(updated.pending.ledgerFields['总金额'], '25600');
+
+    const confirmed = service.confirmArchive({
+      pendingId: prepared.pending.pendingId,
+      operator: 'tester',
+    });
+    assert.equal(confirmed.pending.status, 'admin_pending');
+    assert.equal(confirmed.pending.committedFiles.length, 2);
+    assert.equal(fs.existsSync(confirmed.pending.committedFiles[0].absolutePath), true);
+    assert.match(confirmed.adminLedgerMessage, /待录入协议台账/);
+
+    const searchResult = service.searchContracts({
+      keyword: '算力',
+      recentMonths: 2,
+    });
+    assert.equal(searchResult.items.length, 2);
+
+    const directoryMatches = service.findDirectories({
+      keywords: ['算力'],
+    });
+    assert.equal(directoryMatches.items.length >= 2, true);
+
+    const completed = service.completeLedger({
+      pendingId: prepared.pending.pendingId,
+      operator: 'admin-1',
+      note: '已写入 Excel',
+    });
+    assert.equal(completed.pending.status, 'completed');
+
+    const rejected = service.prepareArchive({
       contract: {
         contractName: '测试合同',
         partyAName: '甲方公司',
         partyBName: '乙方公司',
         signingDate: '2026-03-19',
-        uploadedBy: 'tester',
       },
-      files: [{ path: scanPath, role: 'scan' }],
+      sourceFiles: [{ path: appendixPath }],
+      archiveRelativeDir: '专业服务收入协议（活动+算力+商业化）\\算力客户协议（启迪收入）',
       operator: 'tester',
-      idempotencyKey: 'create-001',
+      uploaderUserId: 'tester',
     });
-    assert.equal(reused.reused, true);
-    assert.equal(reused.contract.contractId, created.contract.contractId);
+    const rejectedResult = service.rejectPending({
+      pendingId: rejected.pending.pendingId,
+      operator: 'tester',
+      reason: '目录不对',
+    });
+    assert.equal(rejectedResult.pending.status, 'uploader_rejected');
 
-    const searchResult = service.searchContracts({ keyword: '测试合同' });
-    assert.equal(searchResult.items.length, 1);
-
-    const updated = service.updateContract({
-      contractId: created.contract.contractId,
-      patch: {
-        summary: '更新后的摘要',
-        contractAmount: 25600,
+    const incomePrepared = service.prepareArchive({
+      contract: {
+        contractName: '算力技术服务协议',
+        agreementType: '算力技术服务',
+        partyAName: '艾哎思维（上海）科技有限公司',
+        partyBName: '上海启迪创业孵化器有限公司',
+        signingDate: '2025-12-01',
       },
+      sourceFiles: [{ path: appendixPath, name: 'income.pdf' }],
+      archiveRelativeDir: '专业服务收入协议（活动+算力+商业化）\\算力客户协议（启迪收入）',
       operator: 'tester',
-      changeReason: '修正金额',
+      uploaderUserId: 'tester',
     });
-    assert.equal(updated.contract.summary, '更新后的摘要');
-    assert.equal(updated.contract.contractAmount, 25600);
-
-    const attached = service.attachFiles({
-      contractId: created.contract.contractId,
-      files: [{ path: appendixPath, role: 'attachment' }],
-      operator: 'tester',
-    });
-    assert.equal(attached.files.length, 3);
-
-    const expiring = service.listExpiringContracts({ withinDays: 365 });
-    assert.equal(expiring.items.length, 1);
-
-    const archived = service.archiveContract({
-      contractId: created.contract.contractId,
-      operator: 'tester',
-      reason: '测试归档',
-    });
-    assert.equal(archived.contract.status, 'archived');
+    assert.match(incomePrepared.pending.plannedFiles[0].targetName, /艾哎思维/);
+    assert.doesNotMatch(incomePrepared.pending.plannedFiles[0].targetName, /上海启迪创业孵化器有限公司/);
   } finally {
     service.close();
     fs.rmSync(rootDir, { recursive: true, force: true });

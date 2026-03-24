@@ -16,6 +16,7 @@ _PROCESS_STARTED_AT = time.perf_counter()
 QWEN_OPENAI_COMPAT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 QWEN_DOCUMENT_MARKDOWN_PROMPT = "qwenvl markdown"
 QWEN_PDF_RENDER_DPI = 150
+PAGE_HEADING_PATTERN = re.compile(r"^\s*##\s+Page\s+\d+\s*$", re.IGNORECASE | re.MULTILINE)
 
 
 class _ChatCompletionsProxy:
@@ -350,7 +351,8 @@ def count_meaningful_text_characters(markdown: str) -> int:
     if not markdown:
         return 0
 
-    sanitized = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", markdown)
+    sanitized = PAGE_HEADING_PATTERN.sub(" ", markdown)
+    sanitized = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", sanitized)
     sanitized = re.sub(r"https?://\S+", " ", sanitized)
     matches = re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", sanitized)
     return len(matches)
@@ -450,9 +452,10 @@ def try_convert_pdf_range_without_ocr(
                 except Exception:
                     pass
 
-            page_markdown_parts.append(
-                f"## Page {absolute_page_number}\n\n{page_markdown}".strip()
-            )
+            if page_markdown.strip():
+                page_markdown_parts.append(
+                    f"## Page {absolute_page_number}\n\n{page_markdown}".strip()
+                )
     finally:
         source_doc.close()
 

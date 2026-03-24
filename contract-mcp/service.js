@@ -1,3 +1,5 @@
+module.exports = require('./nas-service');
+/*
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -652,3 +654,4 @@ module.exports = {
   fileInputSchema,
   updatePatchSchema,
 };
+*/

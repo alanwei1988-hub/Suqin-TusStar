@@ -4,6 +4,9 @@ const { execFile } = require('child_process');
 const { getDefaultBaseURLForLlmClient } = require('./llm');
 const { AttachmentExtractionCache, hashString } = require('./cache');
 
+const EXTRACTOR_CACHE_SCHEMA_VERSION = 2;
+const PAGE_HEADING_PATTERN = /^\s*##\s+Page\s+\d+\s*$/gim;
+
 function replaceArgPlaceholders(value, replacements) {
   let output = String(value);
 
@@ -96,6 +99,48 @@ function getHandlerModuleVersion(handlerModulePath) {
   }
 }
 
+function getExistingPathVersion(candidate) {
+  if (typeof candidate !== 'string') {
+    return candidate;
+  }
+
+  const normalized = candidate.trim();
+
+  if (
+    !normalized
+    || normalized.startsWith('-')
+    || normalized.includes('{')
+    || /^[a-z]+:\/\//i.test(normalized)
+  ) {
+    return normalized;
+  }
+
+  try {
+    const stat = fs.statSync(normalized);
+    return `${path.resolve(normalized)}::${stat.size}::${stat.mtimeMs}`;
+  } catch {
+    return normalized;
+  }
+}
+
+function stripSyntheticPageHeadings(markdown) {
+  return String(markdown || '').replace(PAGE_HEADING_PATTERN, '').trim();
+}
+
+function hasMeaningfulExtractedMarkdown(markdown) {
+  const normalized = stripSyntheticPageHeadings(markdown);
+
+  if (!normalized) {
+    return false;
+  }
+
+  const sanitized = normalized
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, ' ')
+    .replace(/https?:\/\/\S+/g, ' ');
+
+  return /[\u4e00-\u9fffA-Za-z0-9]/.test(sanitized);
+}
+
 function buildExtractorKey(config = {}) {
   const llmConfig = config && typeof config.llm === 'object' && !Array.isArray(config.llm)
     ? config.llm
@@ -105,9 +150,10 @@ function buildExtractorKey(config = {}) {
     : {};
 
   return hashString(JSON.stringify({
+    cacheSchemaVersion: EXTRACTOR_CACHE_SCHEMA_VERSION,
     handlerModule: getHandlerModuleVersion(config.handlerModule),
-    command: config.command || 'python',
-    args: Array.isArray(config.args) ? config.args : ['-m', 'markitdown', '{input}'],
+    command: getExistingPathVersion(config.command || 'python'),
+    args: (Array.isArray(config.args) ? config.args : ['-m', 'markitdown', '{input}']).map(getExistingPathVersion),
     timeoutMs: config.timeoutMs || 30000,
     maxOutputChars: config.maxOutputChars || 24000,
     ocrConcurrency: config.ocrConcurrency || 1,
@@ -197,6 +243,21 @@ function classifyExtractionFailure(error, attempt = {}) {
   };
 }
 
+function ensureMeaningfulMarkdown(markdown, attachmentName, profileName) {
+  if (!markdown.trim()) {
+    throw new Error(`MarkItDown returned no content for ${attachmentName}.`);
+  }
+
+  if (!hasMeaningfulExtractedMarkdown(markdown)) {
+    throw createExtractionError(`MarkItDown returned only structural markdown for ${attachmentName}.`, {
+      code: 'ocr_empty_result',
+      userMessage: '附件提取结果为空，未识别到可用正文文本。',
+      rawMessage: `MarkItDown returned only structural markdown for ${attachmentName}.`,
+      primaryProfile: profileName,
+    });
+  }
+}
+
 function createMarkItDownExtractor(config = {}) {
   const enabled = config?.enabled === true;
   const supportedExtensions = new Set((config?.supportedExtensions || []).map(value => String(value).toLowerCase()));
@@ -259,9 +320,7 @@ function createMarkItDownExtractor(config = {}) {
             ? converted
             : String(converted?.markdown || '');
 
-          if (!markdown.trim()) {
-            throw new Error(`MarkItDown handler returned no content for ${attachment.name}.`);
-          }
+          ensureMeaningfulMarkdown(markdown, attachment.name, profileName);
 
           return {
             method: 'markitdown',
@@ -300,9 +359,7 @@ function createMarkItDownExtractor(config = {}) {
         }));
         const markdown = String(result.stdout || '').trim();
 
-        if (!markdown) {
-          throw new Error(`MarkItDown returned no content for ${attachment.name}.`);
-        }
+        ensureMeaningfulMarkdown(markdown, attachment.name, profileName);
 
         return {
           method: 'markitdown',
@@ -404,5 +461,7 @@ module.exports = {
   createExtractionError,
   createCommandEnv,
   createMarkItDownExtractor,
+  hasMeaningfulExtractedMarkdown,
   replaceArgPlaceholders,
+  stripSyntheticPageHeadings,
 };

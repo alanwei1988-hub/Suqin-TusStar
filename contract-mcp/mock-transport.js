@@ -1,5 +1,5 @@
-const { ContractService } = require('./service');
-const { createContractToolRegistry } = require('./tools');
+const { ContractService } = require('./nas-service');
+const { createContractToolRegistry } = require('./nas-tools');
 
 class ContractMCPMockTransport {
   constructor(config) {

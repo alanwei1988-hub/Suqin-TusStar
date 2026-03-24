@@ -3,6 +3,52 @@ const { Experimental_StdioMCPTransport } = require('@ai-sdk/mcp/mcp-stdio');
 const { createToolDisplayInfo } = require('./display');
 
 const DEFAULT_MCP_INIT_TIMEOUT_MS = 8000;
+const DEFAULT_MCP_TOOL_TIMEOUT_MS = 30000;
+
+function extractMcpErrorMessage(result) {
+  const structuredError = result?.structuredContent?.error;
+
+  if (typeof structuredError === 'string' && structuredError.trim().length > 0) {
+    return structuredError.trim();
+  }
+
+  if (Array.isArray(result?.content)) {
+    const text = result.content
+      .filter(part => part?.type === 'text' && typeof part.text === 'string')
+      .map(part => part.text.trim())
+      .filter(Boolean)
+      .join(' ');
+
+    if (text.length > 0) {
+      return text;
+    }
+  }
+
+  return 'MCP tool returned an error.';
+}
+
+function wrapMcpTool(toolName, toolDefinition, timeoutMs = DEFAULT_MCP_TOOL_TIMEOUT_MS) {
+  if (!toolDefinition || typeof toolDefinition.execute !== 'function') {
+    return toolDefinition;
+  }
+
+  return {
+    ...toolDefinition,
+    execute: async (args, options) => {
+      const result = await withTimeout(
+        toolDefinition.execute(args, options),
+        timeoutMs,
+        `MCP tool ${toolName}`,
+      );
+
+      if (result?.isError === true) {
+        throw new Error(`${toolName}: ${extractMcpErrorMessage(result)}`);
+      }
+
+      return result;
+    },
+  };
+}
 
 function buildTransport(server) {
   const type = server.transport || server.type;
@@ -95,13 +141,17 @@ function pickMcpStatusText(toolName, toolDefinition) {
   return undefined;
 }
 
-async function createMcpToolkit(servers = []) {
+async function createMcpToolkit(servers = [], options = {}) {
   const enabledServers = servers.filter(server => server && server.enabled !== false);
   const clients = [];
   const mergedTools = {};
+  const toolSchemasByName = {};
   const toolDisplayByName = {};
   const readOnlyToolNames = [];
   const summaries = [];
+  const defaultToolTimeoutMs = Number.isFinite(options.defaultToolTimeoutMs)
+    ? Math.max(1, Math.trunc(options.defaultToolTimeoutMs))
+    : DEFAULT_MCP_TOOL_TIMEOUT_MS;
 
   try {
     for (const server of enabledServers) {
@@ -145,7 +195,11 @@ async function createMcpToolkit(servers = []) {
             throw new Error(`Duplicate MCP tool name detected: ${mergedName}`);
           }
 
-          mergedTools[mergedName] = tools[tool.name];
+          const toolTimeoutMs = Number.isFinite(server.toolTimeoutMs)
+            ? Math.max(1, Math.trunc(server.toolTimeoutMs))
+            : defaultToolTimeoutMs;
+          mergedTools[mergedName] = wrapMcpTool(mergedName, tools[tool.name], toolTimeoutMs);
+          toolSchemasByName[mergedName] = tool.inputSchema || null;
           toolNames.push(mergedName);
           toolDisplayByName[mergedName] = createToolDisplayInfo(mergedName, {
             displayName: pickMcpDisplayName(tool) || undefined,
@@ -180,6 +234,7 @@ async function createMcpToolkit(servers = []) {
 
     return {
       tools: mergedTools,
+      toolSchemasByName,
       toolDisplayByName,
       readOnlyToolNames,
       summaries,

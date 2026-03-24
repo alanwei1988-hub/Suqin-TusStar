@@ -201,6 +201,18 @@ trailer
         return true;
       },
     );
+
+    await adapter.sendText('u5', '待录入协议台账\n编号：P20260324-001', { chatId: 'u5', chatType: 1 });
+    assert.deepEqual(sendCalls[1], {
+      chatId: 'u5',
+      chatType: 1,
+      msgType: 'markdown',
+      content: {
+        markdown: {
+          content: '待录入协议台账\n编号：P20260324-001',
+        },
+      },
+    });
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

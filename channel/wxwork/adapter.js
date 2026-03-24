@@ -406,6 +406,15 @@ class WxWorkAdapter extends EventEmitter {
     this.bot.respondWelcomeMsg(context.reqId, content);
   }
 
+  async sendText(userId, content, context = {}) {
+    const target = resolveChatTarget(userId, context);
+    this.bot.sendMsg(target.chatId, target.chatType, 'markdown', {
+      markdown: {
+        content,
+      },
+    });
+  }
+
   async sendAttachments(userId, attachments = [], context = {}) {
     const target = resolveChatTarget(userId, context);
 

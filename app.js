@@ -45,6 +45,9 @@ function normalizeMcpServer(rootDir, server) {
   const normalized = {
     ...server,
     cwd: resolveRelativePath(rootDir, server.cwd),
+    ...(Number.isFinite(server.toolTimeoutMs)
+      ? { toolTimeoutMs: Math.max(1, Math.trunc(server.toolTimeoutMs)) }
+      : {}),
   };
 
   if ((normalized.transport || normalized.type) !== 'stdio') {
@@ -191,11 +194,30 @@ function normalizeMarkItDownConfig(rootDir, config = {}) {
   return normalized;
 }
 
+function normalizeToolTimeouts(config = {}) {
+  const normalizedConfig = config && typeof config === 'object' && !Array.isArray(config)
+    ? config
+    : {};
+
+  return {
+    bashTimeoutMs: Number.isFinite(normalizedConfig.bashTimeoutMs)
+      ? Math.max(1, Math.trunc(normalizedConfig.bashTimeoutMs))
+      : 30000,
+    maxBashTimeoutMs: Number.isFinite(normalizedConfig.maxBashTimeoutMs)
+      ? Math.max(1, Math.trunc(normalizedConfig.maxBashTimeoutMs))
+      : 300000,
+    mcpToolTimeoutMs: Number.isFinite(normalizedConfig.mcpToolTimeoutMs)
+      ? Math.max(1, Math.trunc(normalizedConfig.mcpToolTimeoutMs))
+      : 30000,
+  };
+}
+
 function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {}) {
   const channelType = rawConfig.channel.type;
   const channelConfig = rawConfig.channel[channelType] || {};
   const sessionDbPath = resolveRelativePath(rootDir, rawConfig.agent.sessionDb);
   const markitdownConfig = normalizeMarkItDownConfig(rootDir, rawConfig.agent.attachmentExtraction?.markitdown || {});
+  const toolTimeouts = normalizeToolTimeouts(rawConfig.agent.toolTimeouts || {});
   const normalizedChannelConfig = {
     ...channelConfig,
     botId: env.BOT_ID,
@@ -207,8 +229,13 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
     normalizedChannelConfig.streamingResponse = channelConfig.streamingResponse !== false;
   }
 
+  const contractMcpConfig = rawConfig.contractMcp
+    ? resolveContractMcpConfig(rootDir, rawConfig.contractMcp)
+    : undefined;
+
   ensureParentDirExists(sessionDbPath);
   ensureParentDirExists(markitdownConfig.cache.dbPath);
+  ensureParentDirExists(contractMcpConfig?.statePath);
 
   return {
     agent: {
@@ -223,6 +250,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       skillsDir: resolveRelativePath(rootDir, rawConfig.agent.skillsDir),
       rolePromptDir: resolveRelativePath(rootDir, rawConfig.agent.rolePromptDir),
       sessionDb: sessionDbPath,
+      toolTimeouts,
       mcpServers: (rawConfig.agent.mcpServers || []).map(server => normalizeMcpServer(rootDir, server)),
       attachmentExtraction: {
         markitdown: markitdownConfig,
@@ -236,9 +264,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       ...rawConfig.storage,
       tempDir: resolveRelativePath(rootDir, rawConfig.storage.tempDir),
     },
-    contractMcp: rawConfig.contractMcp
-      ? resolveContractMcpConfig(rootDir, rawConfig.contractMcp)
-      : undefined,
+    contractMcp: contractMcpConfig,
   };
 }
 
@@ -296,12 +322,16 @@ function normalizeAgentResponse(response) {
       outboundAttachments: Array.isArray(response.outboundAttachments)
         ? response.outboundAttachments
         : [],
+      outboundNotifications: Array.isArray(response.outboundNotifications)
+        ? response.outboundNotifications
+        : [],
     };
   }
 
   return {
     text: response || '已处理完成。',
     outboundAttachments: [],
+    outboundNotifications: [],
   };
 }
 
@@ -435,8 +465,51 @@ async function sendOutboundAttachments({ channel, userId, attachments, context, 
   }
 }
 
-function registerChannelHandlers({ agent, channel }) {
+async function sendOutboundNotifications({ channel, notifications, currentContext, streamReply }) {
+  if (!Array.isArray(notifications) || notifications.length === 0) {
+    return { ok: true };
+  }
+
+  if (typeof channel.sendText !== 'function') {
+    return {
+      ok: false,
+      message: '相关同事通知未发送：当前通道不支持主动文本通知。',
+    };
+  }
+
+  if (streamReply) {
+    await streamReply.updateStatus('正在通知相关同事...');
+  }
+
+  try {
+    for (const notification of notifications) {
+      await channel.sendText(
+        notification?.recipient?.userId,
+        notification?.content || '',
+        notification?.context || currentContext || {},
+      );
+    }
+
+    return { ok: true };
+  } catch (error) {
+    console.error('[Main] Notification send error:', error);
+    return {
+      ok: false,
+      message: '相关同事通知发送失败，请手动转发处理结果。',
+    };
+  }
+}
+
+function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
   const messageQueue = createConversationQueue();
+  const notificationRecipients = contractMcpConfig.ledgerAdminUserId
+    ? {
+      contract_admin: {
+        userId: contractMcpConfig.ledgerAdminUserId,
+        label: `合同管理员(${contractMcpConfig.ledgerAdminUserId})`,
+      },
+    }
+    : {};
 
   channel.on('message', async ({ userId, text, attachments, context }) => {
     console.log(`[Main] Message from ${userId}: ${text} (${attachments.length} files)`);
@@ -456,6 +529,14 @@ function registerChannelHandlers({ agent, channel }) {
 
         const agentResponse = normalizeAgentResponse(await agent.chat(userId, text, attachments, {
           includeArtifacts: true,
+          requestContext: {
+            userId,
+            context,
+          },
+          messaging: {
+            enabled: true,
+            recipients: notificationRecipients,
+          },
           onToolCallStart: async event => {
             console.log(`[Main] Agent tool start: step ${Number.isFinite(event.stepNumber) ? event.stepNumber + 1 : '?'} -> ${event.toolCall.toolName}`);
             if (streamReply) {
@@ -480,9 +561,31 @@ function registerChannelHandlers({ agent, channel }) {
           context,
           streamReply,
         });
-        const finalText = attachmentResult.ok
-          ? agentResponse.text
-          : attachmentResult.message;
+        const notificationResult = attachmentResult.ok
+          ? await sendOutboundNotifications({
+            channel,
+            notifications: agentResponse.outboundNotifications,
+            currentContext: context,
+            streamReply,
+          })
+          : { ok: true };
+        const notes = [];
+
+        if (!attachmentResult.ok) {
+          notes.push(attachmentResult.message);
+        }
+
+        if (!notificationResult.ok) {
+          notes.push(notificationResult.message);
+        }
+
+        let finalText = agentResponse.text;
+
+        if (!attachmentResult.ok) {
+          finalText = attachmentResult.message;
+        } else if (!notificationResult.ok) {
+          finalText = `${agentResponse.text}\n\n${notificationResult.message}`;
+        }
 
         if (streamReply) {
           await streamFinalReply(streamReply, finalText);

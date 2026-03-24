@@ -1,12 +1,17 @@
 {
   "agent": {
-    "model": "qwen3.5-plus",
+    "model": "gpt-5.4",
     "provider": "openai",
     "openai": {
       "baseURL": "https://api.zetatechs.com/v1"
     },
     "toolChoice": "auto",
     "maxSteps": 12,
+    "toolTimeouts": {
+      "bashTimeoutMs": 30000,
+      "maxBashTimeoutMs": 300000,
+      "mcpToolTimeoutMs": 30000
+    },
     "context": {
       "loopMessageWindow": 30,
       "recentMessagesCount": 12,
@@ -21,7 +26,8 @@
         "args": ["./contract-mcp/server.js"],
         "cwd": ".",
         "failOpen": false,
-        "initTimeoutMs": 8000
+        "initTimeoutMs": 8000,
+        "toolTimeoutMs": 30000
       }
     ],
     "attachmentExtraction": {
@@ -60,7 +66,7 @@
           "enabled": true,
           "dbPath": "./data/attachment-extraction-cache.db"
         },
-        "activeLlmProfile": "legacy-openai-compatible",
+        "activeLlmProfile": "qwen-vl",
         "fallbackLlmProfile": "legacy-openai-compatible",
         "llmProfiles": {
           "legacy-openai-compatible": {
@@ -86,9 +92,13 @@
   },
   "contractMcp": {
     "_libraryRoot": "\\\\192.168.20.100\\启迪之星\\技术商业化事业部\\板块-产业化\\合同管理",
-    "libraryRoot": "storage/contract-library",
-    "contractIdPrefix": "CT",
-    "allowedExtensions": [".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png"],
+    "libraryRoot": "storage/已签署协议电子档",
+    "statePath": "data/contract-workflow-state.json",
+    "ledgerWorkbookPath": "storage/已签署协议电子档/协议台账.xlsx",
+    "ledgerAdminUserId": "XiaoDao",
+    "pendingIdPrefix": "P",
+    "ourCompanyAliases": ["上海启迪创业孵化器有限公司", "上海启迪创业孵化器", "上海启迪"],
+    "allowedExtensions": [".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".xls", ".xlsx"],
     "maxFileSizeMb": 50,
     "defaultSearchLimit": 20
   },

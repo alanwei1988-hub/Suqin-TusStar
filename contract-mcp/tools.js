@@ -1,3 +1,5 @@
+module.exports = require('./nas-tools');
+/*
 const { z } = require('zod');
 const {
   VALID_FILE_ROLES,
@@ -258,3 +260,4 @@ function createContractToolRegistry(service) {
 module.exports = {
   createContractToolRegistry,
 };
+*/

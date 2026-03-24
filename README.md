@@ -93,13 +93,17 @@ DEBUG=true
 
 - `agent`
   - 模型、工具调用策略、最大步骤数
+  - 工具超时配置 `agent.toolTimeouts`
   - 会话数据库路径 `agent.sessionDb`
   - 技能目录 `agent.skillsDir`
   - 角色提示词目录 `agent.rolePromptDir`
   - MCP 服务列表 `agent.mcpServers`
   - 附件文本提取配置 `agent.attachmentExtraction`
 - `contractMcp`
-  - `libraryRoot`：合同库根目录
+  - `libraryRoot`：真实 NAS 合同目录根路径
+  - `statePath`：待确认归档和审计事件的本地状态文件
+  - `ledgerWorkbookPath`：人工维护的 Excel 台账路径
+  - `ledgerAdminUserId`：合同管理员用户 ID，用于主动提醒补录 Excel
   - `allowedExtensions`：允许归档的文件类型
   - `maxFileSizeMb`：单文件大小限制
   - `defaultSearchLimit`：默认查询上限
@@ -111,7 +115,7 @@ DEBUG=true
 
 注意：
 
-- 当前仓库里的 `contractMcp.libraryRoot` 默认指向一个局域网共享目录，落地部署前通常需要改成你自己的实际路径。
+- 当前仓库里的 `contractMcp.libraryRoot` 默认指向测试用目录 `storage/已签署协议电子档`，落地部署前通常需要改成真实 NAS 路径。
 - 若不希望将合同归档到共享盘，可以直接改为本机绝对路径。
 
 ## 启动
@@ -148,20 +152,21 @@ npm test
 
 它提供以下合同管理能力：
 
-- `contract_validate`：校验归档数据是否完整
-- `contract_create`：创建合同并导入文件
-- `contract_update`：更新合同元数据
-- `contract_attach_files`：给已有合同补充附件
-- `contract_search`：按关键字、甲乙方、日期、金额、状态检索
-- `contract_get`：读取单个合同详情、附件、事件记录
-- `contract_list_expiring`：查询即将到期合同
-- `contract_archive`：将合同标记为已归档
+- `contract_list_directory`：查看真实 NAS 目录结构
+- `contract_find_directories`：按关键字查相似目录
+- `contract_prepare_archive`：生成待确认归档，不提前移动文件；它不会自动替你判断收入/支出、目标目录或台账 sheet
+- `contract_get_pending`：读取待确认归档详情
+- `contract_update_pending`：根据上传人的修正更新待确认归档
+- `contract_confirm_archive`：上传人确认后，正式移动文件到 NAS
+- `contract_reject_pending`：驳回待确认归档
+- `contract_complete_ledger`：管理员录入 Excel 后关闭待办
+- `contract_search`：直接检索 NAS 目录中的合同文件
 
 合同服务的持久化方式：
 
-- SQLite 保存合同元数据、文件记录和审计事件
-- 合同文件保存到 `storageRoot/contracts/<contractId>/files/`
-- 每个合同目录会额外生成一份 `metadata.json` 快照
+- 合同文件直接存放在真实 NAS 目录
+- 待确认归档和审计事件保存在 `contractMcp.statePath`
+- Excel 台账继续由人工维护，Agent 只负责生成待补录提醒
 
 ## Agent 工作方式
 
@@ -175,8 +180,10 @@ npm test
 - 先识别任务类型，再决定调用什么工具
 - 缺字段时继续追问，不编造
 - 字段与文件内容冲突时先核实
-- 查询尽量返回结构化摘要
-- 不绕过合同管理 MCP 伪造结果
+- 先让上传人确认，再正式归档
+- 归档后通知合同管理员补录 Excel
+- 查询尽量直接基于 NAS 目录返回结构化摘要
+- 不伪造目录状态、归档结果或台账状态
 
 ## 附件处理
 
@@ -287,7 +294,7 @@ DASHSCOPE_API_KEY=your-dashscope-key
 - 程序装配入口：[app.js](./app.js)
 - Agent 核心：[agent/index.js](./agent/index.js)
 - 运行时工具装配：[agent/tools/index.js](./agent/tools/index.js)
-- 合同服务实现：[contract-mcp/service.js](./contract-mcp/service.js)
+- 合同服务实现：[contract-mcp/nas-service.js](./contract-mcp/nas-service.js)
 - 企业微信通道说明：[channel/wxwork/README.md](./channel/wxwork/README.md)
 
 ## 后续可补充

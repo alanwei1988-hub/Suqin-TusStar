@@ -47,6 +47,7 @@ function buildSystemPrompt(promptSections) {
     '- If MCP tools are available, prefer them for specialized capabilities rather than improvising.',
     '- This agent runs in phases: inspect first, execute second, verify after every mutating action, then provide the final answer.',
     '- Do not produce the final answer until the work is actually finished. If you changed files or ran mutating commands, verify the result first.',
+    '- If any tool call fails or returns an error payload, treat that work as unfinished. Correct the input and retry when possible, or explain the failure plainly instead of claiming success.',
     '- Keep responses concise, factual, and action-oriented.',
     '- Do not attempt destructive shell commands unless they are truly required for the work and consistent with your role and safeguards.',
     '',
@@ -209,6 +210,82 @@ function buildFinalResponse(result) {
   return result.text || extractAssistantText(result.response?.messages) || '已处理完成。';
 }
 
+function extractToolErrorMessage(part) {
+  if (!part || typeof part !== 'object') {
+    return '';
+  }
+
+  const rawError = part.type === 'tool-error'
+    ? part.error
+    : part.output;
+
+  if (typeof rawError === 'string' && rawError.trim().length > 0) {
+    return rawError.trim();
+  }
+
+  if (rawError && typeof rawError === 'object') {
+    if (rawError.type === 'error-text' && typeof rawError.value === 'string' && rawError.value.trim().length > 0) {
+      return rawError.value.trim();
+    }
+
+    if (typeof rawError.error === 'string' && rawError.error.trim().length > 0) {
+      return rawError.error.trim();
+    }
+
+    if (typeof rawError.message === 'string' && rawError.message.trim().length > 0) {
+      return rawError.message.trim();
+    }
+  }
+
+  return '';
+}
+
+function extractToolErrorSummaries(messages) {
+  const summaries = [];
+  const seen = new Set();
+
+  for (const message of messages || []) {
+    if (message?.role !== 'tool' || !Array.isArray(message.content)) {
+      continue;
+    }
+
+    for (const part of message.content) {
+      const isToolError = part?.type === 'tool-error'
+        || (part?.type === 'tool-result' && part?.output?.type === 'error-text');
+
+      if (!isToolError) {
+        continue;
+      }
+
+      const toolName = typeof part.toolName === 'string' && part.toolName.trim().length > 0
+        ? part.toolName.trim()
+        : 'tool';
+      const detail = extractToolErrorMessage(part);
+      const summary = detail ? `${toolName}: ${detail}` : toolName;
+
+      if (seen.has(summary)) {
+        continue;
+      }
+
+      seen.add(summary);
+      summaries.push(summary);
+    }
+  }
+
+  return summaries;
+}
+
+function buildToolErrorContinuationPrompt(toolErrors) {
+  const summaries = (toolErrors || []).slice(0, 3).map(item => `- ${item}`).join('\n');
+
+  return [
+    'One or more tool calls failed in the previous attempt.',
+    summaries,
+    'Do not claim the task succeeded.',
+    'Fix the tool input and retry now if you can. Ask the user a direct question only if the missing information cannot be derived from the available context.',
+  ].filter(Boolean).join('\n');
+}
+
 function hasAssistantTextMessage(messages) {
   return (messages || []).some(message => {
     if (message.role !== 'assistant') {
@@ -244,9 +321,11 @@ function appendFinalAssistantMessageIfNeeded(fullMessages, responseMessages, fin
 
 module.exports = {
   appendFinalAssistantMessageIfNeeded,
+  buildToolErrorContinuationPrompt,
   buildFinalResponse,
   buildSystemPrompt,
   createPrepareStep,
+  extractToolErrorSummaries,
   getContextSettings,
   getToolChoiceSetting,
 };

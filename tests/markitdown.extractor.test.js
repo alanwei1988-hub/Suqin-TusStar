@@ -4,6 +4,7 @@ const path = require('path');
 const {
   createCommandEnv,
   createMarkItDownExtractor,
+  hasMeaningfulExtractedMarkdown,
   replaceArgPlaceholders,
 } = require('../markitdown/extractor');
 const {
@@ -87,9 +88,12 @@ module.exports = async function runMarkItDownExtractorTest() {
       '4',
       'D:\\docs\\scan.pdf',
     ]);
+    assert.equal(hasMeaningfulExtractedMarkdown('## Page 1\n\n## Page 2'), false);
+    assert.equal(hasMeaningfulExtractedMarkdown('## Page 1\n\n合同编号 A-1'), true);
 
     const handlerModulePath = path.join(rootDir, 'counting-handler.js');
     const fallbackHandlerPath = path.join(rootDir, 'fallback-handler.js');
+    const emptyStructuredHandlerPath = path.join(rootDir, 'empty-structured-handler.js');
     const cacheDbPath = path.join(rootDir, 'attachment-cache.db');
     const firstPdfPath = path.join(rootDir, 'scan-a.pdf');
     const secondPdfPath = path.join(rootDir, 'scan-b.pdf');
@@ -118,6 +122,10 @@ module.exports = async function fallbackHandler({ attachmentPath, llm, profileNa
     });
   }
   return '# OCR via ' + llm.model + '\\n' + fs.readFileSync(attachmentPath, 'utf8');
+};
+`, 'utf8');
+    fs.writeFileSync(emptyStructuredHandlerPath, `module.exports = async function emptyStructuredHandler() {
+  return '## Page 1\\n\\n## Page 2';
 };
 `, 'utf8');
     delete global.__markitdownCacheHandlerCalls;
@@ -212,6 +220,28 @@ module.exports = async function fallbackHandler({ attachmentPath, llm, profileNa
       assert.equal(fallbackResult.primaryProfile, 'primary');
     } finally {
       fallbackExtractor.close();
+    }
+
+    const emptyStructuredExtractor = createMarkItDownExtractor({
+      enabled: true,
+      handlerModule: emptyStructuredHandlerPath,
+      supportedExtensions: ['.pdf'],
+    });
+
+    try {
+      await assert.rejects(
+        () => emptyStructuredExtractor.extract({
+          resolvedPath: firstPdfPath,
+          extension: '.pdf',
+          name: 'scan-a.pdf',
+        }, {
+          pageStart: 1,
+          pageCount: 2,
+        }),
+        error => error?.code === 'ocr_empty_result' && /structural markdown/i.test(error?.message || ''),
+      );
+    } finally {
+      emptyStructuredExtractor.close();
     }
   } finally {
     for (const [key, value] of Object.entries(previousEnv)) {

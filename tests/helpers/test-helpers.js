@@ -18,16 +18,23 @@ function writeJson(filePath, value) {
 
 function createContractMcpFixture(rootDir) {
   const configPath = path.join(rootDir, 'contract-config.json');
-  const storageRoot = path.join(rootDir, 'contracts-storage');
-  const dbPath = path.join(rootDir, 'contracts.db');
-  const stagingDir = path.join(storageRoot, '.staging');
+  const libraryRoot = path.join(rootDir, '已签署协议电子档');
+  const statePath = path.join(rootDir, 'data', 'contract-workflow-state.json');
+  const ledgerWorkbookPath = path.join(libraryRoot, '协议台账.xlsx');
+  fs.mkdirSync(path.join(libraryRoot, '采购（启迪支出）', '算力'), { recursive: true });
+  fs.mkdirSync(path.join(libraryRoot, '专业服务收入协议（活动+算力+商业化）', '算力客户协议（启迪收入）'), { recursive: true });
+  fs.mkdirSync(path.join(libraryRoot, '其他协议'), { recursive: true });
+  fs.writeFileSync(path.join(libraryRoot, '电子协议归档规则.txt'), '1、命名规则：以时间为开头，协议名称在后，最后为乙方。', 'utf8');
+  fs.writeFileSync(ledgerWorkbookPath, 'placeholder', 'utf8');
 
   writeJson(configPath, {
     contractMcp: {
-      dbPath,
-      storageRoot,
-      stagingDir,
-      contractIdPrefix: 'CT',
+      libraryRoot,
+      statePath,
+      ledgerWorkbookPath,
+      ledgerAdminUserId: 'admin-1',
+      pendingIdPrefix: 'P',
+      ourCompanyAliases: ['上海启迪创业孵化器有限公司', '上海启迪'],
       allowedExtensions: ['.pdf', '.docx', '.doc'],
       maxFileSizeMb: 10,
       defaultSearchLimit: 20,
@@ -36,14 +43,16 @@ function createContractMcpFixture(rootDir) {
 
   return {
     configPath,
-    storageRoot,
-    dbPath,
-    stagingDir,
+    libraryRoot,
+    statePath,
+    ledgerWorkbookPath,
     contractConfig: {
-      dbPath,
-      storageRoot,
-      stagingDir,
-      contractIdPrefix: 'CT',
+      libraryRoot,
+      statePath,
+      ledgerWorkbookPath,
+      ledgerAdminUserId: 'admin-1',
+      pendingIdPrefix: 'P',
+      ourCompanyAliases: ['上海启迪创业孵化器有限公司', '上海启迪'],
       allowedExtensions: ['.pdf', '.docx', '.doc'],
       maxFileSizeMb: 10,
       defaultSearchLimit: 20,
@@ -52,10 +61,12 @@ function createContractMcpFixture(rootDir) {
       name: 'contract-manager',
       transport: 'mock',
       mockTransport: new ContractMCPMockTransport({
-        dbPath,
-        storageRoot,
-        stagingDir,
-        contractIdPrefix: 'CT',
+        libraryRoot,
+        statePath,
+        ledgerWorkbookPath,
+        ledgerAdminUserId: 'admin-1',
+        pendingIdPrefix: 'P',
+        ourCompanyAliases: ['上海启迪创业孵化器有限公司', '上海启迪'],
         allowedExtensions: ['.pdf', '.docx', '.doc'],
         maxFileSizeMb: 10,
         defaultSearchLimit: 20,

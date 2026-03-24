@@ -8,6 +8,7 @@ const tests = [
   ['agent.tools', require('./agent.tools.test')],
   ['markitdown.extractor', require('./markitdown.extractor.test')],
   ['agent.attachment-session', require('./agent.attachment-session.test')],
+  ['agent.tool-error-recovery', require('./agent.tool-error-recovery.test')],
   ['mcp.toolkit', require('./mcp.toolkit.test')],
   ['agent.mcp.integration', require('./agent.mcp.integration.test')],
   ['wxwork.adapter', require('./wxwork.adapter.test')],

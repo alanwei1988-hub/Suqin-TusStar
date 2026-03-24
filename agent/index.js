@@ -5,9 +5,11 @@ const { createOpenAICompatible } = require('@ai-sdk/openai-compatible');
 const { enrichAttachmentMetadata } = require('./tools/attachments');
 const {
   appendFinalAssistantMessageIfNeeded,
+  buildToolErrorContinuationPrompt,
   buildFinalResponse,
   buildSystemPrompt,
   createPrepareStep,
+  extractToolErrorSummaries,
   getContextSettings,
   getToolChoiceSetting,
 } = require('./loop');
@@ -125,6 +127,33 @@ Important attachment handling rule:
   return content;
 }
 
+function buildRequestContextPrompt(requestContext = {}, messaging = null) {
+  const lines = [];
+
+  if (requestContext.userId) {
+    lines.push('Current Request');
+    lines.push(`- Current requester user id: ${requestContext.userId}`);
+  }
+
+  if (Number.isFinite(requestContext.context?.chatType) || requestContext.context?.chatId) {
+    lines.push(`- Current chat target: ${requestContext.context?.chatId || requestContext.userId} (chatType=${requestContext.context?.chatType || 1})`);
+  }
+
+  if (messaging && messaging.recipients && Object.keys(messaging.recipients).length > 0) {
+    if (lines.length === 0) {
+      lines.push('Current Request');
+    }
+
+    lines.push('- Available notification aliases:');
+
+    for (const [alias, recipient] of Object.entries(messaging.recipients)) {
+      lines.push(`  - ${alias}: ${recipient.label || recipient.userId || alias}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 function enrichToolCallWithDisplay(toolCall, runtime) {
   if (!toolCall || typeof toolCall !== 'object') {
     return toolCall;
@@ -200,6 +229,7 @@ class AgentCore {
         skillsDir: this.config.skillsDir,
         mcpServers: this.config.mcpServers || [],
         attachmentExtraction: this.config.attachmentExtraction || {},
+        toolTimeouts: this.config.toolTimeouts || {},
       });
       await runtime.close();
       console.log('[Agent] MCP preflight passed.');
@@ -213,7 +243,12 @@ class AgentCore {
     const normalizedOptions = typeof options === 'function'
       ? { onStepFinish: options }
       : (options || {});
-    const { includeArtifacts = false, ...callbacks } = normalizedOptions;
+    const {
+      includeArtifacts = false,
+      requestContext = {},
+      messaging = null,
+      ...callbacks
+    } = normalizedOptions;
     const normalizedAttachments = await enrichAttachmentMetadata(
       normalizeConversationAttachments(attachments),
       this.config.workspaceDir,
@@ -237,10 +272,13 @@ class AgentCore {
       mcpServers: this.config.mcpServers || [],
       attachments: conversationAttachments,
       attachmentExtraction: this.config.attachmentExtraction || {},
+      messaging,
+      toolTimeouts: this.config.toolTimeouts || {},
     });
     const rolePrompt = await loadRolePrompt(this.config.rolePromptDir);
     const promptSections = [
       rolePrompt,
+      buildRequestContextPrompt(requestContext, messaging),
       ...runtime.promptSections,
       context.summary,
     ].filter(Boolean);
@@ -260,41 +298,74 @@ class AgentCore {
     });
 
     try {
-      const result = await agent.generate({
-        messages: context.messages,
-        experimental_onStepStart: async step => {
-          if (callbacks.onStepStart) {
-            await callbacks.onStepStart(step);
-          }
-        },
-        experimental_onToolCallStart: async event => {
-          if (callbacks.onToolCallStart) {
-            await callbacks.onToolCallStart(enrichToolEventWithDisplay(event, runtime));
-          }
-        },
-        experimental_onToolCallFinish: async event => {
-          if (callbacks.onToolCallFinish) {
-            await callbacks.onToolCallFinish(enrichToolEventWithDisplay(event, runtime));
-          }
-        },
-        onStepFinish: async step => {
-          if (callbacks.onStepFinish) {
-            await callbacks.onStepFinish(enrichStepWithDisplay(step, runtime));
-          }
-        },
-      });
-      const finalResponse = buildFinalResponse(result);
+      const responseMessages = [];
+      let finalResponse = '已处理完成。';
+      let messagesForRun = context.messages;
+      const maxContinuationAttempts = 3;
+
+      for (let continuationAttempt = 0; continuationAttempt < maxContinuationAttempts; continuationAttempt += 1) {
+        const result = await agent.generate({
+          messages: messagesForRun,
+          experimental_onStepStart: async step => {
+            if (callbacks.onStepStart) {
+              await callbacks.onStepStart(step);
+            }
+          },
+          experimental_onToolCallStart: async event => {
+            if (callbacks.onToolCallStart) {
+              await callbacks.onToolCallStart(enrichToolEventWithDisplay(event, runtime));
+            }
+          },
+          experimental_onToolCallFinish: async event => {
+            if (callbacks.onToolCallFinish) {
+              await callbacks.onToolCallFinish(enrichToolEventWithDisplay(event, runtime));
+            }
+          },
+          onStepFinish: async step => {
+            if (callbacks.onStepFinish) {
+              await callbacks.onStepFinish(enrichStepWithDisplay(step, runtime));
+            }
+          },
+        });
+
+        const newResponseMessages = Array.isArray(result?.response?.messages)
+          ? result.response.messages
+          : [];
+
+        responseMessages.push(...newResponseMessages);
+        finalResponse = buildFinalResponse(result);
+        const toolErrors = extractToolErrorSummaries(newResponseMessages);
+        const needsToolErrorRecovery = toolErrors.length > 0;
+
+        if (continuationAttempt === maxContinuationAttempts - 1 || !needsToolErrorRecovery) {
+          break;
+        }
+
+        messagesForRun = [
+          ...messagesForRun,
+          ...newResponseMessages,
+          {
+            role: 'user',
+            content: buildToolErrorContinuationPrompt(toolErrors),
+          },
+        ];
+      }
+
       const outboundAttachments = typeof runtime.getOutboundAttachments === 'function'
         ? runtime.getOutboundAttachments()
         : [];
+      const outboundNotifications = typeof runtime.getOutboundNotifications === 'function'
+        ? runtime.getOutboundNotifications()
+        : [];
 
-      appendFinalAssistantMessageIfNeeded(fullMessages, result.response.messages, finalResponse);
+      appendFinalAssistantMessageIfNeeded(fullMessages, responseMessages, finalResponse);
       this.sessionManager.saveMessages(userId, fullMessages);
 
       if (includeArtifacts) {
         return {
           text: finalResponse,
           outboundAttachments,
+          outboundNotifications,
         };
       }
 

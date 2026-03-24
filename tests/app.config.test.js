@@ -34,8 +34,8 @@ module.exports = async function runAppConfigTest() {
       tempDir: './storage/temp',
     },
     contractMcp: {
-      storageRoot: './contract-library',
-      contractIdPrefix: 'CT',
+      libraryRoot: './contract-library',
+      pendingIdPrefix: 'P',
     },
   };
 
@@ -66,10 +66,15 @@ module.exports = async function runAppConfigTest() {
     prompt: '',
   });
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.fallbackLlm, null);
-  assert.equal(processedDefault.contractMcp.storageRoot, `${__dirname}\\contract-library`);
-  assert.equal(processedDefault.contractMcp.dbPath, `${__dirname}\\contract-library\\contracts.db`);
-  assert.equal(processedDefault.contractMcp.stagingDir, `${__dirname}\\contract-library\\.staging`);
+  assert.deepEqual(processedDefault.agent.toolTimeouts, {
+    bashTimeoutMs: 30000,
+    maxBashTimeoutMs: 300000,
+    mcpToolTimeoutMs: 30000,
+  });
   assert.equal(processedDefault.contractMcp.libraryRoot, `${__dirname}\\contract-library`);
+  assert.equal(processedDefault.contractMcp.statePath, `${__dirname}\\data\\contract-workflow-state.json`);
+  assert.equal(processedDefault.contractMcp.ledgerWorkbookPath, `${__dirname}\\contract-library\\协议台账.xlsx`);
+  assert.equal(processedDefault.contractMcp.pendingIdPrefix, 'P');
   assert.equal(fs.existsSync(path.join(tempRootDir, 'data')), false);
 
   processConfig(baseConfig, {
@@ -92,6 +97,26 @@ module.exports = async function runAppConfigTest() {
     env: {},
   });
   assert.equal(processedDisabled.channel.wxwork.streamingResponse, false);
+
+  const processedToolTimeouts = processConfig({
+    ...baseConfig,
+    agent: {
+      ...baseConfig.agent,
+      toolTimeouts: {
+        bashTimeoutMs: 1234,
+        maxBashTimeoutMs: 5678,
+        mcpToolTimeoutMs: 4321,
+      },
+    },
+  }, {
+    rootDir: __dirname,
+    env: {},
+  });
+  assert.deepEqual(processedToolTimeouts.agent.toolTimeouts, {
+    bashTimeoutMs: 1234,
+    maxBashTimeoutMs: 5678,
+    mcpToolTimeoutMs: 4321,
+  });
 
   const processedMarkItDown = processConfig({
     ...baseConfig,

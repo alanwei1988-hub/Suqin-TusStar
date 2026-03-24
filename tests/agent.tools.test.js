@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   buildBashToolPrompt,
+  createBashTool,
   createRuntimeTools,
   decodeShellOutput,
   getBlockedCommandReason,
@@ -21,6 +22,7 @@ module.exports = async function runAgentToolsTest() {
   const largeTextPath = path.join(rootDir, 'large.txt');
   const failingHandlerPath = path.join(rootDir, 'failing-markitdown-handler.js');
   const pagedHandlerPath = path.join(rootDir, 'paged-markitdown-handler.js');
+  const headingOnlyHandlerPath = path.join(rootDir, 'heading-only-markitdown-handler.js');
 
   fs.writeFileSync(localTextPath, 'hello local file');
   fs.writeFileSync(localPdfPath, '%PDF-1.7\nlocal pdf body');
@@ -92,6 +94,12 @@ module.exports = async function failingHandler({ llm, profileName }) {
     return 'PAGE ' + pageNumber + ' :: ' + 'content '.repeat(60);
   }).join('\\n\\n');
 };`, 'utf8');
+  fs.writeFileSync(headingOnlyHandlerPath, `module.exports = async function headingOnlyHandler({ options = {} }) {
+  const pageStart = Number.isFinite(options.pageStart) ? options.pageStart : 1;
+  const pageCount = Number.isFinite(options.pageCount) ? options.pageCount : 0;
+  const renderedPageCount = pageCount || 2;
+  return Array.from({ length: renderedPageCount }, (_, index) => '## Page ' + (pageStart + index)).join('\\n\\n');
+};`, 'utf8');
 
   const runtime = await createRuntimeTools({
     workspaceDir: rootDir,
@@ -138,6 +146,29 @@ module.exports = async function failingHandler({ llm, profileName }) {
 
     const localRead = await runtime.tools.readFile.execute({ path: localTextPath });
     assert.equal(localRead.content, 'hello local file');
+
+    let receivedTimeoutMs = null;
+    const fakeBashTool = createBashTool({
+      bashTimeoutMs: 30000,
+      maxBashTimeoutMs: 300000,
+      executeCommand: async (_command, timeoutMs) => {
+        receivedTimeoutMs = timeoutMs;
+        return {
+          stdout: '',
+          stderr: `Command timed out after ${timeoutMs}ms.`,
+          exitCode: 124,
+          timedOut: true,
+        };
+      },
+    }, rootDir);
+    const timedOutBash = await fakeBashTool.execute({
+      command: 'long-running-command',
+      timeoutMs: 50,
+    });
+    assert.equal(receivedTimeoutMs, 50);
+    assert.equal(timedOutBash.timedOut, true);
+    assert.equal(timedOutBash.exitCode, 124);
+    assert.match(timedOutBash.stderr, /timed out/i);
 
     await assert.rejects(
       () => runtime.tools.readFile.execute({ path: attachmentTextPath }),
@@ -202,27 +233,24 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(pdfRead.attachment.extraction.extractionTruncated, false);
     assert.equal(typeof pdfRead.contentTruncated, 'boolean');
 
-    const pdfTailInspection = await runtime.tools.inspectAttachment.execute({
+    const pdfSmallInspection = await runtime.tools.inspectAttachment.execute({
       attachment: 'attachment-2',
-      pageFromEnd: 1,
-      pageCount: 1,
+      maxChars: 200,
     });
-    assert.equal(pdfTailInspection.success, true);
-    assert.equal(pdfTailInspection.preview.previewPageStart, 2);
-    assert.equal(pdfTailInspection.preview.previewPageCount, 1);
-    assert.match(pdfTailInspection.preview.text, /Page start: 2/i);
-    assert.match(pdfTailInspection.preview.text, /Page count: 1/i);
+    assert.equal(pdfSmallInspection.success, true);
+    assert.equal(pdfSmallInspection.preview.previewPageStart, 1);
+    assert.equal(pdfSmallInspection.preview.previewPageCount, 1);
 
-    const pdfTailRead = await runtime.tools.readAttachmentText.execute({
+    const pdfSinglePageRead = await runtime.tools.readAttachmentText.execute({
       attachment: 'attachment-2',
-      pageFromEnd: 1,
+      pageStart: 2,
       pageCount: 1,
     });
-    assert.equal(pdfTailRead.success, true);
-    assert.equal(pdfTailRead.pageStart, 2);
-    assert.equal(pdfTailRead.pageCount, 1);
-    assert.equal(pdfTailRead.nextPageStart, 3);
-    assert.equal(pdfTailRead.totalPageCount, 2);
+    assert.equal(pdfSinglePageRead.success, true);
+    assert.equal(pdfSinglePageRead.pageStart, 2);
+    assert.equal(pdfSinglePageRead.pageCount, 1);
+    assert.equal(pdfSinglePageRead.nextPageStart, 3);
+    assert.equal(pdfSinglePageRead.totalPageCount, 2);
 
     const pagedRuntime = await createRuntimeTools({
       workspaceDir: rootDir,
@@ -311,6 +339,34 @@ module.exports = async function failingHandler({ llm, profileName }) {
       assert.match(failedPdfRead.errorDetails, /data_inspection_failed/i);
     } finally {
       await failingRuntime.close();
+    }
+
+    const headingOnlyRuntime = await createRuntimeTools({
+      workspaceDir: rootDir,
+      skillsDir: path.join(repoRoot, 'skills'),
+      mcpServers: [],
+      attachmentExtraction: {
+        markitdown: {
+          enabled: true,
+          supportedExtensions: ['.pdf'],
+          handlerModule: headingOnlyHandlerPath,
+        },
+      },
+      attachments: [
+        { id: 'attachment-2', name: 'scan.pdf', path: attachmentPdfPath },
+      ],
+    });
+
+    try {
+      const headingOnlyRead = await headingOnlyRuntime.tools.readAttachmentText.execute({
+        attachment: 'attachment-2',
+      });
+      assert.equal(headingOnlyRead.success, false);
+      assert.equal(headingOnlyRead.errorCode, 'ocr_empty_result');
+      assert.match(headingOnlyRead.error, /未识别到可用正文文本/);
+      assert.match(headingOnlyRead.errorDetails, /structural markdown/i);
+    } finally {
+      await headingOnlyRuntime.close();
     }
 
     const outbound = await runtime.tools.sendFile.execute({

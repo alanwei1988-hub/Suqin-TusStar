@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const { loadContractMcpConfig } = require('./config');
-const { ContractService } = require('./service');
-const { createContractToolRegistry } = require('./tools');
+const { ContractService } = require('./nas-service');
+const { createContractToolRegistry } = require('./nas-tools');
 
 const PROTOCOL_VERSION = '2025-06-18';
 const service = new ContractService(loadContractMcpConfig());
@@ -9,6 +9,19 @@ const registry = createContractToolRegistry(service);
 
 function resultText(value) {
   return JSON.stringify(value, null, 2);
+}
+
+function formatErrorMessage(error) {
+  if (Array.isArray(error?.issues) && error.issues.length > 0) {
+    return error.issues.map(issue => {
+      const issuePath = Array.isArray(issue.path) && issue.path.length > 0
+        ? issue.path.join('.')
+        : '(root)';
+      return `${issuePath}: ${issue.message}`;
+    }).join('; ');
+  }
+
+  return error.message;
 }
 
 function successResult(payload) {
@@ -24,15 +37,16 @@ function successResult(payload) {
 }
 
 function toolErrorResult(error) {
+  const message = formatErrorMessage(error);
   return {
     content: [
       {
         type: 'text',
-        text: error.message,
+        text: message,
       },
     ],
     structuredContent: {
-      error: error.message,
+      error: message,
     },
     isError: true,
   };
@@ -102,7 +116,7 @@ async function handleMessage(message) {
             name: 'contract-manager-mcp',
             version: '1.0.0',
           },
-          instructions: 'Use these tools to archive, update, and query contracts without bypassing the database or contract repository.',
+          instructions: 'Use these tools to inspect the real NAS contract directory, prepare uploader confirmations, archive files after confirmation, and notify the contract admin to update Excel.',
         });
         break;
       case 'tools/list':

@@ -16,6 +16,8 @@ const { buildMcpPrompt, createMcpToolkit } = require('./mcp');
 const { buildSkillsPrompt, createSkillsToolkit } = require('./skills');
 
 const MAX_BASH_OUTPUT_LENGTH = 20000;
+const DEFAULT_BASH_TIMEOUT_MS = 30000;
+const DEFAULT_MAX_BASH_TIMEOUT_MS = 300000;
 
 const BLOCKED_COMMAND_RULES = [
   {
@@ -117,7 +119,7 @@ function decodeShellOutput(output) {
   }
 }
 
-function runShellCommand(command, cwd) {
+function runShellCommand(command, cwd, timeoutMs = DEFAULT_BASH_TIMEOUT_MS) {
   const isWindows = process.platform === 'win32';
   const shell = isWindows ? 'powershell.exe' : '/bin/sh';
   const args = isWindows
@@ -133,15 +135,22 @@ function runShellCommand(command, cwd) {
         encoding: 'buffer',
         windowsHide: true,
         maxBuffer: 1024 * 1024,
+        timeout: timeoutMs,
       },
       (error, stdout, stderr) => {
         const decodedStdout = decodeShellOutput(stdout);
         const decodedStderr = decodeShellOutput(stderr);
+        const timedOut = Boolean(error && !Number.isFinite(error.code) && /timed out/i.test(String(error.message || '')));
 
         resolve({
           stdout: decodedStdout,
-          stderr: decodedStderr || error?.message || '',
-          exitCode: typeof error?.code === 'number' ? error.code : 0,
+          stderr: timedOut
+            ? `Command timed out after ${timeoutMs}ms.`
+            : (decodedStderr || error?.message || ''),
+          exitCode: typeof error?.code === 'number'
+            ? error.code
+            : (timedOut ? 124 : 0),
+          timedOut,
         });
       },
     );
@@ -149,12 +158,19 @@ function runShellCommand(command, cwd) {
 }
 
 class MachineBackend {
-  constructor(workingDir) {
+  constructor(workingDir, options = {}) {
     this.workingDir = path.resolve(workingDir);
     this.outboundAttachments = [];
+    this.outboundNotifications = [];
+    this.bashTimeoutMs = Number.isFinite(options.bashTimeoutMs)
+      ? Math.max(1, Math.trunc(options.bashTimeoutMs))
+      : DEFAULT_BASH_TIMEOUT_MS;
+    this.maxBashTimeoutMs = Number.isFinite(options.maxBashTimeoutMs)
+      ? Math.max(1, Math.trunc(options.maxBashTimeoutMs))
+      : DEFAULT_MAX_BASH_TIMEOUT_MS;
   }
 
-  async executeCommand(command) {
+  async executeCommand(command, timeoutMs = this.bashTimeoutMs) {
     const blockedReason = getBlockedCommandReason(command);
 
     if (blockedReason) {
@@ -162,10 +178,15 @@ class MachineBackend {
         stdout: '',
         stderr: blockedReason,
         exitCode: 126,
+        timedOut: false,
       };
     }
 
-    return runShellCommand(command, this.workingDir);
+    const normalizedTimeoutMs = Number.isFinite(timeoutMs)
+      ? Math.max(1, Math.min(Math.trunc(timeoutMs), this.maxBashTimeoutMs))
+      : this.bashTimeoutMs;
+
+    return runShellCommand(command, this.workingDir, normalizedTimeoutMs);
   }
 
   async readFile(filePath) {
@@ -224,6 +245,49 @@ class MachineBackend {
       sizeBytes,
     }));
   }
+
+  queueOutboundNotification(recipient, content, context = {}) {
+    const normalizedRecipient = recipient && typeof recipient === 'object'
+      ? {
+        userId: recipient.userId || '',
+        label: recipient.label || recipient.alias || recipient.userId || '',
+        alias: recipient.alias || '',
+      }
+      : {
+        userId: String(recipient || ''),
+        label: String(recipient || ''),
+        alias: '',
+      };
+
+    if (!normalizedRecipient.userId) {
+      throw new Error('Notification recipient is required.');
+    }
+
+    const normalizedContent = String(content || '').trim();
+
+    if (!normalizedContent) {
+      throw new Error('Notification content is required.');
+    }
+
+    this.outboundNotifications.push({
+      recipient: normalizedRecipient,
+      content: normalizedContent,
+      context,
+    });
+
+    return {
+      recipient: normalizedRecipient,
+      content: normalizedContent,
+    };
+  }
+
+  getOutboundNotifications() {
+    return this.outboundNotifications.map(notification => ({
+      recipient: notification.recipient,
+      content: notification.content,
+      context: notification.context,
+    }));
+  }
 }
 
 function mergeToolSets(toolSets) {
@@ -242,7 +306,7 @@ function mergeToolSets(toolSets) {
   return merged;
 }
 
-function buildBashToolPrompt(workspaceDir) {
+function buildBashToolPrompt(workspaceDir, defaultTimeoutMs = DEFAULT_BASH_TIMEOUT_MS, maxTimeoutMs = DEFAULT_MAX_BASH_TIMEOUT_MS) {
   const promptLines = [
     'Use the bash tool to inspect and operate on the local machine you are responsible for maintaining.',
     `Default working directory: ${toPosixPath(path.resolve(workspaceDir))}`,
@@ -254,6 +318,7 @@ function buildBashToolPrompt(workspaceDir) {
     '- Inspect first, then act. Confirm target paths and current state before mutating files or running impactful commands.',
     '- Prefer the smallest effective action and avoid unnecessary disruption to the environment.',
     '- Use `readFile` for precise inspection of local text files and `writeFile` for direct edits.',
+    `- Commands time out by default after ${defaultTimeoutMs}ms. You may raise this per call with \`timeoutMs\` when the work is intentionally long-running, up to ${maxTimeoutMs}ms.`,
   ];
 
   if (process.platform === 'win32') {
@@ -269,12 +334,13 @@ function buildBashToolPrompt(workspaceDir) {
 
 function createBashTool(machine, workspaceDir) {
   return tool({
-    description: buildBashToolPrompt(workspaceDir),
+    description: buildBashToolPrompt(workspaceDir, machine.bashTimeoutMs, machine.maxBashTimeoutMs),
     inputSchema: z.object({
       command: z.string().describe('The shell command to execute on the local machine'),
+      timeoutMs: z.number().int().positive().optional().describe('Optional command timeout in milliseconds'),
     }),
-    execute: async ({ command }) => {
-      const result = await machine.executeCommand(command);
+    execute: async ({ command, timeoutMs }) => {
+      const result = await machine.executeCommand(command, timeoutMs);
 
       return {
         ...result,
@@ -355,9 +421,55 @@ function createSendFileTool(machine, workspaceDir) {
   });
 }
 
-async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachments = [], attachmentExtraction = {} }) {
+function buildNotifyUserPrompt(messaging) {
+  const recipients = Object.entries(messaging?.recipients || {});
+  const lines = [
+    'Queue a proactive text notification to another employee through the current channel after your final reply is sent.',
+    'Use this when a workflow requires notifying the contract admin or another known recipient.',
+  ];
+
+  if (recipients.length > 0) {
+    lines.push('Available recipients:');
+
+    for (const [alias, recipient] of recipients) {
+      const label = recipient.label || recipient.userId || alias;
+      lines.push(`- ${alias}: ${label}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function createNotifyUserTool(machine, messaging = {}) {
+  const recipientMap = new Map(Object.entries(messaging.recipients || {}).map(([alias, value]) => [alias, {
+    ...value,
+    alias,
+  }]));
+
+  return tool({
+    description: buildNotifyUserPrompt(messaging),
+    inputSchema: z.object({
+      recipient: z.string().describe('A configured recipient alias such as contract_admin, or a direct user id'),
+      content: z.string().describe('The text message to send'),
+    }),
+    execute: async ({ recipient, content }) => {
+      const resolvedRecipient = recipientMap.get(recipient) || {
+        userId: recipient,
+        label: recipient,
+        alias: '',
+      };
+
+      return {
+        success: true,
+        queued: machine.queueOutboundNotification(resolvedRecipient, content),
+      };
+    },
+  });
+}
+
+async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachments = [], attachmentExtraction = {}, messaging = null, toolTimeouts = {} }) {
   const workingDir = path.resolve(workspaceDir);
-  const machine = new MachineBackend(workingDir);
+  const machine = new MachineBackend(workingDir, toolTimeouts);
   const normalizedAttachments = normalizeAttachments(attachments, workingDir, resolveRequestedPath);
   const attachmentToolkit = createAttachmentTools(
     normalizedAttachments,
@@ -368,7 +480,9 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
 
   const [skillsToolkit, mcpToolkit] = await Promise.all([
     createSkillsToolkit({ skillsDir, workspaceDir }),
-    createMcpToolkit(mcpServers),
+    createMcpToolkit(mcpServers, {
+      defaultToolTimeoutMs: toolTimeouts.mcpToolTimeoutMs,
+    }),
   ]);
 
   const runtimeTools = {
@@ -378,6 +492,10 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
     sendFile: createSendFileTool(machine, workingDir),
     ...attachmentToolkit.tools,
   };
+
+  if (messaging && messaging.enabled !== false) {
+    runtimeTools.notifyUser = createNotifyUserTool(machine, messaging);
+  }
 
   const tools = mergeToolSets([
     runtimeTools,
@@ -401,6 +519,12 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
       displayName: '文件发送',
       statusText: '准备发送文件',
     }),
+    ...(runtimeTools.notifyUser ? {
+      notifyUser: createToolDisplayInfo('notifyUser', {
+        displayName: '消息通知',
+        statusText: '通知相关同事',
+      }),
+    } : {}),
     ...(attachmentToolkit.toolDisplayByName || {}),
     ...(skillsToolkit.toolDisplayByName || {}),
     ...(mcpToolkit.toolDisplayByName || {}),
@@ -416,11 +540,15 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
     promptSections: [
       `Machine\nYou are operating on a shared local machine. Default working directory: \`${toPosixPath(workingDir)}\`. You may use absolute filesystem paths when needed, but you are responsible for preserving the machine's long-term usability and file integrity.`,
       'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
+      runtimeTools.notifyUser
+        ? 'Notifications\nIf a workflow requires alerting another employee, queue the message with `notifyUser` after the real work succeeds. Prefer configured aliases such as `contract_admin` instead of guessing user ids.'
+        : '',
       buildSkillsPrompt(skillsToolkit.skills),
       buildMcpPrompt(mcpToolkit.summaries),
       buildAttachmentsPrompt(normalizedAttachments),
     ].filter(Boolean),
     getOutboundAttachments: () => machine.getOutboundAttachments(),
+    getOutboundNotifications: () => machine.getOutboundNotifications(),
     close: async () => {
       if (typeof attachmentToolkit.close === 'function') {
         await attachmentToolkit.close();
@@ -432,6 +560,7 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
 
 module.exports = {
   buildBashToolPrompt,
+  createBashTool,
   createRuntimeTools,
   decodeShellOutput,
   getBlockedCommandReason,
