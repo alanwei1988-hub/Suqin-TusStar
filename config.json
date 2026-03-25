@@ -1,9 +1,9 @@
 {
   "agent": {
-    "model": "qwen3.5-plus",
+    "model": "gpt-5.4",
     "provider": "openai",
     "thinking": {
-      "enabled": false
+      "enabled": true
     },
     "openai": {
       "baseURL": "https://api.zetatechs.com/v1"

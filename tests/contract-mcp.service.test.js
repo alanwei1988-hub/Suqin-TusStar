@@ -60,10 +60,12 @@ module.exports = async function runContractServiceTest() {
       operator: 'tester',
       uploaderUserId: 'tester',
     });
-    assert.match(preview.confirmationMessage, /请确认以下“最终归档时将写入归档库\/目录”的内容/u);
+    assert.match(preview.confirmationMessage, /请确认以下归档预览信息/u);
     assert.match(preview.confirmationMessage, /合同名称：直归档测试算力采购协议/u);
-    assert.match(preview.confirmationMessage, /未填写的重要字段：/u);
+    assert.match(preview.confirmationMessage, /将写入归档数据库的字段：/u);
+    assert.match(preview.confirmationMessage, /未填写字段：/u);
     assert.equal(preview.importantFields.some(field => field.label === '合同名称' && field.filled), true);
+    assert.equal(preview.mergedPreviewFields.some(field => field.label === '合同名称' && field.filled), true);
     assert.equal(preview.importantFields.some(field => field.label === '他方' && !field.filled), true);
 
     const directArchived = service.archiveContract({
@@ -89,7 +91,7 @@ module.exports = async function runContractServiceTest() {
     assert.equal(fs.existsSync(scanPath), true);
     assert.equal(fs.existsSync(path.join(libraryRoot, '合同归档.db')), true);
     assert.match(directArchived.userReplyMessage, /数据库/u);
-    assert.match(directArchived.userReplyMessage, /本次写入归档库的重要字段/u);
+    assert.match(directArchived.userReplyMessage, /本次写入归档数据库的字段/u);
     assert.match(directArchived.userReplyMessage, /合同名称：直归档测试算力采购协议/u);
 
     const loadedArchive = service.getArchiveRecord(directArchived.archive.archiveId);

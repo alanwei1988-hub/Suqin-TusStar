@@ -431,6 +431,37 @@ function buildArchivePreviewFieldDefinitions() {
   ];
 }
 
+function buildMergedPreviewFields({ importantFields = [], ledgerFieldEntries = [] }) {
+  const merged = [];
+  const seenLabels = new Set();
+
+  for (const field of importantFields) {
+    merged.push({
+      label: field.label,
+      filled: field.filled,
+      value: field.value,
+      source: 'important',
+    });
+    seenLabels.add(field.label);
+  }
+
+  for (const field of ledgerFieldEntries) {
+    if (seenLabels.has(field.key)) {
+      continue;
+    }
+
+    merged.push({
+      label: field.key,
+      filled: field.filled,
+      value: field.value,
+      source: 'ledger',
+    });
+    seenLabels.add(field.key);
+  }
+
+  return merged;
+}
+
 class ContractService {
   constructor(config) {
     this.config = {
@@ -914,8 +945,6 @@ class ContractService {
         value: displayValue || '未填写',
       };
     });
-    const filledFields = importantFields.filter(field => field.filled);
-    const emptyFields = importantFields.filter(field => !field.filled);
     const ledgerFieldEntries = Object.entries(draft.ledgerFields || {}).map(([key, value]) => {
       const displayValue = formatPreviewValue(value);
       return {
@@ -924,6 +953,13 @@ class ContractService {
         value: displayValue || '未填写',
       };
     });
+    const emptyImportantFields = importantFields.filter(field => !field.filled);
+    const mergedPreviewFields = buildMergedPreviewFields({
+      importantFields,
+      ledgerFieldEntries,
+    });
+    const filledMergedFields = mergedPreviewFields.filter(field => field.filled);
+    const emptyMergedFields = mergedPreviewFields.filter(field => !field.filled);
 
     return {
       contract: {
@@ -935,34 +971,30 @@ class ContractService {
       sheetName: draft.sheetName,
       plannedFiles,
       importantFields,
-      missingImportantFields: emptyFields.map(field => field.label),
+      mergedPreviewFields,
+      missingImportantFields: emptyImportantFields.map(field => field.label),
       ledgerFields: draft.ledgerFields,
       ledgerFieldEntries,
       uncertainFields: draft.uncertainFields,
       searchKeywords: draft.searchKeywords,
       confirmationMessage: [
-        '请确认以下“最终归档时将写入归档库/目录”的内容：',
+        '请确认以下归档预览信息：',
         '',
-        '已填写的重要字段：',
-        ...(filledFields.length > 0
-          ? filledFields.map(field => `${field.label}：${field.value}`)
+        '将写入归档数据库的字段：',
+        ...(filledMergedFields.length > 0
+          ? filledMergedFields.map(field => `${field.label}：${field.value}`)
           : ['无']),
         '',
-        '未填写的重要字段：',
-        ...(emptyFields.length > 0
-          ? emptyFields.map(field => `${field.label}：未填写`)
+        '未填写字段：',
+        ...(emptyMergedFields.length > 0
+          ? emptyMergedFields.map(field => `${field.label}：未填写`)
           : ['无']),
         '',
         '拟归档文件：',
         ...plannedFiles.map(file => `${file.sourceName} -> ${file.targetName}`),
         '',
         `拟归档目录：${draft.archiveRelativeDir}`,
-        `拟写入台账分类：${draft.sheetName}`,
-        '',
-        '拟写入台账字段：',
-        ...(ledgerFieldEntries.length > 0
-          ? ledgerFieldEntries.map(field => `${field.key}：${field.value}`)
-          : ['无']),
+        `台账 Sheet：${draft.sheetName}`,
         '',
         `检索关键词：${draft.searchKeywords.length > 0 ? draft.searchKeywords.join('、') : '无'}`,
         `当前不确定字段：${draft.uncertainFields.length > 0 ? draft.uncertainFields.join('、') : '无'}`,
@@ -1101,11 +1133,11 @@ class ContractService {
         `已按确认内容完成归档：${detail.archive.archiveId}`,
         `NAS目录：${detail.archive.archiveAbsoluteDir}`,
         `数据库：${this.config.dbPath}`,
-        '本次写入归档库的重要字段：',
-        ...preview.importantFields
+        '本次写入归档数据库的字段：',
+        ...preview.mergedPreviewFields
           .filter(field => field.filled)
           .map(field => `${field.label}：${field.value}`),
-        `本次写入台账分类：${preview.sheetName}`,
+        `台账 Sheet：${preview.sheetName}`,
         `本次不确定字段：${preview.uncertainFields.length > 0 ? preview.uncertainFields.join('、') : '无'}`,
       ].join('\n'),
       archiveDatabasePath: this.config.dbPath,

@@ -109,7 +109,9 @@ module.exports = async function runMcpToolkitTest() {
       archiveRelativeDir: '采购（启迪支出）\\算力',
       operator: 'tester',
     });
+    assert.match(previewResult.structuredContent.confirmationMessage, /将写入归档数据库的字段：/u);
     assert.match(previewResult.structuredContent.confirmationMessage, /合同名称：MCP 测试算力合同/u);
+    assert.equal(previewResult.structuredContent.mergedPreviewFields.some(field => field.label === '合同名称' && field.filled === true), true);
     assert.equal(previewResult.structuredContent.importantFields.some(field => field.label === '他方' && field.filled === false), true);
 
     const archiveResult = await toolkit.tools.contract_archive.execute({
