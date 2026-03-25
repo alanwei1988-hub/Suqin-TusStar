@@ -462,6 +462,10 @@ function buildMergedPreviewFields({ importantFields = [], ledgerFieldEntries = [
   return merged;
 }
 
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 class ContractService {
   constructor(config) {
     this.config = {
@@ -495,6 +499,10 @@ class ContractService {
   nextArchiveId() {
     const prefix = sanitizePathPart(this.config.archiveIdPrefix || 'A') || 'A';
     return this.repository.nextArchiveId(prefix, dayKey());
+  }
+
+  nextPendingId() {
+    return `PD_${dayKey()}_${crypto.randomUUID().slice(0, 8)}`;
   }
 
   mapArchiveRecordRow(row, fileRows = []) {
@@ -594,6 +602,63 @@ class ContractService {
       files,
       events: this.repository.listEvents(archive.archiveId).map(row => this.mapArchiveEventRow(row)),
     };
+  }
+
+  mapPendingDraftRow(row) {
+    if (!row) {
+      return null;
+    }
+
+    return {
+      pendingId: row.pending_id,
+      status: row.status,
+      contract: JSON.parse(row.contract_json || '{}'),
+      sourceFiles: JSON.parse(row.source_files_json || '[]'),
+      archiveRelativeDir: row.archive_relative_dir || '',
+      sheetName: row.sheet_name || '',
+      ledgerFields: JSON.parse(row.ledger_fields_json || '{}'),
+      uncertainFields: JSON.parse(row.uncertain_fields_json || '[]'),
+      searchKeywords: JSON.parse(row.search_keywords_json || '[]'),
+      uploaderUserId: row.uploader_user_id || '',
+      uploadedBy: row.uploaded_by || '',
+      sourceChannel: row.source_channel || '',
+      sourceMessageId: row.source_message_id || '',
+      operator: row.operator || '',
+      archivedArchiveId: row.archived_archive_id || '',
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  getPendingDraft(pendingId) {
+    return this.mapPendingDraftRow(this.repository.getPendingDraftRow(pendingId));
+  }
+
+  savePendingDraft(draft, pendingId = this.nextPendingId()) {
+    const existing = this.getPendingDraft(pendingId);
+    const timestamp = toIsoTimestamp();
+
+    this.repository.upsertPendingDraft({
+      pending_id: pendingId,
+      status: 'pending',
+      contract_json: JSON.stringify(draft.contract || {}),
+      source_files_json: JSON.stringify(draft.sourceFiles || []),
+      archive_relative_dir: draft.archiveRelativeDir || '',
+      sheet_name: draft.sheetName || '',
+      ledger_fields_json: JSON.stringify(draft.ledgerFields || {}),
+      uncertain_fields_json: JSON.stringify(draft.uncertainFields || []),
+      search_keywords_json: JSON.stringify(draft.searchKeywords || []),
+      uploader_user_id: draft.uploaderUserId || '',
+      uploaded_by: draft.uploadedBy || draft.contract?.uploadedBy || '',
+      source_channel: draft.sourceChannel || '',
+      source_message_id: draft.sourceMessageId || '',
+      operator: draft.operator || '',
+      archived_archive_id: existing?.archivedArchiveId || null,
+      created_at: existing?.createdAt || timestamp,
+      updated_at: timestamp,
+    });
+
+    return this.getPendingDraft(pendingId);
   }
 
   persistArchiveRecord({
@@ -1068,13 +1133,67 @@ class ContractService {
     };
   }
 
+  resolveArchiveInput(input = {}) {
+    const pendingId = String(input.pendingId || '').trim();
+
+    if (!pendingId) {
+      return input;
+    }
+
+    const pendingDraft = this.getPendingDraft(pendingId);
+
+    if (!pendingDraft) {
+      throw new Error(`Pending archive draft not found: ${pendingId}`);
+    }
+
+    if (pendingDraft.status !== 'pending') {
+      throw new Error(`Pending archive draft is no longer active: ${pendingId}`);
+    }
+
+    const sourceFiles = Array.isArray(input.sourceFiles) && input.sourceFiles.length > 0
+      ? input.sourceFiles
+      : (Array.isArray(input.files) && input.files.length > 0 ? input.files : pendingDraft.sourceFiles);
+    const mergedContract = {
+      ...(pendingDraft.contract || {}),
+      ...((input.contract && typeof input.contract === 'object' && !Array.isArray(input.contract)) ? input.contract : {}),
+    };
+    const mergedLedgerFields = {
+      ...(pendingDraft.ledgerFields || {}),
+      ...((input.ledgerFields && typeof input.ledgerFields === 'object' && !Array.isArray(input.ledgerFields)) ? input.ledgerFields : {}),
+    };
+
+    return {
+      ...cloneJson(input),
+      contract: mergedContract,
+      sourceFiles,
+      archiveRelativeDir: input.archiveRelativeDir || pendingDraft.archiveRelativeDir,
+      sheetName: input.sheetName || pendingDraft.sheetName,
+      ledgerFields: mergedLedgerFields,
+      uncertainFields: Array.isArray(input.uncertainFields) ? input.uncertainFields : pendingDraft.uncertainFields,
+      searchKeywords: Array.isArray(input.searchKeywords) ? input.searchKeywords : pendingDraft.searchKeywords,
+      uploaderUserId: input.uploaderUserId || pendingDraft.uploaderUserId,
+      sourceChannel: input.sourceChannel || pendingDraft.sourceChannel,
+      sourceMessageId: input.sourceMessageId || pendingDraft.sourceMessageId,
+      operator: input.operator || pendingDraft.operator,
+      pendingId,
+    };
+  }
+
   previewArchive(input = {}) {
     const draft = this.buildArchiveDraft(input);
-    return this.buildArchivePreview(draft);
+    const savedPendingDraft = this.savePendingDraft(draft, String(input.pendingId || '').trim() || undefined);
+    const preview = this.buildArchivePreview(draft);
+
+    return {
+      ...preview,
+      pendingId: savedPendingDraft.pendingId,
+      pendingStatus: savedPendingDraft.status,
+    };
   }
 
   archiveContract(input = {}) {
-    const draft = this.buildArchiveDraft(input);
+    const resolvedInput = this.resolveArchiveInput(input);
+    const draft = this.buildArchiveDraft(resolvedInput);
     const preview = this.buildArchivePreview(draft);
     const archiveDir = resolveLibraryPath(this.config.libraryRoot, draft.archiveRelativeDir);
     ensureDir(archiveDir);
@@ -1117,7 +1236,8 @@ class ContractService {
         committedFiles,
         operator: draft.operator,
         uploaderUserId: draft.uploaderUserId,
-        idempotencyKey: input.idempotencyKey || `archive:${draft.operator}:${draft.contract.contractName}:${draft.archiveRelativeDir}:${committedFiles.map(file => file.relativePath).join('|')}`,
+        pendingId: resolvedInput.pendingId || '',
+        idempotencyKey: resolvedInput.idempotencyKey || `archive:${draft.operator}:${draft.contract.contractName}:${draft.archiveRelativeDir}:${committedFiles.map(file => file.relativePath).join('|')}`,
         sourceChannel: draft.sourceChannel,
         sourceMessageId: draft.sourceMessageId,
       });
@@ -1126,9 +1246,14 @@ class ContractService {
       throw error;
     }
 
+    if (resolvedInput.pendingId) {
+      this.repository.markPendingDraftArchived(resolvedInput.pendingId, detail.archive.archiveId, toIsoTimestamp());
+    }
+
     return {
       archive: detail.archive,
       files: detail.files,
+      pendingId: resolvedInput.pendingId || '',
       userReplyMessage: [
         `已按确认内容完成归档：${detail.archive.archiveId}`,
         `NAS目录：${detail.archive.archiveAbsoluteDir}`,

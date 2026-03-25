@@ -143,6 +143,90 @@ function buildRequestContextPrompt(requestContext = {}) {
   return lines.join('\n');
 }
 
+function parseToolResultOutput(part) {
+  const output = part?.output;
+
+  if (!output || typeof output !== 'object') {
+    return null;
+  }
+
+  if (output.type === 'json') {
+    return output.value || null;
+  }
+
+  if (output.type === 'content' && Array.isArray(output.value)) {
+    const text = output.value
+      .filter(item => item?.type === 'text' && typeof item.text === 'string')
+      .map(item => item.text)
+      .join('\n')
+      .trim();
+
+    if (!text) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function collectActivePendingArchiveDrafts(messages = []) {
+  const activeDrafts = new Map();
+
+  for (const message of messages) {
+    if (message?.role !== 'tool' || !Array.isArray(message.content)) {
+      continue;
+    }
+
+    for (const part of message.content) {
+      if (part?.type !== 'tool-result') {
+        continue;
+      }
+
+      const result = parseToolResultOutput(part);
+
+      if (part.toolName === 'contract_preview_archive' && result?.pendingId) {
+        activeDrafts.set(result.pendingId, {
+          pendingId: result.pendingId,
+          contractName: result.contract?.contractName || '',
+          archiveRelativeDir: result.archiveRelativeDir || '',
+          operator: result.contract?.uploadedBy || '',
+        });
+        continue;
+      }
+
+      if (part.toolName === 'contract_archive') {
+        const pendingId = result?.pendingId || result?.archive?.pendingId || '';
+
+        if (pendingId) {
+          activeDrafts.delete(pendingId);
+        }
+      }
+    }
+  }
+
+  return [...activeDrafts.values()];
+}
+
+function buildPendingArchiveDraftPrompt(messages = []) {
+  const drafts = collectActivePendingArchiveDrafts(messages).slice(-3);
+
+  if (drafts.length === 0) {
+    return '';
+  }
+
+  return [
+    'Active pending archive drafts',
+    'If the user is confirming or revising a previous archive preview, call `contract_archive` with the matching `pendingId` and only the changed fields. Do not reconstruct the full archive fields from memory.',
+    ...drafts.map(draft => `- pendingId=${draft.pendingId}; contractName=${draft.contractName || '未命名'}; archiveRelativeDir=${draft.archiveRelativeDir || '未定'}; operator=${draft.operator || '未定'}`),
+  ].join('\n');
+}
+
 function enrichToolCallWithDisplay(toolCall, runtime) {
   if (!toolCall || typeof toolCall !== 'object') {
     return toolCall;
@@ -248,6 +332,7 @@ class AgentCore {
 
     fullMessages.push({ role: 'user', content, attachments: normalizedAttachments });
     const conversationAttachments = collectConversationAttachments(fullMessages);
+    const pendingArchiveDraftPrompt = buildPendingArchiveDraftPrompt(fullMessages);
     const context = this.sessionManager.buildModelContext(fullMessages, {
       recentMessagesCount: contextSettings.recentMessagesCount,
       summaryLineCount: contextSettings.summaryLineCount,
@@ -271,6 +356,7 @@ class AgentCore {
       rolePrompt,
       buildRequestContextPrompt(requestContext),
       ...runtime.promptSections,
+      pendingArchiveDraftPrompt,
       context.summary,
     ].filter(Boolean);
 

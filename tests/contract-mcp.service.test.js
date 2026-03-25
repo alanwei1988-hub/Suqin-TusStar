@@ -64,9 +64,25 @@ module.exports = async function runContractServiceTest() {
     assert.match(preview.confirmationMessage, /合同名称：直归档测试算力采购协议/u);
     assert.match(preview.confirmationMessage, /将写入归档数据库的字段：/u);
     assert.match(preview.confirmationMessage, /未填写字段：/u);
+    assert.match(preview.pendingId, /^PD_\d{8}_[0-9a-f]{8}$/);
     assert.equal(preview.importantFields.some(field => field.label === '合同名称' && field.filled), true);
     assert.equal(preview.mergedPreviewFields.some(field => field.label === '合同名称' && field.filled), true);
     assert.equal(preview.importantFields.some(field => field.label === '他方' && !field.filled), true);
+
+    const archivedFromPending = service.archiveContract({
+      pendingId: preview.pendingId,
+      contract: {
+        contractAmount: 12888,
+        summary: '按预览草稿归档，并补充金额与摘要。',
+        counterpartyContact: '李四 / 13800000000',
+      },
+      operator: 'tester',
+    });
+    assert.equal(archivedFromPending.archive.pendingId, preview.pendingId);
+    assert.equal(archivedFromPending.archive.contractAmount, 12888);
+    assert.equal(archivedFromPending.archive.summary, '按预览草稿归档，并补充金额与摘要。');
+    assert.equal(archivedFromPending.archive.counterpartyContact, '李四 / 13800000000');
+    assert.equal(service.getPendingDraft(preview.pendingId).status, 'archived');
 
     const directArchived = service.archiveContract({
       contract: {
@@ -110,17 +126,16 @@ module.exports = async function runContractServiceTest() {
       keyword: '直归档测试算力',
       limit: 5,
     });
-    assert.equal(archiveSearch.items.length, 1);
-    assert.equal(archiveSearch.items[0].archiveId, directArchived.archive.archiveId);
+    assert.equal(archiveSearch.items.some(item => item.archiveId === directArchived.archive.archiveId), true);
 
     const looseArchiveSearch = service.searchArchiveRecords({
       keyword: `${directArchived.archive.archiveId} 35000 直归档测试算力`,
       contractName: '直归档测试算力',
       limit: 5,
     });
-    assert.equal(looseArchiveSearch.items.length, 1);
-    assert.equal(looseArchiveSearch.items[0].archiveId, directArchived.archive.archiveId);
-    assert.equal(looseArchiveSearch.items[0].fileCount, 1);
+    const matchedDirectArchive = looseArchiveSearch.items.find(item => item.archiveId === directArchived.archive.archiveId);
+    assert.equal(Boolean(matchedDirectArchive), true);
+    assert.equal(matchedDirectArchive.fileCount, 1);
 
     const searchResult = service.searchContracts({
       keyword: '算力',
@@ -190,6 +205,34 @@ module.exports = async function runContractServiceTest() {
     assert.equal(loadedPaymentArchive.archive.finalPaymentDate, '2026-12-05');
     assert.equal(loadedPaymentArchive.events[0].payload.contract.firstPaymentDate, '2026-03-04');
     assert.equal(loadedPaymentArchive.events[0].payload.contract.finalPaymentDate, '2026-12-05');
+
+    const revisionPreview = service.previewArchive({
+      contract: {
+        contractName: '修订确认测试协议',
+        agreementType: '采购',
+        partyAName: '上海启迪',
+        partyBName: '修订供应商',
+        signingDate: '2026-03-21',
+        effectiveEndDate: '2026-04-30',
+        contractAmount: 5000,
+        uploadedBy: 'tester',
+      },
+      sourceFiles: [{ path: appendixPath, name: 'revision.pdf' }],
+      archiveRelativeDir: path.join('采购（启迪支出）', '算力'),
+      operator: 'tester',
+      uploaderUserId: 'tester',
+    });
+    const revisedArchive = service.archiveContract({
+      pendingId: revisionPreview.pendingId,
+      contract: {
+        effectiveEndDate: '2026-05-31',
+        contractAmount: 6500,
+      },
+      operator: 'tester',
+    });
+    assert.equal(revisedArchive.archive.effectiveEndDate, '2026-05-31');
+    assert.equal(revisedArchive.archive.contractAmount, 6500);
+    assert.equal(revisedArchive.archive.contractName, '修订确认测试协议');
 
     const filteredArchiveSearch = service.searchArchiveRecords({
       contractName: '分期付款测试',

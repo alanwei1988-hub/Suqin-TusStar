@@ -25,6 +25,26 @@ class ContractRepository {
         value INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS pending_archive_drafts (
+        pending_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        contract_json TEXT NOT NULL,
+        source_files_json TEXT NOT NULL,
+        archive_relative_dir TEXT NOT NULL,
+        sheet_name TEXT NOT NULL,
+        ledger_fields_json TEXT NOT NULL,
+        uncertain_fields_json TEXT NOT NULL,
+        search_keywords_json TEXT NOT NULL,
+        uploader_user_id TEXT,
+        uploaded_by TEXT,
+        source_channel TEXT,
+        source_message_id TEXT,
+        operator TEXT NOT NULL,
+        archived_archive_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS archive_records (
         archive_id TEXT PRIMARY KEY,
         pending_id TEXT,
@@ -115,6 +135,10 @@ class ContractRepository {
       CREATE INDEX IF NOT EXISTS idx_archive_records_updated_at ON archive_records(updated_at);
       CREATE INDEX IF NOT EXISTS idx_archive_files_archive_id ON archive_files(archive_id);
       CREATE INDEX IF NOT EXISTS idx_archive_events_archive_id ON archive_events(archive_id);
+      CREATE INDEX IF NOT EXISTS idx_pending_archive_drafts_status ON pending_archive_drafts(status);
+      CREATE INDEX IF NOT EXISTS idx_pending_archive_drafts_operator ON pending_archive_drafts(operator);
+      CREATE INDEX IF NOT EXISTS idx_pending_archive_drafts_uploader_user_id ON pending_archive_drafts(uploader_user_id);
+      CREATE INDEX IF NOT EXISTS idx_pending_archive_drafts_updated_at ON pending_archive_drafts(updated_at);
     `);
 
     this.normalizeLegacyArchiveDates();
@@ -211,6 +235,54 @@ class ContractRepository {
     return this.db.prepare(
       'SELECT * FROM archive_records WHERE idempotency_key = ?',
     ).get(idempotencyKey) || null;
+  }
+
+  upsertPendingDraft(record) {
+    this.db.prepare(`
+      INSERT INTO pending_archive_drafts (
+        pending_id, status, contract_json, source_files_json, archive_relative_dir,
+        sheet_name, ledger_fields_json, uncertain_fields_json, search_keywords_json,
+        uploader_user_id, uploaded_by, source_channel, source_message_id, operator,
+        archived_archive_id, created_at, updated_at
+      ) VALUES (
+        @pending_id, @status, @contract_json, @source_files_json, @archive_relative_dir,
+        @sheet_name, @ledger_fields_json, @uncertain_fields_json, @search_keywords_json,
+        @uploader_user_id, @uploaded_by, @source_channel, @source_message_id, @operator,
+        @archived_archive_id, @created_at, @updated_at
+      )
+      ON CONFLICT(pending_id) DO UPDATE SET
+        status = excluded.status,
+        contract_json = excluded.contract_json,
+        source_files_json = excluded.source_files_json,
+        archive_relative_dir = excluded.archive_relative_dir,
+        sheet_name = excluded.sheet_name,
+        ledger_fields_json = excluded.ledger_fields_json,
+        uncertain_fields_json = excluded.uncertain_fields_json,
+        search_keywords_json = excluded.search_keywords_json,
+        uploader_user_id = excluded.uploader_user_id,
+        uploaded_by = excluded.uploaded_by,
+        source_channel = excluded.source_channel,
+        source_message_id = excluded.source_message_id,
+        operator = excluded.operator,
+        archived_archive_id = excluded.archived_archive_id,
+        updated_at = excluded.updated_at
+    `).run(record);
+  }
+
+  getPendingDraftRow(pendingId) {
+    return this.db.prepare(
+      'SELECT * FROM pending_archive_drafts WHERE pending_id = ?',
+    ).get(pendingId) || null;
+  }
+
+  markPendingDraftArchived(pendingId, archiveId, timestamp) {
+    this.db.prepare(`
+      UPDATE pending_archive_drafts
+      SET status = 'archived',
+          archived_archive_id = ?,
+          updated_at = ?
+      WHERE pending_id = ?
+    `).run(archiveId, timestamp, pendingId);
   }
 
   insertRecord(record) {

@@ -158,6 +158,7 @@ function createContractToolRegistry(service) {
       inputSchema: {
         type: 'object',
         properties: {
+          pendingId: { type: 'string' },
           contract: contractInputSchema,
           sourceFiles: {
             type: 'array',
@@ -185,6 +186,7 @@ function createContractToolRegistry(service) {
         additionalProperties: false,
       },
       parse: z.object({
+        pendingId: z.string().optional(),
         contract: contractSchema.optional(),
         sourceFiles: sourceFilesSchema,
         archiveRelativeDir: z.string().min(1),
@@ -207,6 +209,7 @@ function createContractToolRegistry(service) {
       inputSchema: {
         type: 'object',
         properties: {
+          pendingId: { type: 'string' },
           contract: contractInputSchema,
           sourceFiles: {
             type: 'array',
@@ -231,13 +234,13 @@ function createContractToolRegistry(service) {
           idempotencyKey: { type: 'string' },
           operator: { type: 'string' },
         },
-        required: ['sourceFiles', 'archiveRelativeDir', 'operator'],
         additionalProperties: false,
       },
       parse: z.object({
+        pendingId: z.string().optional(),
         contract: contractSchema.optional(),
-        sourceFiles: sourceFilesSchema,
-        archiveRelativeDir: z.string().min(1),
+        sourceFiles: sourceFilesSchema.optional(),
+        archiveRelativeDir: z.string().min(1).optional(),
         sheetName: z.enum(sheetNames).optional(),
         ledgerFields: ledgerFieldsSchema.optional(),
         uncertainFields: z.array(z.string()).optional(),
@@ -246,7 +249,7 @@ function createContractToolRegistry(service) {
         sourceChannel: z.string().optional(),
         sourceMessageId: z.string().optional(),
         idempotencyKey: z.string().optional(),
-        operator: z.string().min(1),
+        operator: z.string().min(1).optional(),
       }),
       execute: input => service.archiveContract(input),
     },

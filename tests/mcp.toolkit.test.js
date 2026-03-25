@@ -111,23 +111,20 @@ module.exports = async function runMcpToolkitTest() {
     });
     assert.match(previewResult.structuredContent.confirmationMessage, /将写入归档数据库的字段：/u);
     assert.match(previewResult.structuredContent.confirmationMessage, /合同名称：MCP 测试算力合同/u);
+    assert.match(previewResult.structuredContent.pendingId, /^PD_\d{8}_[0-9a-f]{8}$/);
     assert.equal(previewResult.structuredContent.mergedPreviewFields.some(field => field.label === '合同名称' && field.filled === true), true);
     assert.equal(previewResult.structuredContent.importantFields.some(field => field.label === '他方' && field.filled === false), true);
 
     const archiveResult = await toolkit.tools.contract_archive.execute({
+      pendingId: previewResult.structuredContent.pendingId,
       contract: {
-        contractName: 'MCP 测试算力合同',
-        agreementType: '采购',
-        partyAName: '上海启迪',
-        partyBName: '算力供应商',
-        signingDate: '2026-03-19',
-        uploadedBy: 'tester',
+        contractAmount: 18888,
       },
-      sourceFiles: [{ path: scanPath, name: 'scan.pdf' }],
-      archiveRelativeDir: '采购（启迪支出）\\算力',
       operator: 'tester',
     });
     assert.match(archiveResult.structuredContent.archive.archiveId, /^A\d{8}-\d{4}$/);
+    assert.equal(archiveResult.structuredContent.archive.pendingId, previewResult.structuredContent.pendingId);
+    assert.equal(archiveResult.structuredContent.archive.contractAmount, 18888);
     assert.equal(archiveResult.structuredContent.archive.fileCount, 1);
     assert.equal(fs.existsSync(scanPath), true);
 
