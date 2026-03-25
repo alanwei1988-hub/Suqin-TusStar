@@ -153,6 +153,7 @@ npm test
 
 - `contract_list_directory`：查看真实 NAS 目录结构
 - `contract_find_directories`：按关键字查相似目录
+- `contract_preview_archive`：正式归档前预览将写入数据库/目录的重要字段、未填写字段、拟文件名
 - `contract_archive`：正式归档入口，在上传人确认拟归档字段后完成 NAS 落档和数据库写入
 - `contract_get_archive_record`：读取数据库中的单条正式归档记录
 - `contract_search_archive_records`：检索数据库中的正式归档记录

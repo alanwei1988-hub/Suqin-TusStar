@@ -72,7 +72,9 @@ module.exports = async function runMcpToolkitTest() {
     assert.equal(typeof toolkit.tools.contract_archive.execute, 'function');
     assert.equal(toolkit.toolDisplayByName.contract_archive.statusText, '归档合同');
     assert.equal(toolkit.toolDisplayByName.contract_list_directory.statusText, '查看合同目录');
+    assert.equal(toolkit.toolDisplayByName.contract_preview_archive.statusText, '预览归档内容');
     assert(toolkit.readOnlyToolNames.includes('contract_list_directory'));
+    assert(toolkit.readOnlyToolNames.includes('contract_preview_archive'));
     assert(toolkit.readOnlyToolNames.includes('contract_search'));
     assert(toolkit.readOnlyToolNames.includes('contract_get_archive_record'));
     assert(toolkit.readOnlyToolNames.includes('contract_search_archive_records'));
@@ -91,6 +93,22 @@ module.exports = async function runMcpToolkitTest() {
       depth: 1,
     });
     assert.equal(directoryResult.structuredContent.tree.name, '采购（启迪支出）');
+
+    const previewResult = await toolkit.tools.contract_preview_archive.execute({
+      contract: {
+        contractName: 'MCP 测试算力合同',
+        agreementType: '采购',
+        partyAName: '上海启迪',
+        partyBName: '算力供应商',
+        signingDate: '2026-03-19',
+        uploadedBy: 'tester',
+      },
+      sourceFiles: [{ path: scanPath, name: 'scan.pdf' }],
+      archiveRelativeDir: '采购（启迪支出）\\算力',
+      operator: 'tester',
+    });
+    assert.match(previewResult.structuredContent.confirmationMessage, /合同名称：MCP 测试算力合同/u);
+    assert.equal(previewResult.structuredContent.importantFields.some(field => field.label === '他方' && field.filled === false), true);
 
     const archiveResult = await toolkit.tools.contract_archive.execute({
       contract: {

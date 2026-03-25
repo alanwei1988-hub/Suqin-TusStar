@@ -184,6 +184,47 @@ function formatAmount(value) {
   return String(numeric);
 }
 
+function formatBooleanForMessage(value) {
+  if (typeof value !== 'boolean') {
+    return '';
+  }
+
+  return value ? '是' : '否';
+}
+
+function formatDirectionForMessage(value) {
+  if (value === 'income') {
+    return '收入';
+  }
+
+  if (value === 'expense') {
+    return '支出';
+  }
+
+  return '';
+}
+
+function formatPreviewValue(value, formatter) {
+  const resolved = typeof formatter === 'function' ? formatter(value) : value;
+
+  if (resolved == null) {
+    return '';
+  }
+
+  if (Array.isArray(resolved)) {
+    const items = resolved
+      .map(item => String(item == null ? '' : item).trim())
+      .filter(Boolean);
+    return items.join('、');
+  }
+
+  if (typeof resolved === 'object') {
+    return JSON.stringify(resolved);
+  }
+
+  return String(resolved).trim();
+}
+
 function buildKeywordList(values = []) {
   const keywords = new Set();
 
@@ -202,6 +243,34 @@ function buildKeywordList(values = []) {
   }
 
   return [...keywords];
+}
+
+function buildSearchTerms(values = []) {
+  const terms = new Set();
+
+  for (const value of values) {
+    if (value == null || value === '') {
+      continue;
+    }
+
+    const text = String(value).trim();
+
+    if (!text) {
+      continue;
+    }
+
+    for (const term of text.split(/[\s,，;；|/\\]+/u)) {
+      const normalized = term.trim();
+
+      if (!normalized) {
+        continue;
+      }
+
+      terms.add(normalized);
+    }
+  }
+
+  return [...terms];
 }
 
 function hasMeaningfulContractInput(contract) {
@@ -328,6 +397,49 @@ function inferSheetName({ sheetName, contract = {}, archiveRelativeDir = '' }) {
   }
 
   return '无结算款项协议';
+}
+
+function buildArchivePreviewFieldDefinitions() {
+  return [
+    { key: 'contractName', label: '合同名称' },
+    { key: 'agreementType', label: '协议类型' },
+    { key: 'partyAName', label: '甲方' },
+    { key: 'partyBName', label: '乙方' },
+    { key: 'otherPartyName', label: '他方' },
+    { key: 'counterpartyName', label: '相对方' },
+    { key: 'direction', label: '启迪视角', formatter: formatDirectionForMessage },
+    { key: 'signingDate', label: '签署日期', formatter: formatDateForMessage },
+    { key: 'effectiveStartDate', label: '生效开始', formatter: formatDateForMessage },
+    { key: 'effectiveEndDate', label: '生效结束', formatter: formatDateForMessage },
+    {
+      key: 'contractAmount',
+      label: '合同金额',
+      formatter: (value, context) => {
+        const amount = formatAmount(value);
+        return amount ? `${amount} ${context.contract.currency || 'CNY'}` : '';
+      },
+    },
+    { key: 'hasSettlement', label: '是否有结算', formatter: formatBooleanForMessage },
+    { key: 'firstPaymentAmount', label: '首期款', formatter: formatAmount },
+    { key: 'firstPaymentDate', label: '首期付款时间', formatter: formatDateForMessage },
+    { key: 'finalPaymentAmount', label: '尾款', formatter: formatAmount },
+    { key: 'finalPaymentDate', label: '尾款付款时间', formatter: formatDateForMessage },
+    { key: 'paymentStatus', label: '支付结算情况' },
+    { key: 'ourOwner', label: '我方负责人' },
+    { key: 'counterpartyContact', label: '他方负责人及联系方式' },
+    { key: 'confidentialityRequirement', label: '保密要求' },
+    { key: 'summary', label: '摘要' },
+    { key: 'remarks', label: '备注' },
+    { key: 'uploadedBy', label: '上传人' },
+    { key: 'uploaderUserId', label: '上传人ID' },
+    { key: 'operator', label: '归档操作人' },
+    { key: 'sheetName', label: '归档台账分类' },
+    { key: 'archiveRelativeDir', label: '归档相对目录' },
+    { key: 'archiveAbsoluteDir', label: '归档绝对目录' },
+    { key: 'searchKeywords', label: '检索关键词' },
+    { key: 'keywordTags', label: '标签关键词' },
+    { key: 'uncertainFields', label: '当前不确定字段' },
+  ];
 }
 
 class ContractService {
@@ -769,6 +881,99 @@ class ContractService {
     });
   }
 
+  buildArchivePreview(draft) {
+    const archiveAbsoluteDir = resolveLibraryPath(this.config.libraryRoot, draft.archiveRelativeDir);
+    const plannedFiles = this.buildPlannedFiles(draft.contract, draft.sourceFiles).map(file => ({
+      sourceName: file.sourceName,
+      targetName: file.targetName,
+      extension: file.extension,
+      sizeBytes: file.sizeBytes,
+      absoluteTargetPath: path.join(archiveAbsoluteDir, file.targetName),
+      relativeTargetPath: path.join(draft.archiveRelativeDir, file.targetName),
+    }));
+    const context = {
+      contract: draft.contract,
+      uploaderUserId: draft.uploaderUserId,
+      operator: draft.operator,
+      sheetName: draft.sheetName,
+      archiveRelativeDir: draft.archiveRelativeDir,
+      archiveAbsoluteDir,
+      searchKeywords: draft.searchKeywords,
+      keywordTags: draft.contract.keywordTags || [],
+      uncertainFields: draft.uncertainFields,
+    };
+    const importantFields = buildArchivePreviewFieldDefinitions().map(definition => {
+      const rawValue = definition.key in context
+        ? context[definition.key]
+        : draft.contract[definition.key];
+      const displayValue = formatPreviewValue(
+        rawValue,
+        definition.formatter ? value => definition.formatter(value, context) : undefined,
+      );
+
+      return {
+        key: definition.key,
+        label: definition.label,
+        filled: displayValue !== '',
+        value: displayValue || '未填写',
+      };
+    });
+    const filledFields = importantFields.filter(field => field.filled);
+    const emptyFields = importantFields.filter(field => !field.filled);
+    const ledgerFieldEntries = Object.entries(draft.ledgerFields || {}).map(([key, value]) => {
+      const displayValue = formatPreviewValue(value);
+      return {
+        key,
+        filled: displayValue !== '',
+        value: displayValue || '未填写',
+      };
+    });
+
+    return {
+      contract: {
+        ...draft.contract,
+        counterpartyName: this.deriveCounterpartyName(draft.contract),
+      },
+      archiveRelativeDir: draft.archiveRelativeDir,
+      archiveAbsoluteDir,
+      sheetName: draft.sheetName,
+      plannedFiles,
+      importantFields,
+      missingImportantFields: emptyFields.map(field => field.label),
+      ledgerFields: draft.ledgerFields,
+      ledgerFieldEntries,
+      uncertainFields: draft.uncertainFields,
+      searchKeywords: draft.searchKeywords,
+      confirmationMessage: [
+        '请确认以下“最终归档时将写入归档库/目录”的内容：',
+        '',
+        '已填写的重要字段：',
+        ...(filledFields.length > 0
+          ? filledFields.map(field => `${field.label}：${field.value}`)
+          : ['无']),
+        '',
+        '未填写的重要字段：',
+        ...(emptyFields.length > 0
+          ? emptyFields.map(field => `${field.label}：未填写`)
+          : ['无']),
+        '',
+        '拟归档文件：',
+        ...plannedFiles.map(file => `${file.sourceName} -> ${file.targetName}`),
+        '',
+        `拟归档目录：${draft.archiveRelativeDir}`,
+        `拟写入台账分类：${draft.sheetName}`,
+        '',
+        '拟写入台账字段：',
+        ...(ledgerFieldEntries.length > 0
+          ? ledgerFieldEntries.map(field => `${field.key}：${field.value}`)
+          : ['无']),
+        '',
+        `检索关键词：${draft.searchKeywords.length > 0 ? draft.searchKeywords.join('、') : '无'}`,
+        `当前不确定字段：${draft.uncertainFields.length > 0 ? draft.uncertainFields.join('、') : '无'}`,
+      ].join('\n'),
+    };
+  }
+
   enrichArchive(record) {
     const absoluteDir = resolveLibraryPath(this.config.libraryRoot, record.archive.relativeDir);
     const plannedFiles = record.archive.plannedFiles.map(file => ({
@@ -835,8 +1040,14 @@ class ContractService {
     };
   }
 
+  previewArchive(input = {}) {
+    const draft = this.buildArchiveDraft(input);
+    return this.buildArchivePreview(draft);
+  }
+
   archiveContract(input = {}) {
     const draft = this.buildArchiveDraft(input);
+    const preview = this.buildArchivePreview(draft);
     const archiveDir = resolveLibraryPath(this.config.libraryRoot, draft.archiveRelativeDir);
     ensureDir(archiveDir);
     const committedFiles = [];
@@ -891,9 +1102,15 @@ class ContractService {
       archive: detail.archive,
       files: detail.files,
       userReplyMessage: [
-        `已归档：${detail.archive.archiveId}`,
+        `已按确认内容完成归档：${detail.archive.archiveId}`,
         `NAS目录：${detail.archive.archiveAbsoluteDir}`,
         `数据库：${this.config.dbPath}`,
+        '本次写入归档库的重要字段：',
+        ...preview.importantFields
+          .filter(field => field.filled)
+          .map(field => `${field.label}：${field.value}`),
+        `本次写入台账分类：${preview.sheetName}`,
+        `本次不确定字段：${preview.uncertainFields.length > 0 ? preview.uncertainFields.join('、') : '无'}`,
       ].join('\n'),
       archiveDatabasePath: this.config.dbPath,
     };
@@ -910,8 +1127,10 @@ class ContractService {
   }
 
   searchArchiveRecords(input = {}) {
+    const keywordTerms = buildSearchTerms([input.keyword || '']);
     const normalizedFilters = {
       keyword: String(input.keyword || '').trim(),
+      keyword_terms: keywordTerms,
       archive_relative_dir: String(input.archiveRelativeDir || '').trim(),
       contract_name: String(input.contractName || '').trim(),
       counterparty_name: String(input.counterpartyName || '').trim(),
@@ -1088,6 +1307,7 @@ class ContractService {
   searchContracts(input = {}) {
     const keyword = String(input.keyword || '').trim();
     const keywords = buildKeywordList([keyword, ...(input.keywords || [])]);
+    const searchTerms = buildSearchTerms([keyword, ...(input.keywords || [])]);
     const limit = Number.isFinite(input.limit) ? Math.max(1, Math.trunc(input.limit)) : this.config.defaultSearchLimit;
     const topLevelCategory = String(input.topLevelCategory || '').trim();
     const modifiedAfter = input.modifiedAfter ? new Date(input.modifiedAfter) : null;
@@ -1130,8 +1350,9 @@ class ContractService {
       }
 
       const haystack = relativePath.toLowerCase();
+      const matchedTerms = searchTerms.filter(entry => haystack.includes(entry.toLowerCase()));
 
-      if (keywords.length > 0 && !keywords.every(entry => haystack.includes(entry.toLowerCase()))) {
+      if (searchTerms.length > 0 && matchedTerms.length === 0) {
         return;
       }
 
@@ -1142,16 +1363,23 @@ class ContractService {
         topLevelCategory: firstSegment,
         modifiedAt: stat.mtime.toISOString(),
         sizeBytes: stat.size,
+        matchCount: matchedTerms.length,
       });
     }, { includeRoot: false });
 
-    items.sort((left, right) => right.modifiedAt.localeCompare(left.modifiedAt));
+    items.sort((left, right) => {
+      if (right.matchCount !== left.matchCount) {
+        return right.matchCount - left.matchCount;
+      }
+
+      return right.modifiedAt.localeCompare(left.modifiedAt);
+    });
 
     return {
       keyword,
       keywords,
       limit,
-      items: items.slice(0, limit),
+      items: items.slice(0, limit).map(({ matchCount, ...item }) => item),
       searchedRoot: this.config.libraryRoot,
     };
   }

@@ -44,6 +44,28 @@ module.exports = async function runContractServiceTest() {
       /不能省略 contract.*至少回填这些已识别字段/u,
     );
 
+    const preview = service.previewArchive({
+      contract: {
+        contractName: '直归档测试算力采购协议',
+        agreementType: '采购',
+        partyAName: '上海启迪',
+        partyBName: '算力供应商',
+        signingDate: '2026-03-19',
+        contractAmount: 12888,
+        uploadedBy: 'tester',
+      },
+      sourceFiles: [{ path: scanPath, name: 'scan.pdf' }],
+      archiveRelativeDir: path.join('采购（启迪支出）', '算力'),
+      sheetName: '费用支出协议',
+      operator: 'tester',
+      uploaderUserId: 'tester',
+    });
+    assert.match(preview.confirmationMessage, /请确认以下“最终归档时将写入归档库\/目录”的内容/u);
+    assert.match(preview.confirmationMessage, /合同名称：直归档测试算力采购协议/u);
+    assert.match(preview.confirmationMessage, /未填写的重要字段：/u);
+    assert.equal(preview.importantFields.some(field => field.label === '合同名称' && field.filled), true);
+    assert.equal(preview.importantFields.some(field => field.label === '他方' && !field.filled), true);
+
     const directArchived = service.archiveContract({
       contract: {
         contractName: '直归档测试算力采购协议',
@@ -66,6 +88,8 @@ module.exports = async function runContractServiceTest() {
     assert.equal(fs.existsSync(directArchived.files[0].absolutePath), true);
     assert.equal(fs.existsSync(path.join(libraryRoot, '合同归档.db')), true);
     assert.match(directArchived.userReplyMessage, /数据库/u);
+    assert.match(directArchived.userReplyMessage, /本次写入归档库的重要字段/u);
+    assert.match(directArchived.userReplyMessage, /合同名称：直归档测试算力采购协议/u);
 
     const loadedArchive = service.getArchiveRecord(directArchived.archive.archiveId);
     assert.equal(loadedArchive.archive.contractName, '直归档测试算力采购协议');
@@ -83,6 +107,14 @@ module.exports = async function runContractServiceTest() {
     });
     assert.equal(archiveSearch.items.length, 1);
     assert.equal(archiveSearch.items[0].archiveId, directArchived.archive.archiveId);
+
+    const looseArchiveSearch = service.searchArchiveRecords({
+      keyword: `${directArchived.archive.archiveId} 35000 直归档测试算力`,
+      contractName: '直归档测试算力',
+      limit: 5,
+    });
+    assert.equal(looseArchiveSearch.items.length, 1);
+    assert.equal(looseArchiveSearch.items[0].archiveId, directArchived.archive.archiveId);
 
     const searchResult = service.searchContracts({
       keyword: '算力',
@@ -110,6 +142,15 @@ module.exports = async function runContractServiceTest() {
     });
     assert.match(incomeArchived.files[0].storedName, /艾哎思维/);
     assert.doesNotMatch(incomeArchived.files[0].storedName, /上海启迪创业孵化器有限公司/);
+
+    const looseNasSearch = service.searchContracts({
+      keyword: '艾哎思维 算力技术服务协议 35000',
+      keywords: ['艾哎思维（上海）科技有限公司', '35000'],
+      topLevelCategory: '专业服务收入协议（活动+算力+商业化）',
+      recentMonths: 2,
+    });
+    assert.equal(looseNasSearch.items.length >= 1, true);
+    assert.match(looseNasSearch.items[0].relativePath, /艾哎思维/u);
 
     const paymentArchived = service.archiveContract({
       contract: {

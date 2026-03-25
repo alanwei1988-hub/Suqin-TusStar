@@ -294,7 +294,33 @@ class ContractRepository {
     const where = [];
     const params = {};
 
-    if (filters.keyword) {
+    const keywordTerms = Array.isArray(filters.keyword_terms)
+      ? filters.keyword_terms
+        .map(value => String(value || '').trim())
+        .filter(Boolean)
+      : [];
+
+    if (keywordTerms.length > 0) {
+      const keywordClauses = keywordTerms.map((_, index) => {
+        const paramName = `keyword_${index}`;
+        params[paramName] = `%${keywordTerms[index]}%`;
+
+        return `
+          archive_id LIKE @${paramName}
+          OR contract_name LIKE @${paramName}
+          OR IFNULL(agreement_type, '') LIKE @${paramName}
+          OR IFNULL(party_a_name, '') LIKE @${paramName}
+          OR IFNULL(party_b_name, '') LIKE @${paramName}
+          OR IFNULL(other_party_name, '') LIKE @${paramName}
+          OR IFNULL(counterparty_name, '') LIKE @${paramName}
+          OR IFNULL(summary, '') LIKE @${paramName}
+          OR IFNULL(remarks, '') LIKE @${paramName}
+          OR IFNULL(search_keywords_json, '') LIKE @${paramName}
+        `;
+      });
+
+      where.push(`(${keywordClauses.map(clause => `(${clause})`).join(' OR ')})`);
+    } else if (filters.keyword) {
       where.push(`
         (
           archive_id LIKE @keyword
