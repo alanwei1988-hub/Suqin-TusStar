@@ -157,13 +157,13 @@ npm test
 - `contract_preview_archive`：正式归档前预览将写入数据库/目录的重要字段、未填写字段、拟文件名
 - `contract_archive`：正式归档入口，在上传人确认拟归档字段后完成 NAS 落档和数据库写入
 - `contract_get_archive_record`：读取数据库中的单条正式归档记录
-- `contract_search_archive_records`：检索数据库中的正式归档记录
-- `contract_search`：直接检索 NAS 目录中的合同文件
+- `contract_search_archive_records`：检索 Agent 归档数据库中的正式归档记录，仅覆盖通过 Agent 正式归档过的合同
+- `contract_search`：直接检索 NAS 目录中的物理合同文件，包含人工手动复制进入目录但未写入 Agent 归档数据库的文件
 
 合同服务的持久化方式：
 
-- 合同文件直接存放在真实 NAS 目录
-- Agent 正式归档记录写入 `libraryRoot` 下的 SQLite 数据库，默认文件名为 `合同归档.db`
+- 合同文件直接存放在真实 NAS 目录，NAS 目录是全量物理文件视图
+- Agent 正式归档记录写入 `libraryRoot` 下的 SQLite 数据库，默认文件名为 `合同归档.db`，它不是全量主档案库，只覆盖通过 Agent 正式归档的记录
 - Excel 台账继续由人工维护，但不再是 Agent 默认归档链路的一部分
 
 ## Agent 工作方式

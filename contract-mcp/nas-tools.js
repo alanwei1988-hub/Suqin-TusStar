@@ -270,9 +270,9 @@ function createContractToolRegistry(service) {
     },
     {
       name: 'contract_search_archive_records',
-      title: 'Search Archive Records',
-      description: 'Search the structured archive database by keyword, direction, uploader, directory, and date filters.',
-      annotations: { readOnlyHint: true, statusText: '检索归档记录' },
+      title: 'Search Agent Archive Records',
+      description: 'Search only the Agent-maintained structured archive database. Use this when you need Agent archive IDs, structured fields, or want to confirm whether a contract was archived by the Agent. Manually copied NAS files will not appear here unless they were archived through contract_archive.',
+      annotations: { readOnlyHint: true, statusText: '检索Agent归档记录' },
       inputSchema: {
         type: 'object',
         properties: {
@@ -355,9 +355,9 @@ function createContractToolRegistry(service) {
     },
     {
       name: 'contract_search',
-      title: 'Search NAS Contracts',
-      description: 'Search the real NAS directory tree for archived contract files by keyword and recent time window.',
-      annotations: { readOnlyHint: true, statusText: '检索合同目录' },
+      title: 'Search NAS Contract Files',
+      description: 'Search the real NAS directory tree for physical contract files by path, file name, and recent modified time. This covers the full NAS file set, including files manually copied into the directory that do not exist in the Agent archive database.',
+      annotations: { readOnlyHint: true, statusText: '检索NAS合同文件' },
       inputSchema: {
         type: 'object',
         properties: {
