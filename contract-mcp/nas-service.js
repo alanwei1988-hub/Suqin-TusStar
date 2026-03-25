@@ -462,6 +462,30 @@ function buildMergedPreviewFields({ importantFields = [], ledgerFieldEntries = [
   return merged;
 }
 
+function escapeMarkdownTableCell(value) {
+  return String(value == null ? '' : value)
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n/g, '<br>');
+}
+
+function buildMarkdownTable(headers = [], rows = []) {
+  if (!Array.isArray(headers) || headers.length === 0) {
+    return '';
+  }
+
+  const normalizedHeaders = headers.map(escapeMarkdownTableCell);
+  const normalizedRows = Array.isArray(rows) ? rows : [];
+
+  return [
+    `| ${normalizedHeaders.join(' | ')} |`,
+    `| ${normalizedHeaders.map(() => '---').join(' | ')} |`,
+    ...normalizedRows.map(row => {
+      const cells = normalizedHeaders.map((_, index) => escapeMarkdownTableCell(row[index] ?? ''));
+      return `| ${cells.join(' | ')} |`;
+    }),
+  ].join('\n');
+}
+
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -1025,6 +1049,33 @@ class ContractService {
     });
     const filledMergedFields = mergedPreviewFields.filter(field => field.filled);
     const emptyMergedFields = mergedPreviewFields.filter(field => !field.filled);
+    const archiveSummaryTable = buildMarkdownTable(
+      ['项目', '值'],
+      [
+        ['拟归档目录', draft.archiveRelativeDir || '未填写'],
+        ['台账 Sheet', draft.sheetName || '未填写'],
+        ['检索关键词', draft.searchKeywords.length > 0 ? draft.searchKeywords.join('、') : '无'],
+        ['当前不确定字段', draft.uncertainFields.length > 0 ? draft.uncertainFields.join('、') : '无'],
+      ],
+    );
+    const mergedFieldsTable = buildMarkdownTable(
+      ['字段', '值'],
+      filledMergedFields.length > 0
+        ? filledMergedFields.map(field => [field.label, field.value])
+        : [['无', '']]
+    );
+    const missingFieldsTable = buildMarkdownTable(
+      ['字段', '当前值'],
+      emptyMergedFields.length > 0
+        ? emptyMergedFields.map(field => [field.label, '未填写'])
+        : [['无', '']]
+    );
+    const plannedFilesTable = buildMarkdownTable(
+      ['原文件名', '归档文件名'],
+      plannedFiles.length > 0
+        ? plannedFiles.map(file => [file.sourceName, file.targetName])
+        : [['无', '']]
+    );
 
     return {
       contract: {
@@ -1045,24 +1096,17 @@ class ContractService {
       confirmationMessage: [
         '请确认以下归档预览信息：',
         '',
+        '归档摘要：',
+        archiveSummaryTable,
+        '',
         '将写入归档数据库的字段：',
-        ...(filledMergedFields.length > 0
-          ? filledMergedFields.map(field => `${field.label}：${field.value}`)
-          : ['无']),
+        mergedFieldsTable,
         '',
         '未填写字段：',
-        ...(emptyMergedFields.length > 0
-          ? emptyMergedFields.map(field => `${field.label}：未填写`)
-          : ['无']),
+        missingFieldsTable,
         '',
         '拟归档文件：',
-        ...plannedFiles.map(file => `${file.sourceName} -> ${file.targetName}`),
-        '',
-        `拟归档目录：${draft.archiveRelativeDir}`,
-        `台账 Sheet：${draft.sheetName}`,
-        '',
-        `检索关键词：${draft.searchKeywords.length > 0 ? draft.searchKeywords.join('、') : '无'}`,
-        `当前不确定字段：${draft.uncertainFields.length > 0 ? draft.uncertainFields.join('、') : '无'}`,
+        plannedFilesTable,
       ].join('\n'),
     };
   }

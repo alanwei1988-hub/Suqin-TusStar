@@ -61,9 +61,11 @@ module.exports = async function runContractServiceTest() {
       uploaderUserId: 'tester',
     });
     assert.match(preview.confirmationMessage, /请确认以下归档预览信息/u);
-    assert.match(preview.confirmationMessage, /合同名称：直归档测试算力采购协议/u);
+    assert.match(preview.confirmationMessage, /\| 字段 \| 值 \|/u);
+    assert.match(preview.confirmationMessage, /\| 合同名称 \| 直归档测试算力采购协议 \|/u);
     assert.match(preview.confirmationMessage, /将写入归档数据库的字段：/u);
     assert.match(preview.confirmationMessage, /未填写字段：/u);
+    assert.match(preview.confirmationMessage, /\| 原文件名 \| 归档文件名 \|/u);
     assert.match(preview.pendingId, /^PD_\d{8}_[0-9a-f]{8}$/);
     assert.equal(preview.importantFields.some(field => field.label === '合同名称' && field.filled), true);
     assert.equal(preview.mergedPreviewFields.some(field => field.label === '合同名称' && field.filled), true);
