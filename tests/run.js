@@ -18,6 +18,8 @@ const tests = [
   ['channel.file-reply', require('./channel.file-reply.test')],
   ['channel.file-send-failure', require('./channel.file-send-failure.test')],
   ['channel.queue', require('./channel.queue.test')],
+  ['channel.preprocess-queue', require('./channel.preprocess-queue.test')],
+  ['channel.user-queue-isolation', require('./channel.user-queue-isolation.test')],
   ['channel.streaming-status', require('./channel.streaming-status.test')],
 ];
 

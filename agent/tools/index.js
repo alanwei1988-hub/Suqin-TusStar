@@ -377,7 +377,15 @@ function createSendFileTool(machine, workspaceDir) {
   });
 }
 
-async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachments = [], attachmentExtraction = {}, toolTimeouts = {} }) {
+async function createRuntimeTools({
+  workspaceDir,
+  skillsDir,
+  mcpServers,
+  attachments = [],
+  attachmentExtraction = {},
+  toolTimeouts = {},
+  requestContext = {},
+}) {
   const workingDir = path.resolve(workspaceDir);
   const machine = new MachineBackend(workingDir, toolTimeouts);
   const normalizedAttachments = normalizeAttachments(attachments, workingDir, resolveRequestedPath);
@@ -392,6 +400,7 @@ async function createRuntimeTools({ workspaceDir, skillsDir, mcpServers, attachm
     createSkillsToolkit({ skillsDir, workspaceDir }),
     createMcpToolkit(mcpServers, {
       defaultToolTimeoutMs: toolTimeouts.mcpToolTimeoutMs,
+      requestContext,
     }),
   ]);
 

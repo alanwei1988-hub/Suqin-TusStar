@@ -713,7 +713,7 @@ class ContractService {
         payment_status: contract.paymentStatus || '',
         confidentiality_requirement: contract.confidentialityRequirement || '',
         has_settlement: typeof contract.hasSettlement === 'boolean' ? (contract.hasSettlement ? 1 : 0) : null,
-        uploaded_by: contract.uploadedBy || operator || '',
+        uploaded_by: contract.uploadedBy || '',
         uploader_user_id: uploaderUserId || '',
         operator: operator || '',
         sheet_name: sheetName || '',
@@ -775,7 +775,7 @@ class ContractService {
             sizeBytes: file.sizeBytes,
           })),
         }),
-        operator: operator || contract.uploadedBy || '',
+        operator: operator || '',
         created_at: timestamp,
       });
 
@@ -1125,8 +1125,8 @@ class ContractService {
       ledgerFields,
       uncertainFields,
       searchKeywords,
-      uploaderUserId: String(input.uploaderUserId || input.operator || '').trim(),
-      uploadedBy: contract.uploadedBy || String(input.operator || '').trim(),
+      uploaderUserId: String(input.uploaderUserId || '').trim(),
+      uploadedBy: contract.uploadedBy || '',
       sourceChannel: String(input.sourceChannel || '').trim(),
       sourceMessageId: String(input.sourceMessageId || '').trim(),
       operator: String(input.operator || '').trim(),

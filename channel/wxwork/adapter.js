@@ -283,6 +283,7 @@ class WxWorkAdapter extends EventEmitter {
       const userId = body.from.userid;
       let text = '';
       let attachments = [];
+      let prepareMessage;
       let streamId;
       let initialStatusSent = false;
 
@@ -291,56 +292,62 @@ class WxWorkAdapter extends EventEmitter {
       } else if (['image', 'file', 'video'].includes(body.msgtype)) {
         const mediaObj = body[body.msgtype];
         if (mediaObj.url && mediaObj.aeskey) {
-          try {
-            if (this.streamingResponse) {
-              streamId = `sid_${Date.now()}`;
-              const mediaLabel = body.msgtype === 'file'
-                ? '文件'
-                : (body.msgtype === 'image' ? '图片' : '视频');
-              this.bot.respondStreamMsg(reqId, `已收到${mediaLabel}，正在下载并处理...`, streamId, false);
-              initialStatusSent = true;
-            }
-
-            const originalName = mediaObj.name || mediaObj.title || mediaObj.filename || `file_${Date.now()}`;
-            const encryptedBuffer = await this.bot.downloadMedia(mediaObj.url);
-            const decryptedBuffer = this.bot.decryptMedia(encryptedBuffer, mediaObj.aeskey);
-            
-            const safeFileName = await buildStoredFileName(body.msgtype, originalName, decryptedBuffer);
-            const filePath = path.join(this.tempDir, safeFileName);
-            fs.writeFileSync(filePath, decryptedBuffer);
-            const extension = path.extname(filePath).toLowerCase();
-            const mimeType = inferMimeType(extension, body.msgtype);
-
-            const attachment = {
-              path: path.relative(process.cwd(), filePath),
-              storedPath: path.relative(process.cwd(), filePath),
-              name: originalName,
-              extension,
-              mimeType,
-              kind: inferAttachmentKind(body.msgtype, extension, mimeType),
-              sizeBytes: decryptedBuffer.length,
-            };
-
-            if (extension === '.pdf') {
-              try {
-                const pdfInfo = await getPdfInfo(filePath, {
-                  rootDir: path.resolve(__dirname, '..', '..'),
-                });
-                if (Number.isFinite(pdfInfo.pageCount) && pdfInfo.pageCount > 0) {
-                  attachment.pageCount = pdfInfo.pageCount;
-                  attachment.pageRangeSupported = true;
-                }
-              } catch {}
-            }
-
-            attachments.push(attachment);
-
-            text = Number.isFinite(attachment.pageCount)
-              ? `[Sent a file: ${originalName}, pages=${attachment.pageCount}]`
-              : `[Sent a file: ${originalName}]`;
-          } catch (err) {
-            console.error('[WxWorkAdapter] Media process error:', err);
+          if (this.streamingResponse) {
+            streamId = `sid_${Date.now()}`;
+            const mediaLabel = body.msgtype === 'file'
+              ? '文件'
+              : (body.msgtype === 'image' ? '图片' : '视频');
+            this.bot.respondStreamMsg(reqId, `已收到${mediaLabel}，正在下载并处理...`, streamId, false);
+            initialStatusSent = true;
           }
+
+          prepareMessage = async () => {
+            try {
+              const originalName = mediaObj.name || mediaObj.title || mediaObj.filename || `file_${Date.now()}`;
+              const encryptedBuffer = await this.bot.downloadMedia(mediaObj.url);
+              const decryptedBuffer = this.bot.decryptMedia(encryptedBuffer, mediaObj.aeskey);
+
+              const safeFileName = await buildStoredFileName(body.msgtype, originalName, decryptedBuffer);
+              const filePath = path.join(this.tempDir, safeFileName);
+              fs.writeFileSync(filePath, decryptedBuffer);
+              const extension = path.extname(filePath).toLowerCase();
+              const mimeType = inferMimeType(extension, body.msgtype);
+
+              const attachment = {
+                path: path.relative(process.cwd(), filePath),
+                storedPath: path.relative(process.cwd(), filePath),
+                name: originalName,
+                extension,
+                mimeType,
+                kind: inferAttachmentKind(body.msgtype, extension, mimeType),
+                sizeBytes: decryptedBuffer.length,
+              };
+
+              if (extension === '.pdf') {
+                try {
+                  const pdfInfo = await getPdfInfo(filePath, {
+                    rootDir: path.resolve(__dirname, '..', '..'),
+                  });
+                  if (Number.isFinite(pdfInfo.pageCount) && pdfInfo.pageCount > 0) {
+                    attachment.pageCount = pdfInfo.pageCount;
+                    attachment.pageRangeSupported = true;
+                  }
+                } catch {}
+              }
+
+              const preparedText = Number.isFinite(attachment.pageCount)
+                ? `[Sent a file: ${originalName}, pages=${attachment.pageCount}]`
+                : `[Sent a file: ${originalName}]`;
+
+              return {
+                text: preparedText,
+                attachments: [attachment],
+              };
+            } catch (err) {
+              console.error('[WxWorkAdapter] Media process error:', err);
+              throw err;
+            }
+          };
         }
       }
 
@@ -348,8 +355,10 @@ class WxWorkAdapter extends EventEmitter {
         userId,
         text,
         attachments,
+        ...(prepareMessage ? { prepareMessage } : {}),
         context: {
           reqId,
+          channelType: 'wxwork',
           chatId: body.chattype === 'group' ? body.chatid : userId,
           chatType: body.chattype === 'group' ? 2 : 1,
           ...(streamId ? { streamId } : {}),

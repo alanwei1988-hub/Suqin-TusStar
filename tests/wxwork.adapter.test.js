@@ -20,6 +20,8 @@ module.exports = async function runWxworkAdapterTest() {
   const uploadCalls = [];
   const sendCalls = [];
   const events = [];
+  const downloadCalls = [];
+  let releaseFirstDownload;
   const minimalPdfBuffer = Buffer.from(`%PDF-1.7
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -49,7 +51,15 @@ trailer
       streamCalls.push({ reqId, content, streamId, finish });
       return true;
     };
-    adapter.bot.downloadMedia = async url => buffersByUrl[url];
+    adapter.bot.downloadMedia = async url => {
+      downloadCalls.push(url);
+      if (url === 'https://example.invalid/file') {
+        await new Promise(resolve => {
+          releaseFirstDownload = resolve;
+        });
+      }
+      return buffersByUrl[url];
+    };
     adapter.bot.decryptMedia = encryptedBuffer => encryptedBuffer;
     adapter.bot.uploadMedia = async (type, filename, buffer) => {
       uploadCalls.push({ type, filename, size: buffer.length });
@@ -80,19 +90,28 @@ trailer
     assert.equal(streamCalls[0].reqId, 'req-1');
     assert.equal(streamCalls[0].content, '已收到文件，正在下载并处理...');
     assert.equal(streamCalls[0].finish, false);
+    assert.equal(downloadCalls.length, 0);
 
     assert.equal(events[0].context.reqId, 'req-1');
     assert.equal(events[0].context.initialStatusSent, true);
     assert.equal(events[0].context.streamId, streamCalls[0].streamId);
-    assert.equal(events[0].text, '[Sent a file: contract.pdf, pages=1]');
-    assert.equal(events[0].attachments.length, 1);
-    assert.equal(path.extname(events[0].attachments[0].path), '.pdf');
-    assert.equal(events[0].attachments[0].extension, '.pdf');
-    assert.equal(events[0].attachments[0].mimeType, 'application/pdf');
-    assert.equal(events[0].attachments[0].kind, 'pdf');
-    assert.equal(events[0].attachments[0].sizeBytes, buffersByUrl['https://example.invalid/file'].length);
-    assert.equal(events[0].attachments[0].pageCount, 1);
-    assert.equal(events[0].attachments[0].pageRangeSupported, true);
+    assert.equal(typeof events[0].prepareMessage, 'function');
+    assert.equal(events[0].attachments.length, 0);
+
+    const firstPreparedPromise = events[0].prepareMessage();
+    await waitFor(() => downloadCalls.length === 1);
+    releaseFirstDownload();
+    const firstPrepared = await firstPreparedPromise;
+
+    assert.equal(firstPrepared.text, '[Sent a file: contract.pdf, pages=1]');
+    assert.equal(firstPrepared.attachments.length, 1);
+    assert.equal(path.extname(firstPrepared.attachments[0].path), '.pdf');
+    assert.equal(firstPrepared.attachments[0].extension, '.pdf');
+    assert.equal(firstPrepared.attachments[0].mimeType, 'application/pdf');
+    assert.equal(firstPrepared.attachments[0].kind, 'pdf');
+    assert.equal(firstPrepared.attachments[0].sizeBytes, buffersByUrl['https://example.invalid/file'].length);
+    assert.equal(firstPrepared.attachments[0].pageCount, 1);
+    assert.equal(firstPrepared.attachments[0].pageRangeSupported, true);
 
     const streamReply = adapter.createStreamingReply('u1', events[0].context);
     await streamReply.updateStatus('文件已下载，正在处理...');
@@ -112,8 +131,9 @@ trailer
     }, 'req-2');
 
     await waitFor(() => events.length === 2);
-    assert.equal(path.extname(events[1].attachments[0].path), '.pdf');
-    assert.equal(events[1].attachments[0].pageCount, 1);
+    const secondPrepared = await events[1].prepareMessage();
+    assert.equal(path.extname(secondPrepared.attachments[0].path), '.pdf');
+    assert.equal(secondPrepared.attachments[0].pageCount, 1);
 
     adapter.bot.emit('message', {
       from: { userid: 'u3' },
@@ -126,7 +146,8 @@ trailer
     }, 'req-3');
 
     await waitFor(() => events.length === 3);
-    assert.equal(path.extname(events[2].attachments[0].path), '.doc');
+    const thirdPrepared = await events[2].prepareMessage();
+    assert.equal(path.extname(thirdPrepared.attachments[0].path), '.doc');
 
     adapter.bot.emit('message', {
       from: { userid: 'u4' },
@@ -139,12 +160,13 @@ trailer
     }, 'req-4');
 
     await waitFor(() => events.length === 4);
-    assert.equal(path.extname(events[3].attachments[0].path), '.csv');
-    assert.equal(events[3].attachments[0].kind, 'spreadsheet');
-    assert.equal(events[3].attachments[0].mimeType, 'text/csv');
+    const fourthPrepared = await events[3].prepareMessage();
+    assert.equal(path.extname(fourthPrepared.attachments[0].path), '.csv');
+    assert.equal(fourthPrepared.attachments[0].kind, 'spreadsheet');
+    assert.equal(fourthPrepared.attachments[0].mimeType, 'text/csv');
 
     await adapter.sendAttachments('u4', [{
-      path: events[3].attachments[0].path,
+      path: fourthPrepared.attachments[0].path,
       name: 'monthly_report.csv',
     }], events[3].context);
 
@@ -170,15 +192,15 @@ trailer
 
     await assert.rejects(
       () => adapter.sendAttachments('u4', [{
-        path: events[3].attachments[0].path,
+        path: fourthPrepared.attachments[0].path,
         name: 'oversized.csv',
       }], events[3].context),
       error => {
         assert.equal(error.code, 'ATTACHMENT_SEND_FAILED');
-        assert.equal(error.absolutePath, path.resolve(events[3].attachments[0].path));
+        assert.equal(error.absolutePath, path.resolve(fourthPrepared.attachments[0].path));
         assert.equal(error.userMessage.includes('文件太大，当前无法直接发送。'), true);
         assert.equal(error.userMessage.includes('[点击打开文件](file:///'), true);
-        assert.equal(error.userMessage.includes(path.resolve(events[3].attachments[0].path)), true);
+        assert.equal(error.userMessage.includes(path.resolve(fourthPrepared.attachments[0].path)), true);
         return true;
       },
     );
@@ -189,7 +211,7 @@ trailer
 
     await assert.rejects(
       () => adapter.sendAttachments('u4', [{
-        path: events[3].attachments[0].path,
+        path: fourthPrepared.attachments[0].path,
         name: 'oversized-invalid-size.csv',
       }], events[3].context),
       error => {

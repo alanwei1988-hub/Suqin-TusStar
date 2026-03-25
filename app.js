@@ -341,9 +341,7 @@ function normalizeAgentResponse(response) {
 }
 
 function getConversationQueueKey(userId, context = {}) {
-  const chatType = Number.isFinite(context.chatType) ? context.chatType : 1;
-  const chatId = context.chatId || userId;
-  return `${chatType}:${chatId}`;
+  return String(userId || 'default');
 }
 
 function createConversationQueue() {
@@ -473,23 +471,47 @@ async function sendOutboundAttachments({ channel, userId, attachments, context, 
 function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
   const messageQueue = createConversationQueue();
 
-  channel.on('message', async ({ userId, text, attachments, context }) => {
-    console.log(`[Main] Message from ${userId}: ${text} (${attachments.length} files)`);
+  channel.on('message', async ({ userId, text, attachments, context, prepareMessage }) => {
+    const initialText = typeof text === 'string' ? text : '';
+    const initialAttachments = Array.isArray(attachments) ? attachments : [];
+    const hasDeferredPreparation = typeof prepareMessage === 'function';
+    const announcedAttachmentCount = initialAttachments.length > 0
+      ? initialAttachments.length
+      : (hasDeferredPreparation ? 1 : 0);
+
+    console.log(`[Main] Message from ${userId}: ${initialText || '[pending preparation]'} (${announcedAttachmentCount} files)`);
     const streamReply = typeof channel.createStreamingReply === 'function'
       ? channel.createStreamingReply(userId, context)
       : null;
     const queueKey = getConversationQueueKey(userId, context);
     const { queuedAhead, promise } = messageQueue.enqueue(queueKey, async () => {
       try {
+        let resolvedText = initialText;
+        let resolvedAttachments = initialAttachments;
+
+        if (hasDeferredPreparation) {
+          const preparedMessage = await prepareMessage();
+
+          if (preparedMessage && typeof preparedMessage === 'object') {
+            if (typeof preparedMessage.text === 'string') {
+              resolvedText = preparedMessage.text;
+            }
+
+            if (Array.isArray(preparedMessage.attachments)) {
+              resolvedAttachments = preparedMessage.attachments;
+            }
+          }
+        }
+
         if (streamReply) {
-          if (context.initialStatusSent && attachments.length > 0) {
+          if (context.initialStatusSent && resolvedAttachments.length > 0) {
             await streamReply.updateStatus('文件已下载，正在处理...');
           } else if (!context.initialStatusSent) {
             await streamReply.updateStatus('已收到，正在处理...');
           }
         }
 
-        const agentResponse = normalizeAgentResponse(await agent.chat(userId, text, attachments, {
+        const agentResponse = normalizeAgentResponse(await agent.chat(userId, resolvedText, resolvedAttachments, {
           includeArtifacts: true,
           requestContext: {
             userId,

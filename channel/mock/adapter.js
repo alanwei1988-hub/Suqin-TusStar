@@ -81,12 +81,13 @@ class MockChannelAdapter extends EventEmitter {
     });
   }
 
-  async simulateMessage({ userId, text, attachments = [], context = {} }) {
+  async simulateMessage({ userId, text, attachments = [], context = {}, prepareMessage }) {
     this.emit('message', {
       userId,
       text,
       attachments,
       context,
+      ...(typeof prepareMessage === 'function' ? { prepareMessage } : {}),
     });
   }
 

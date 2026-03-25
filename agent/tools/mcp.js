@@ -27,7 +27,55 @@ function extractMcpErrorMessage(result) {
   return 'MCP tool returned an error.';
 }
 
-function wrapMcpTool(toolName, toolDefinition, timeoutMs = DEFAULT_MCP_TOOL_TIMEOUT_MS) {
+function buildArchiveToolIdentity(requestContext = {}) {
+  const context = requestContext.context && typeof requestContext.context === 'object'
+    ? requestContext.context
+    : {};
+
+  return {
+    userId: typeof requestContext.userId === 'string' ? requestContext.userId.trim() : '',
+    sourceChannel: typeof context.channelType === 'string'
+      ? context.channelType.trim()
+      : (typeof requestContext.channelType === 'string' ? requestContext.channelType.trim() : ''),
+    sourceMessageId: typeof context.reqId === 'string'
+      ? context.reqId.trim()
+      : (typeof context.sourceMessageId === 'string' ? context.sourceMessageId.trim() : ''),
+  };
+}
+
+function injectArchiveToolRequestContext(originalToolName, args, requestContext = {}) {
+  if (originalToolName !== 'contract_preview_archive' && originalToolName !== 'contract_archive') {
+    return args;
+  }
+
+  const identity = buildArchiveToolIdentity(requestContext);
+  const nextArgs = args && typeof args === 'object' && !Array.isArray(args)
+    ? { ...args }
+    : {};
+
+  if (identity.userId) {
+    nextArgs.operator = identity.userId;
+    nextArgs.uploaderUserId = identity.userId;
+  }
+
+  if (identity.sourceChannel) {
+    nextArgs.sourceChannel = identity.sourceChannel;
+  }
+
+  if (identity.sourceMessageId) {
+    nextArgs.sourceMessageId = identity.sourceMessageId;
+  }
+
+  return nextArgs;
+}
+
+function wrapMcpTool(
+  toolName,
+  originalToolName,
+  toolDefinition,
+  timeoutMs = DEFAULT_MCP_TOOL_TIMEOUT_MS,
+  requestContext = {},
+) {
   if (!toolDefinition || typeof toolDefinition.execute !== 'function') {
     return toolDefinition;
   }
@@ -35,8 +83,9 @@ function wrapMcpTool(toolName, toolDefinition, timeoutMs = DEFAULT_MCP_TOOL_TIME
   return {
     ...toolDefinition,
     execute: async (args, options) => {
+      const effectiveArgs = injectArchiveToolRequestContext(originalToolName, args, requestContext);
       const result = await withTimeout(
-        toolDefinition.execute(args, options),
+        toolDefinition.execute(effectiveArgs, options),
         timeoutMs,
         `MCP tool ${toolName}`,
       );
@@ -152,6 +201,7 @@ async function createMcpToolkit(servers = [], options = {}) {
   const defaultToolTimeoutMs = Number.isFinite(options.defaultToolTimeoutMs)
     ? Math.max(1, Math.trunc(options.defaultToolTimeoutMs))
     : DEFAULT_MCP_TOOL_TIMEOUT_MS;
+  const requestContext = options.requestContext || {};
 
   try {
     for (const server of enabledServers) {
@@ -198,7 +248,13 @@ async function createMcpToolkit(servers = [], options = {}) {
           const toolTimeoutMs = Number.isFinite(server.toolTimeoutMs)
             ? Math.max(1, Math.trunc(server.toolTimeoutMs))
             : defaultToolTimeoutMs;
-          mergedTools[mergedName] = wrapMcpTool(mergedName, tools[tool.name], toolTimeoutMs);
+          mergedTools[mergedName] = wrapMcpTool(
+            mergedName,
+            tool.name,
+            tools[tool.name],
+            toolTimeoutMs,
+            requestContext,
+          );
           toolSchemasByName[mergedName] = tool.inputSchema || null;
           toolNames.push(mergedName);
           toolDisplayByName[mergedName] = createToolDisplayInfo(mergedName, {

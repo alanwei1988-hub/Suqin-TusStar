@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const Database = require('better-sqlite3');
 const { MockLanguageModelV3 } = require('ai/test');
 const AgentCore = require('../agent');
 const { createContractMcpFixture, generateResult, makeTempDir, repoRoot, textPart, toolCall } = require('./helpers/test-helpers');
@@ -35,12 +36,14 @@ module.exports = async function runAgentMcpIntegrationTest() {
               partyBName: '算力供应商',
               signingDate: '2026-03-19',
               contractAmount: 9999,
-              uploadedBy: 'tester',
+              uploadedBy: '模型里随便写的人',
             },
             sourceFiles: [{ path: attachmentPath, name: 'contract.pdf' }],
             archiveRelativeDir: '采购（启迪支出）\\算力',
-            operator: 'tester',
-            uploaderUserId: 'u1',
+            operator: 'wrong-user',
+            uploaderUserId: 'wrong-user',
+            sourceChannel: 'wrong-channel',
+            sourceMessageId: 'wrong-message-id',
           }),
         ]);
       }
@@ -82,7 +85,17 @@ module.exports = async function runAgentMcpIntegrationTest() {
     await agent.init();
     const firstResponse = await agent.chat('u1', '请帮我归档这份合同', [
       { name: 'contract.pdf', path: attachmentPath },
-    ]);
+    ], {
+      requestContext: {
+        userId: 'u1',
+        context: {
+          reqId: 'wxwork-req-1',
+          channelType: 'wxwork',
+          chatId: 'u1',
+          chatType: 1,
+        },
+      },
+    });
     assert.match(firstResponse, /合同已归档/);
 
     const searchResponse = await agent.chat('u1', '帮我查一下刚才归档的记录', [], {
@@ -98,6 +111,20 @@ module.exports = async function runAgentMcpIntegrationTest() {
     assert.equal(archivedFiles.some(filePath => filePath.includes('Agent MCP 测试算力采购合同')), true);
     const dbPath = path.join(fixture.libraryRoot, '合同归档.db');
     assert.equal(fs.existsSync(dbPath), true);
+    const db = new Database(dbPath, { readonly: true });
+    const row = db.prepare(`
+      SELECT uploader_user_id, operator, source_channel, source_message_id, uploaded_by
+      FROM archive_records
+      WHERE contract_name = ?
+      ORDER BY archived_at DESC
+      LIMIT 1
+    `).get('Agent MCP 测试算力采购合同');
+    db.close();
+    assert.equal(row.uploader_user_id, 'u1');
+    assert.equal(row.operator, 'u1');
+    assert.equal(row.source_channel, 'wxwork');
+    assert.equal(row.source_message_id, 'wxwork-req-1');
+    assert.equal(row.uploaded_by, '模型里随便写的人');
   } finally {
     agent.close();
     fs.rmSync(rootDir, { recursive: true, force: true });

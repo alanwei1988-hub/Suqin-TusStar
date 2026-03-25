@@ -346,6 +346,7 @@ class AgentCore {
       attachments: conversationAttachments,
       attachmentExtraction: this.config.attachmentExtraction || {},
       toolTimeouts: this.config.toolTimeouts || {},
+      requestContext,
     });
     const rolePrompt = await loadRolePrompt(this.config.rolePromptDir);
     const providerOptions = buildOpenAICompatibleProviderOptions(
