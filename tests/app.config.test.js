@@ -63,8 +63,10 @@ module.exports = async function runAppConfigTest() {
     baseURL: '',
     apiKeyEnv: '',
     prompt: '',
+    thinking: null,
   });
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.fallbackLlm, null);
+  assert.equal(processedDefault.agent.thinking, null);
   assert.deepEqual(processedDefault.agent.toolTimeouts, {
     bashTimeoutMs: 30000,
     maxBashTimeoutMs: 300000,
@@ -104,6 +106,15 @@ module.exports = async function runAppConfigTest() {
         maxBashTimeoutMs: 5678,
         mcpToolTimeoutMs: 4321,
       },
+      thinking: {
+        enabled: false,
+        reasoningEffort: 'low',
+        textVerbosity: 'low',
+        budgetTokens: 1024,
+        extraBody: {
+          foo: 'bar',
+        },
+      },
     },
   }, {
     rootDir: __dirname,
@@ -113,6 +124,15 @@ module.exports = async function runAppConfigTest() {
     bashTimeoutMs: 1234,
     maxBashTimeoutMs: 5678,
     mcpToolTimeoutMs: 4321,
+  });
+  assert.deepEqual(processedToolTimeouts.agent.thinking, {
+    enabled: false,
+    reasoningEffort: 'low',
+    textVerbosity: 'low',
+    budgetTokens: 1024,
+    extraBody: {
+      foo: 'bar',
+    },
   });
 
   const processedMarkItDown = processConfig({
@@ -140,6 +160,10 @@ module.exports = async function runAppConfigTest() {
             baseURL: 'https://ocr.example.invalid/v1',
             apiKeyEnv: 'MARKITDOWN_OCR_OPENAI_API_KEY',
             prompt: 'Extract OCR text only.',
+            thinking: {
+              enabled: true,
+              reasoningEffort: 'medium',
+            },
           },
         },
       },
@@ -172,6 +196,10 @@ module.exports = async function runAppConfigTest() {
     baseURL: 'https://ocr.example.invalid/v1',
     apiKeyEnv: 'MARKITDOWN_OCR_OPENAI_API_KEY',
     prompt: 'Extract OCR text only.',
+    thinking: {
+      enabled: true,
+      reasoningEffort: 'medium',
+    },
   });
 
   const processedQwenMarkItDown = processConfig({
@@ -212,6 +240,7 @@ module.exports = async function runAppConfigTest() {
       baseURL: 'https://legacy.example.invalid/v1',
       apiKeyEnv: 'LEGACY_MARKITDOWN_OCR_KEY',
       prompt: 'Legacy OCR prompt.',
+      thinking: null,
     },
     'qwen-vl-flash': {
       client: 'qwen',
@@ -219,6 +248,9 @@ module.exports = async function runAppConfigTest() {
       baseURL: QWEN_OPENAI_COMPAT_BASE_URL,
       apiKeyEnv: QWEN_API_KEY_ENV,
       prompt: QWEN_DOCUMENT_MARKDOWN_PROMPT,
+      thinking: {
+        enabled: false,
+      },
     },
   });
   assert.deepEqual(processedQwenMarkItDown.agent.attachmentExtraction.markitdown.llm, {
@@ -227,6 +259,9 @@ module.exports = async function runAppConfigTest() {
     baseURL: QWEN_OPENAI_COMPAT_BASE_URL,
     apiKeyEnv: QWEN_API_KEY_ENV,
     prompt: QWEN_DOCUMENT_MARKDOWN_PROMPT,
+    thinking: {
+      enabled: false,
+    },
   });
   assert.deepEqual(processedQwenMarkItDown.agent.attachmentExtraction.markitdown.fallbackLlm, {
     client: 'openai',
@@ -234,6 +269,7 @@ module.exports = async function runAppConfigTest() {
     baseURL: 'https://legacy.example.invalid/v1',
     apiKeyEnv: 'LEGACY_MARKITDOWN_OCR_KEY',
     prompt: 'Legacy OCR prompt.',
+    thinking: null,
   });
 
   const processedLegacyProfileMarkItDown = processConfig({
@@ -264,6 +300,7 @@ module.exports = async function runAppConfigTest() {
     baseURL: 'https://legacy.example.invalid/v1',
     apiKeyEnv: 'LEGACY_MARKITDOWN_OCR_KEY',
     prompt: 'Legacy OCR prompt.',
+    thinking: null,
   });
 
   fs.rmSync(tempRootDir, { recursive: true, force: true });

@@ -61,6 +61,24 @@ def timing_log(message: str) -> None:
         sys.stderr.flush()
 
 
+def load_thinking_extra_body() -> dict | None:
+    raw_value = os.environ.get("MARKITDOWN_LLM_THINKING_EXTRA_BODY", "").strip()
+    if not raw_value:
+        return None
+
+    try:
+        import json
+
+        parsed = json.loads(raw_value)
+    except Exception as error:
+        raise ValueError(f"Invalid MARKITDOWN_LLM_THINKING_EXTRA_BODY: {error}") from error
+
+    if not isinstance(parsed, dict):
+        raise ValueError("MARKITDOWN_LLM_THINKING_EXTRA_BODY must be a JSON object.")
+
+    return parsed
+
+
 def build_llm_client(client_name: str, base_url: str | None):
     normalized = (client_name or "").strip().lower()
     if not normalized:
@@ -74,11 +92,10 @@ def build_llm_client(client_name: str, base_url: str | None):
         raise ValueError("OPENAI_API_KEY is required for MarkItDown OCR.")
 
     effective_base_url = base_url
-    default_extra_body = None
+    default_extra_body = load_thinking_extra_body()
 
     if is_qwen_client(normalized):
         effective_base_url = effective_base_url or QWEN_OPENAI_COMPAT_BASE_URL
-        default_extra_body = {"enable_thinking": False}
 
     kwargs = {"api_key": api_key}
     if effective_base_url:

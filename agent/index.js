@@ -17,6 +17,7 @@ const { createRuntimeTools } = require('./tools/index');
 const { listAvailableSkills } = require('./tools/skills');
 const { loadRolePrompt } = require('./roles');
 const SessionManager = require('./session');
+const { buildOpenAICompatibleProviderOptions } = require('../llm-thinking');
 
 function normalizeConversationAttachments(attachments = []) {
   return attachments.map((attachment, index) => {
@@ -262,6 +263,10 @@ class AgentCore {
       toolTimeouts: this.config.toolTimeouts || {},
     });
     const rolePrompt = await loadRolePrompt(this.config.rolePromptDir);
+    const providerOptions = buildOpenAICompatibleProviderOptions(
+      this.config.provider || 'openaiCompatible',
+      this.config.thinking,
+    );
     const promptSections = [
       rolePrompt,
       buildRequestContextPrompt(requestContext),
@@ -275,6 +280,7 @@ class AgentCore {
       tools: runtime.tools,
       stopWhen: stepCountIs(this.config.maxSteps || 12),
       toolChoice,
+      providerOptions,
       prepareStep: createPrepareStep({
         runtime,
         contextSettings,

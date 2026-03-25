@@ -3,6 +3,7 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { getDefaultBaseURLForLlmClient } = require('./llm');
 const { AttachmentExtractionCache, hashString } = require('./cache');
+const { buildThinkingExtraBody } = require('../llm-thinking');
 
 const EXTRACTOR_CACHE_SCHEMA_VERSION = 2;
 const PAGE_HEADING_PATTERN = /^\s*##\s+Page\s+\d+\s*$/gim;
@@ -54,6 +55,13 @@ function createCommandEnv(config = {}) {
     if (defaultBaseURL) {
       env.OPENAI_BASE_URL = defaultBaseURL;
     }
+  }
+
+  const thinkingExtraBody = buildThinkingExtraBody(llmConfig.thinking, { includeStandardized: true });
+  if (thinkingExtraBody) {
+    env.MARKITDOWN_LLM_THINKING_EXTRA_BODY = JSON.stringify(thinkingExtraBody);
+  } else {
+    delete env.MARKITDOWN_LLM_THINKING_EXTRA_BODY;
   }
 
   return env;
@@ -162,10 +170,12 @@ function buildExtractorKey(config = {}) {
     llmModel: llmConfig.model || '',
     llmBaseURL: llmConfig.baseURL || '',
     llmPrompt: llmConfig.prompt || '',
+    llmThinking: llmConfig.thinking || null,
     fallbackLlmClient: fallbackLlmConfig.client || '',
     fallbackLlmModel: fallbackLlmConfig.model || '',
     fallbackLlmBaseURL: fallbackLlmConfig.baseURL || '',
     fallbackLlmPrompt: fallbackLlmConfig.prompt || '',
+    fallbackLlmThinking: fallbackLlmConfig.thinking || null,
   }));
 }
 

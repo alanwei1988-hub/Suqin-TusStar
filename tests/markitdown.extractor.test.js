@@ -42,17 +42,34 @@ module.exports = async function runMarkItDownExtractorTest() {
     assert.equal(env.OPENAI_BASE_URL, 'https://ocr.example.invalid/v1');
     assert.equal(env.PYTHONIOENCODING, 'utf-8');
     assert.equal(env.PYTHONUTF8, '1');
+    assert.equal(env.MARKITDOWN_LLM_THINKING_EXTRA_BODY, undefined);
 
     const qwenEnv = createCommandEnv({
       llm: {
         client: 'qwen',
         model: 'qwen3-vl-flash',
         apiKeyEnv: QWEN_API_KEY_ENV,
+        thinking: {
+          enabled: false,
+          reasoningEffort: 'low',
+          textVerbosity: 'low',
+          budgetTokens: 2048,
+          extraBody: {
+            custom_flag: true,
+          },
+        },
       },
     });
 
     assert.equal(qwenEnv.OPENAI_API_KEY, 'dashscope-key');
     assert.equal(qwenEnv.OPENAI_BASE_URL, QWEN_OPENAI_COMPAT_BASE_URL);
+    assert.equal(qwenEnv.MARKITDOWN_LLM_THINKING_EXTRA_BODY, JSON.stringify({
+      enable_thinking: false,
+      reasoning_effort: 'low',
+      verbosity: 'low',
+      budget_tokens: 2048,
+      custom_flag: true,
+    }));
 
     const args = [
       '--llm-client',

@@ -9,6 +9,7 @@ const {
   getDefaultPromptForLlmClient,
 } = require('./markitdown/llm');
 const { getProjectMarkItDownPython } = require('./markitdown/runtime');
+const { normalizeThinkingConfig } = require('./llm-thinking');
 
 function loadRawConfig(rootDir = __dirname) {
   const configPath = path.resolve(rootDir, 'config.json');
@@ -92,7 +93,14 @@ function normalizeMarkItDownLlmConfig(config = {}) {
     prompt: typeof normalizedConfig.prompt === 'string' && normalizedConfig.prompt.trim().length > 0
       ? normalizedConfig.prompt.trim()
       : getDefaultPromptForLlmClient(llmClient),
+    thinking: normalizeThinkingConfig(normalizedConfig.thinking, {
+      defaultEnabled: llmClient === 'qwen' || llmClient === 'dashscope' ? false : undefined,
+    }),
   };
+}
+
+function normalizeAgentThinkingConfig(config = {}) {
+  return normalizeThinkingConfig(config);
 }
 
 function normalizeMarkItDownConfig(rootDir, config = {}) {
@@ -241,6 +249,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
     agent: {
       ...rawConfig.agent,
       model: env.MODEL_NAME || rawConfig.agent.model,
+      thinking: normalizeAgentThinkingConfig(rawConfig.agent.thinking),
       workspaceDir: path.resolve(rootDir),
       openai: {
         ...rawConfig.agent.openai,

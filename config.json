@@ -1,7 +1,10 @@
 {
   "agent": {
-    "model": "gpt-5.4",
+    "model": "qwen3.5-plus",
     "provider": "openai",
+    "thinking": {
+      "enabled": false
+    },
     "openai": {
       "baseURL": "https://api.zetatechs.com/v1"
     },
@@ -81,7 +84,10 @@
             "model": "qwen3-vl-flash",
             "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "apiKeyEnv": "DASHSCOPE_API_KEY",
-            "prompt": "qwenvl markdown"
+            "prompt": "qwenvl markdown",
+            "thinking": {
+              "enabled": false
+            }
           }
         }
       }

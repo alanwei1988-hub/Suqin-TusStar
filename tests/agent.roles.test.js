@@ -22,6 +22,14 @@ module.exports = async function runAgentRoleTest() {
   const agent = new AgentCore({
     model: 'mock-model',
     provider: 'openai',
+    thinking: {
+      enabled: false,
+      reasoningEffort: 'low',
+      textVerbosity: 'low',
+      extraBody: {
+        custom_thinking_flag: 'off',
+      },
+    },
     openai: {
       apiKey: 'test',
       baseURL: 'http://example.invalid/v1',
@@ -39,6 +47,14 @@ module.exports = async function runAgentRoleTest() {
     assert.equal(response, 'ok');
     assert.equal(model.doGenerateCalls.length > 0, true);
     assert.match(JSON.stringify(model.doGenerateCalls[0].prompt), /合同管理员/);
+    assert.deepEqual(model.doGenerateCalls[0].providerOptions, {
+      openai: {
+        reasoningEffort: 'low',
+        textVerbosity: 'low',
+        enable_thinking: false,
+        custom_thinking_flag: 'off',
+      },
+    });
   } finally {
     agent.close();
     fs.rmSync(rootDir, { recursive: true, force: true });

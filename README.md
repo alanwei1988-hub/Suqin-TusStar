@@ -93,6 +93,7 @@ DEBUG=true
 
 - `agent`
   - 模型、工具调用策略、最大步骤数
+  - 模型思考控制 `agent.thinking`
   - 工具超时配置 `agent.toolTimeouts`
   - 会话数据库路径 `agent.sessionDb`
   - 技能目录 `agent.skillsDir`
@@ -203,6 +204,7 @@ npm test
 - `llm`：兼容旧版的单套 OCR 配置，作为默认回退链路
 - `llmProfiles`：可选的多套 OCR profile
 - `activeLlmProfile`：当前启用的 profile 名称；命中时会覆盖 `llm`
+- `thinking`：每个模型各自的 thinking / reasoning 控制
 
 实际推荐写法是只维护 `llmProfiles` 和 `activeLlmProfile`。`llm` 现在仅为了兼容旧配置保留，不建议在新配置里继续重复维护一份。
 
@@ -216,6 +218,11 @@ npm test
 ```json
 {
   "agent": {
+    "thinking": {
+      "enabled": false,
+      "reasoningEffort": "low",
+      "textVerbosity": "low"
+    },
     "attachmentExtraction": {
       "markitdown": {
         "enabled": true,
@@ -248,7 +255,10 @@ npm test
             "model": "qwen3-vl-flash",
             "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "apiKeyEnv": "DASHSCOPE_API_KEY",
-            "prompt": "qwenvl markdown"
+            "prompt": "qwenvl markdown",
+            "thinking": {
+              "enabled": false
+            }
           }
         }
       }
@@ -267,6 +277,12 @@ DASHSCOPE_API_KEY=your-dashscope-key
 说明：
 
 - Agent 仍然继续使用 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `MODEL_NAME`
+- `agent.thinking` 用于主对话模型；`markitdown.llm.thinking` 和 `markitdown.llmProfiles.<name>.thinking` 用于各 OCR 模型
+- `thinking.enabled` 会透传成 `enable_thinking`
+- `thinking.reasoningEffort` 会透传成 `reasoning_effort`
+- `thinking.textVerbosity` 会透传成 `verbosity`
+- `thinking.budgetTokens` 会透传成 `budget_tokens`
+- `thinking.extraBody` 会原样并入请求体，便于兼容不同供应商的扩展字段
 - `activeLlmProfile` 命中某个 profile 时，会优先使用该 profile；如果没命中，则回退到 `llm`
 - `legacy-openai-compatible` 会把 `MARKITDOWN_OCR_OPENAI_API_KEY` 映射成 OCR 子进程里的 `OPENAI_API_KEY`
 - `qwen-vl-flash` 会把 `DASHSCOPE_API_KEY` 映射成 OCR 子进程里的 `OPENAI_API_KEY`
