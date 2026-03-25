@@ -164,6 +164,7 @@ npm test
 
 - 合同文件直接存放在真实 NAS 目录，NAS 目录是全量物理文件视图
 - Agent 正式归档记录写入 `libraryRoot` 下的 SQLite 数据库，默认文件名为 `合同归档.db`，它不是全量主档案库，只覆盖通过 Agent 正式归档的记录
+- 一条 `archive_records` 可以关联多条 `archive_files`，适合同时归档 Word、PDF、扫描版、补充附件或多个版本
 - Excel 台账继续由人工维护，但不再是 Agent 默认归档链路的一部分
 
 ## Agent 工作方式

@@ -353,20 +353,9 @@ function dedupeTargetFileName(existingNames, candidateName) {
   return uniqueName;
 }
 
-function moveFileSync(sourcePath, targetPath) {
+function copyFileSync(sourcePath, targetPath) {
   ensureParentDir(targetPath);
-
-  try {
-    fs.renameSync(sourcePath, targetPath);
-    return;
-  } catch (error) {
-    if (error.code !== 'EXDEV' && error.code !== 'EPERM') {
-      throw error;
-    }
-  }
-
   fs.copyFileSync(sourcePath, targetPath);
-  fs.unlinkSync(sourcePath);
 }
 
 function inferSheetName({ sheetName, contract = {}, archiveRelativeDir = '' }) {
@@ -477,10 +466,14 @@ class ContractService {
     return this.repository.nextArchiveId(prefix, dayKey());
   }
 
-  mapArchiveRecordRow(row) {
+  mapArchiveRecordRow(row, fileRows = []) {
     if (!row) {
       return null;
     }
+
+    const mappedFiles = Array.isArray(fileRows)
+      ? fileRows.map(fileRow => this.mapArchiveFileRow(fileRow))
+      : [];
 
     return {
       archiveId: row.archive_id,
@@ -524,6 +517,8 @@ class ContractService {
       archivedAt: row.archived_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      fileCount: mappedFiles.length,
+      storedFiles: mappedFiles.map(file => file.storedName),
     };
   }
 
@@ -555,7 +550,9 @@ class ContractService {
   }
 
   composeArchiveRecordDetail(archiveRow) {
-    const archive = this.mapArchiveRecordRow(archiveRow);
+    const fileRows = this.repository.listFiles(archiveRow?.archive_id);
+    const files = fileRows.map(row => this.mapArchiveFileRow(row));
+    const archive = this.mapArchiveRecordRow(archiveRow, fileRows);
 
     if (!archive) {
       return null;
@@ -563,7 +560,7 @@ class ContractService {
 
     return {
       archive,
-      files: this.repository.listFiles(archive.archiveId).map(row => this.mapArchiveFileRow(row)),
+      files,
       events: this.repository.listEvents(archive.archiveId).map(row => this.mapArchiveEventRow(row)),
     };
   }
@@ -695,9 +692,8 @@ class ContractService {
   rollbackCommittedFiles(committedFiles = []) {
     for (const file of [...committedFiles].reverse()) {
       try {
-        ensureParentDir(file.sourcePath);
         if (fs.existsSync(file.absolutePath)) {
-          fs.renameSync(file.absolutePath, file.sourcePath);
+          fs.unlinkSync(file.absolutePath);
         }
       } catch {
         // Best effort rollback only.
@@ -1066,7 +1062,7 @@ class ContractService {
         }
       }
 
-      moveFileSync(plannedFile.sourcePath, targetPath);
+      copyFileSync(plannedFile.sourcePath, targetPath);
       committedFiles.push({
         sourcePath: plannedFile.sourcePath,
         sourceName: plannedFile.sourceName,
@@ -1177,8 +1173,13 @@ class ContractService {
       throw new Error(`Invalid maxAmount: ${input.maxAmount}`);
     }
 
+    const rows = this.repository.searchRecords(normalizedFilters);
+
     return {
-      items: this.repository.searchRecords(normalizedFilters).map(row => this.mapArchiveRecordRow(row)),
+      items: rows.map(row => {
+        const fileRows = this.repository.listFiles(row.archive_id);
+        return this.mapArchiveRecordRow(row, fileRows);
+      }),
       archiveDatabasePath: this.config.dbPath,
     };
   }

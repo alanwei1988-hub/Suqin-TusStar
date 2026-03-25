@@ -86,6 +86,7 @@ module.exports = async function runContractServiceTest() {
     assert.match(directArchived.archive.archiveId, /^A\d{8}-\d{4}$/);
     assert.equal(directArchived.files.length, 1);
     assert.equal(fs.existsSync(directArchived.files[0].absolutePath), true);
+    assert.equal(fs.existsSync(scanPath), true);
     assert.equal(fs.existsSync(path.join(libraryRoot, '合同归档.db')), true);
     assert.match(directArchived.userReplyMessage, /数据库/u);
     assert.match(directArchived.userReplyMessage, /本次写入归档库的重要字段/u);
@@ -94,6 +95,8 @@ module.exports = async function runContractServiceTest() {
     const loadedArchive = service.getArchiveRecord(directArchived.archive.archiveId);
     assert.equal(loadedArchive.archive.contractName, '直归档测试算力采购协议');
     assert.equal(loadedArchive.files.length, 1);
+    assert.equal(loadedArchive.archive.fileCount, 1);
+    assert.equal(loadedArchive.archive.storedFiles.length, 1);
     assert.equal(loadedArchive.events.length, 1);
     assert.equal(loadedArchive.events[0].payload.contract.contractName, '直归档测试算力采购协议');
     assert.equal(loadedArchive.events[0].payload.archiveRelativeDir, path.join('采购（启迪支出）', '算力'));
@@ -115,6 +118,7 @@ module.exports = async function runContractServiceTest() {
     });
     assert.equal(looseArchiveSearch.items.length, 1);
     assert.equal(looseArchiveSearch.items[0].archiveId, directArchived.archive.archiveId);
+    assert.equal(looseArchiveSearch.items[0].fileCount, 1);
 
     const searchResult = service.searchContracts({
       keyword: '算力',
@@ -177,6 +181,7 @@ module.exports = async function runContractServiceTest() {
     });
     assert.equal(paymentArchived.archive.firstPaymentDate, '2026-03-04');
     assert.equal(paymentArchived.archive.finalPaymentDate, '2026-12-05');
+    assert.equal(fs.existsSync(wordPath), true);
 
     const loadedPaymentArchive = service.getArchiveRecord(paymentArchived.archive.archiveId);
     assert.equal(loadedPaymentArchive.archive.firstPaymentDate, '2026-03-04');
@@ -240,6 +245,51 @@ module.exports = async function runContractServiceTest() {
     const migratedArchive = service.getArchiveRecord(paymentArchived.archive.archiveId);
     assert.equal(migratedArchive.archive.firstPaymentDate, '2026-03-06');
     assert.equal(migratedArchive.archive.finalPaymentDate, '2026-12-07');
+
+    fs.writeFileSync(scanPath, 'scan-file-multi');
+    fs.writeFileSync(wordPath, 'word-file-multi');
+    fs.writeFileSync(appendixPath, 'appendix-file-multi');
+
+    const multiFileArchived = service.archiveContract({
+      contract: {
+        contractName: '多文件归档测试协议',
+        agreementType: '采购',
+        partyAName: '上海启迪',
+        partyBName: '多文件供应商',
+        signingDate: '2026-03-21',
+        uploadedBy: 'tester',
+      },
+      sourceFiles: [
+        { path: scanPath, name: 'scan.pdf' },
+        { path: wordPath, name: 'contract.docx' },
+        { path: appendixPath, name: 'appendix.pdf' },
+      ],
+      archiveRelativeDir: path.join('采购（启迪支出）', '算力'),
+      operator: 'tester',
+      uploaderUserId: 'tester',
+    });
+    assert.equal(multiFileArchived.files.length, 3);
+    assert.equal(multiFileArchived.archive.fileCount, 3);
+    assert.equal(multiFileArchived.archive.storedFiles.length, 3);
+    assert.equal(fs.existsSync(scanPath), true);
+    assert.equal(fs.existsSync(wordPath), true);
+    assert.equal(fs.existsSync(appendixPath), true);
+
+    const loadedMultiFileArchive = service.getArchiveRecord(multiFileArchived.archive.archiveId);
+    assert.equal(loadedMultiFileArchive.files.length, 3);
+    assert.equal(loadedMultiFileArchive.archive.fileCount, 3);
+    assert.deepEqual(
+      loadedMultiFileArchive.files.map(file => file.sourceName),
+      ['scan.pdf', 'contract.docx', 'appendix.pdf'],
+    );
+
+    const multiFileSearch = service.searchArchiveRecords({
+      contractName: '多文件归档测试',
+      limit: 5,
+    });
+    assert.equal(multiFileSearch.items.length, 1);
+    assert.equal(multiFileSearch.items[0].fileCount, 3);
+    assert.equal(multiFileSearch.items[0].storedFiles.length, 3);
   } finally {
     service.close();
     fs.rmSync(rootDir, { recursive: true, force: true });

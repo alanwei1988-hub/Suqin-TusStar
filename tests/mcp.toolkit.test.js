@@ -64,7 +64,9 @@ module.exports = async function runMcpToolkitTest() {
   const rootDir = makeTempDir('mcp-toolkit-');
   const fixture = createContractMcpFixture(rootDir);
   const scanPath = path.join(rootDir, 'scan.pdf');
+  const wordPath = path.join(rootDir, 'contract.docx');
   fs.writeFileSync(scanPath, 'scan');
+  fs.writeFileSync(wordPath, 'word');
 
   const toolkit = await createMcpToolkit([fixture.mcpServer]);
 
@@ -124,6 +126,32 @@ module.exports = async function runMcpToolkitTest() {
       operator: 'tester',
     });
     assert.match(archiveResult.structuredContent.archive.archiveId, /^A\d{8}-\d{4}$/);
+    assert.equal(archiveResult.structuredContent.archive.fileCount, 1);
+    assert.equal(fs.existsSync(scanPath), true);
+
+    fs.writeFileSync(scanPath, 'scan-multi');
+    fs.writeFileSync(wordPath, 'word-multi');
+
+    const multiArchiveResult = await toolkit.tools.contract_archive.execute({
+      contract: {
+        contractName: 'MCP 多文件测试合同',
+        agreementType: '采购',
+        partyAName: '上海启迪',
+        partyBName: '算力供应商',
+        signingDate: '2026-03-20',
+        uploadedBy: 'tester',
+      },
+      sourceFiles: [
+        { path: scanPath, name: 'scan.pdf' },
+        { path: wordPath, name: 'contract.docx' },
+      ],
+      archiveRelativeDir: '采购（启迪支出）\\算力',
+      operator: 'tester',
+    });
+    assert.equal(multiArchiveResult.structuredContent.archive.fileCount, 2);
+    assert.equal(multiArchiveResult.structuredContent.files.length, 2);
+    assert.equal(fs.existsSync(scanPath), true);
+    assert.equal(fs.existsSync(wordPath), true);
 
     await assert.rejects(
       () => toolkit.tools.contract_archive.execute({
