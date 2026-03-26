@@ -298,6 +298,56 @@ function buildPendingArchiveDraftPrompt(messages = []) {
   ].join('\n');
 }
 
+function isArchiveIntentText(message = '') {
+  const text = typeof message === 'string' ? message.trim() : '';
+
+  if (!text) {
+    return false;
+  }
+
+  return /归档|存档|入档|按此归档|直接归档|确认归档/u.test(text);
+}
+
+function buildArchiveIdentityPrompt({
+  memory,
+  userId,
+  userMessage,
+  attachments = [],
+  fullMessages = [],
+} = {}) {
+  const normalizedMemory = memory && typeof memory === 'object' ? memory : {};
+  const realName = typeof normalizedMemory.profile?.realName === 'string'
+    ? normalizedMemory.profile.realName.trim()
+    : '';
+
+  if (realName) {
+    return '';
+  }
+
+  const awaitingRealNameReply = normalizedMemory.profile?.awaitingRealNameReply === true;
+  const hasPendingArchiveDraft = collectActivePendingArchiveDrafts(fullMessages).length > 0;
+  const hasArchiveIntent = hasPendingArchiveDraft
+    || isArchiveIntentText(userMessage)
+    || (Array.isArray(attachments) && attachments.length > 0 && isArchiveIntentText(userMessage));
+
+  if (!hasArchiveIntent) {
+    return '';
+  }
+
+  const stableUserId = typeof userId === 'string' ? userId.trim() : '';
+
+  return [
+    'Formal identity gate',
+    '- This turn is on the contract archive path and the requester real name is still unknown.',
+    stableUserId ? `- The stable channel user id "${stableUserId}" is only a technical id and must not be used as the person name in contract archive records.` : '- Do not use a technical channel id as the person name in contract archive records.',
+    '- Before calling `contract_preview_archive` or `contract_archive`, first obtain the requester real name that should appear in formal archive records.',
+    '- After the user provides the real name, call `updateMemory` to store it with a direct patch, then continue the archive flow.',
+    awaitingRealNameReply
+      ? '- You already asked for the real name earlier. If the user still has not answered, briefly remind them that contract archiving cannot proceed until they provide it.'
+      : '- Ask a direct Chinese question now, such as: “归档前我需要确认一下您的真实姓名，合同记录里要用这个姓名，不能用企微 userid 代替。请问您怎么称呼？” Then call `updateMemory` with `awaitingRealNameReply: true` if you are still waiting for the answer.',
+  ].join('\n');
+}
+
 function enrichToolCallWithDisplay(toolCall, runtime) {
   if (!toolCall || typeof toolCall !== 'object') {
     return toolCall;
@@ -427,11 +477,24 @@ class AgentCore {
       : '';
     const conversationAttachments = collectConversationAttachments(fullMessages);
     const pendingArchiveDraftPrompt = buildPendingArchiveDraftPrompt(fullMessages);
+    const archiveIdentityPrompt = buildArchiveIdentityPrompt({
+      memory,
+      userId,
+      userMessage,
+      attachments: normalizedAttachments,
+      fullMessages,
+    });
     const context = sessionManager.buildModelContext(fullMessages, {
       recentMessagesCount: contextSettings.recentMessagesCount,
       summaryLineCount: contextSettings.summaryLineCount,
       summaryMaxChars: contextSettings.summaryMaxChars,
     });
+
+    const liveRequestContext = {
+      ...requestContext,
+      memory,
+      userDisplayName,
+    };
 
     const provider = createOpenAICompatible({
       name: effectiveConfig.provider || 'openaiCompatible',
@@ -452,18 +515,21 @@ class AgentCore {
       attachments: conversationAttachments,
       attachmentExtraction: effectiveConfig.attachmentExtraction || {},
       toolTimeouts: effectiveConfig.toolTimeouts || {},
-      requestContext: {
-        ...requestContext,
-        memory,
-        userDisplayName,
-      },
+      requestContext: liveRequestContext,
       memoryRuntime: {
         applyPatch({ reason = '', patch = {} } = {}) {
-          return memoryManager.applyPatch({
+          const result = memoryManager.applyPatch({
             reason,
             patch,
             trigger: 'tool_call',
           });
+
+          liveRequestContext.memory = result.memory;
+          liveRequestContext.userDisplayName = typeof result.memory?.profile?.realName === 'string'
+            ? result.memory.profile.realName.trim()
+            : '';
+
+          return result;
         },
       },
     });
@@ -475,6 +541,7 @@ class AgentCore {
         userDisplayName,
       }),
       buildMemoryPrompt(memory, { userId }),
+      archiveIdentityPrompt,
       ...runtime.promptSections,
       pendingArchiveDraftPrompt,
       context.summary,
@@ -715,3 +782,4 @@ class AgentCore {
 module.exports = AgentCore;
 module.exports.buildRequestContextPrompt = buildRequestContextPrompt;
 module.exports.buildTemporalContextPrompt = buildTemporalContextPrompt;
+module.exports.buildArchiveIdentityPrompt = buildArchiveIdentityPrompt;

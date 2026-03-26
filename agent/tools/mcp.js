@@ -87,6 +87,34 @@ function injectArchiveToolRequestContext(originalToolName, args, requestContext 
   return nextArgs;
 }
 
+function buildMissingArchiveRealNameError(toolName, requestContext = {}) {
+  const memoryProfile = requestContext.memory && typeof requestContext.memory === 'object'
+    ? requestContext.memory.profile || {}
+    : {};
+  const awaitingRealNameReply = memoryProfile.awaitingRealNameReply === true;
+
+  return awaitingRealNameReply
+    ? `${toolName}: 当前企微用户的真实姓名仍未确认，合同归档不能继续。不要用企微 userId 代替姓名。请先提醒对方回复其真实姓名；拿到后先调用 updateMemory 记住，再重试归档。`
+    : `${toolName}: 当前企微用户的真实姓名未知，合同归档前必须先确认发起人的真实姓名，不能使用企微 userId 代替。请先询问对方姓名；如已得到姓名，先调用 updateMemory 记住，再重试归档。`;
+}
+
+function assertArchiveRealNameAvailable(toolName, originalToolName, requestContext = {}) {
+  if (originalToolName !== 'contract_preview_archive' && originalToolName !== 'contract_archive') {
+    return;
+  }
+
+  const identity = buildArchiveToolIdentity(requestContext);
+  const sourceChannel = typeof identity.sourceChannel === 'string'
+    ? identity.sourceChannel.toLowerCase()
+    : '';
+
+  if (sourceChannel !== 'wxwork' || identity.userDisplayName) {
+    return;
+  }
+
+  throw new Error(buildMissingArchiveRealNameError(toolName, requestContext));
+}
+
 function wrapMcpTool(
   toolName,
   originalToolName,
@@ -101,6 +129,7 @@ function wrapMcpTool(
   return {
     ...toolDefinition,
     execute: async (args, options) => {
+      assertArchiveRealNameAvailable(toolName, originalToolName, requestContext);
       const effectiveArgs = injectArchiveToolRequestContext(originalToolName, args, requestContext);
       const result = await withTimeout(
         toolDefinition.execute(effectiveArgs, options),

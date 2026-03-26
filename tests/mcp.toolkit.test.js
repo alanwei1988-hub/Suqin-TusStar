@@ -116,6 +116,39 @@ module.exports = async function runMcpToolkitTest() {
     assert.equal(previewResult.structuredContent.mergedPreviewFields.some(field => field.label === '合同名称' && field.filled === true), true);
     assert.equal(previewResult.structuredContent.importantFields.some(field => field.label === '他方' && field.filled === false), true);
 
+    const gatedFixture = createContractMcpFixture(path.join(rootDir, 'gated-fixture'));
+    const gatedToolkit = await createMcpToolkit([gatedFixture.mcpServer], {
+      requestContext: {
+        userId: 'wxid_123',
+        context: {
+          channelType: 'wxwork',
+        },
+        memory: {
+          profile: {
+            realName: '',
+            awaitingRealNameReply: false,
+          },
+        },
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () => gatedToolkit.tools.contract_preview_archive.execute({
+          contract: {
+            contractName: '企微姓名缺失测试合同',
+            uploadedBy: 'wxid_123',
+          },
+          sourceFiles: [{ path: scanPath, name: 'scan.pdf' }],
+          archiveRelativeDir: '采购（启迪支出）\\算力',
+          operator: 'wxid_123',
+        }),
+        /真实姓名未知.*不能使用企微 userId 代替/u,
+      );
+    } finally {
+      await gatedToolkit.close();
+    }
+
     const archiveResult = await toolkit.tools.contract_archive.execute({
       pendingId: previewResult.structuredContent.pendingId,
       contract: {
