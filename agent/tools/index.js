@@ -18,7 +18,11 @@ const { buildSkillsPrompt, createSkillsToolkit } = require('./skills');
 const MAX_BASH_OUTPUT_LENGTH = 20000;
 const DEFAULT_BASH_TIMEOUT_MS = 30000;
 const DEFAULT_MAX_BASH_TIMEOUT_MS = 300000;
+const MAX_SCRIPT_FILE_COUNT = 500;
+const MAX_SCRIPT_TOTAL_BYTES = 50 * 1024 * 1024;
+const SCRIPT_VIRTUAL_ROOT = '/workspace';
 let bashToolModulePromise;
+let justBashModulePromise;
 
 const BLOCKED_COMMAND_RULES = [
   {
@@ -114,6 +118,11 @@ function resolveReadablePath(workspaceDir, sharedReadRoots, requestedPath) {
 async function loadBashToolModule() {
   bashToolModulePromise ||= import('bash-tool');
   return bashToolModulePromise;
+}
+
+async function loadJustBashModule() {
+  justBashModulePromise ||= import('just-bash');
+  return justBashModulePromise;
 }
 
 function wrapWindowsPowerShellCommand(command) {
@@ -287,6 +296,8 @@ function buildBashToolPrompt(workspaceDir) {
     '- Use shell commands for directory listing, script execution, builds, tests, file operations, and system inspection.',
     '- Any files written by bash stay inside the sandbox for this run only.',
     '- If you need a persistent file that `readFile`, `writeFile`, or `sendFile` can see, use `writeFile` instead of shell redirection.',
+    '- If a needed host file is outside the workspace, use `stageHostPath` to copy it into a dedicated subdirectory under the workspace before processing it.',
+    '- Use `runPython` or `runJavaScript` for restricted code execution against files already staged inside the workspace.',
     '- Avoid destructive commands even inside the sandbox unless they are truly necessary.',
   ];
 
@@ -295,7 +306,7 @@ function buildBashToolPrompt(workspaceDir) {
 
 function createBashTool(machine, workspaceDir) {
   return tool({
-    description: buildBashToolPrompt(workspaceDir, machine.bashTimeoutMs, machine.maxBashTimeoutMs),
+    description: buildBashToolPrompt(workspaceDir),
     inputSchema: z.object({
       command: z.string().describe('The shell command to execute on the local machine'),
       timeoutMs: z.number().int().positive().optional().describe('Optional command timeout in milliseconds'),
@@ -339,6 +350,467 @@ async function createSandboxedBashTool(workspaceDir) {
       }
     },
   };
+}
+
+async function pathExists(candidatePath) {
+  try {
+    await fs.access(candidatePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function copyPathRecursive(sourcePath, destinationPath, options = {}) {
+  const sourceStat = await fs.stat(sourcePath);
+
+  if (sourceStat.isDirectory()) {
+    await fs.mkdir(destinationPath, { recursive: true });
+    const entries = await fs.readdir(sourcePath, { withFileTypes: true });
+    let fileCount = 0;
+
+    for (const entry of entries) {
+      const nestedSource = path.join(sourcePath, entry.name);
+      const nestedDestination = path.join(destinationPath, entry.name);
+      const nestedResult = await copyPathRecursive(nestedSource, nestedDestination, options);
+      fileCount += nestedResult.fileCount;
+    }
+
+    return {
+      fileCount,
+      directory: true,
+    };
+  }
+
+  if (!options.overwrite && await pathExists(destinationPath)) {
+    throw new Error(`Destination already exists: ${destinationPath}`);
+  }
+
+  await fs.mkdir(path.dirname(destinationPath), { recursive: true });
+  await fs.copyFile(sourcePath, destinationPath);
+  return {
+    fileCount: 1,
+    directory: false,
+  };
+}
+
+function normalizeWorkspaceRelativePath(workspaceDir, requestedPath) {
+  const resolvedPath = resolveWorkspacePath(workspaceDir, requestedPath);
+  const relativePath = path.relative(workspaceDir, resolvedPath);
+  return relativePath ? relativePath.split(path.sep).join(path.posix.sep) : '';
+}
+
+async function snapshotHostDirectory(hostDir) {
+  const initialFiles = {};
+  const initialBuffers = new Map();
+  let totalBytes = 0;
+  let fileCount = 0;
+
+  async function walk(currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const absolutePath = path.join(currentDir, entry.name);
+      const relativePath = path.relative(hostDir, absolutePath).split(path.sep).join(path.posix.sep);
+
+      if (entry.isDirectory()) {
+        await walk(absolutePath);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      const buffer = await fs.readFile(absolutePath);
+      fileCount += 1;
+      totalBytes += buffer.length;
+
+      if (fileCount > MAX_SCRIPT_FILE_COUNT) {
+        throw new Error(`Script workspace has too many files (${fileCount}). Limit: ${MAX_SCRIPT_FILE_COUNT}.`);
+      }
+
+      if (totalBytes > MAX_SCRIPT_TOTAL_BYTES) {
+        throw new Error(`Script workspace is too large (${totalBytes} bytes). Limit: ${MAX_SCRIPT_TOTAL_BYTES} bytes.`);
+      }
+
+      const virtualPath = path.posix.join(SCRIPT_VIRTUAL_ROOT, relativePath);
+      initialFiles[virtualPath] = buffer;
+      initialBuffers.set(relativePath, buffer);
+    }
+  }
+
+  if (await pathExists(hostDir)) {
+    await walk(hostDir);
+  }
+
+  return {
+    initialFiles,
+    initialBuffers,
+  };
+}
+
+function buffersEqual(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+
+  return Buffer.compare(Buffer.from(left), Buffer.from(right)) === 0;
+}
+
+async function syncVirtualWorkspaceToHost(virtualFs, hostDir, initialBuffers, excludedVirtualPaths = new Set()) {
+  const changedFiles = [];
+  const seenRelativePaths = new Set();
+  const allPaths = typeof virtualFs.getAllPaths === 'function' ? virtualFs.getAllPaths() : [];
+
+  for (const virtualPath of allPaths) {
+    if (!virtualPath.startsWith(`${SCRIPT_VIRTUAL_ROOT}/`) || excludedVirtualPaths.has(virtualPath)) {
+      continue;
+    }
+
+    const stat = await virtualFs.stat(virtualPath);
+    if (!stat.isFile) {
+      continue;
+    }
+
+    const relativePath = path.posix.relative(SCRIPT_VIRTUAL_ROOT, virtualPath);
+    seenRelativePaths.add(relativePath);
+    const buffer = Buffer.from(await virtualFs.readFileBuffer(virtualPath));
+    const initialBuffer = initialBuffers.get(relativePath);
+
+    if (initialBuffer && buffersEqual(buffer, initialBuffer)) {
+      continue;
+    }
+
+    const hostPath = path.join(hostDir, relativePath.split(path.posix.sep).join(path.sep));
+    await fs.mkdir(path.dirname(hostPath), { recursive: true });
+    await fs.writeFile(hostPath, buffer);
+    changedFiles.push(hostPath);
+  }
+
+  for (const [relativePath] of initialBuffers.entries()) {
+    if (seenRelativePaths.has(relativePath)) {
+      continue;
+    }
+
+    const hostPath = path.join(hostDir, relativePath.split(path.posix.sep).join(path.sep));
+    if (await pathExists(hostPath)) {
+      await fs.rm(hostPath, { force: true });
+      changedFiles.push(hostPath);
+    }
+  }
+
+  return changedFiles;
+}
+
+function createJavaScriptConsole() {
+  const state = {
+    stdout: '',
+    stderr: '',
+  };
+
+  const appendLine = (target, formatter, args) => {
+    state[target] += `${formatter(...args)}\n`;
+  };
+
+  return {
+    console: {
+      log: (...args) => appendLine('stdout', require('util').format, args),
+      info: (...args) => appendLine('stdout', require('util').format, args),
+      warn: (...args) => appendLine('stderr', require('util').format, args),
+      error: (...args) => appendLine('stderr', require('util').format, args),
+    },
+    state,
+  };
+}
+
+function createSafeWorkspaceFs(workspaceDir, currentDir) {
+  const resolveWorkspaceTarget = requestedPath => {
+    const candidatePath = path.isAbsolute(requestedPath)
+      ? path.resolve(workspaceDir, requestedPath.slice(1))
+      : path.resolve(currentDir, requestedPath);
+
+    if (!isPathInside(workspaceDir, candidatePath)) {
+      throw new Error(`Path escapes the workspace: ${requestedPath}`);
+    }
+
+    return candidatePath;
+  };
+
+  return {
+    readFileSync(filePath, encoding = null) {
+      return require('fs').readFileSync(resolveWorkspaceTarget(filePath), encoding || undefined);
+    },
+    writeFileSync(filePath, content, options) {
+      const resolvedPath = resolveWorkspaceTarget(filePath);
+      require('fs').mkdirSync(path.dirname(resolvedPath), { recursive: true });
+      return require('fs').writeFileSync(resolvedPath, content, options);
+    },
+    appendFileSync(filePath, content, options) {
+      const resolvedPath = resolveWorkspaceTarget(filePath);
+      require('fs').mkdirSync(path.dirname(resolvedPath), { recursive: true });
+      return require('fs').appendFileSync(resolvedPath, content, options);
+    },
+    readdirSync(dirPath, options) {
+      return require('fs').readdirSync(resolveWorkspaceTarget(dirPath), options);
+    },
+    mkdirSync(dirPath, options) {
+      return require('fs').mkdirSync(resolveWorkspaceTarget(dirPath), options);
+    },
+    rmSync(targetPath, options) {
+      return require('fs').rmSync(resolveWorkspaceTarget(targetPath), options);
+    },
+    existsSync(targetPath) {
+      return require('fs').existsSync(resolveWorkspaceTarget(targetPath));
+    },
+    statSync(targetPath) {
+      return require('fs').statSync(resolveWorkspaceTarget(targetPath));
+    },
+    promises: {
+      readFile: async (filePath, encoding = null) => require('fs').promises.readFile(resolveWorkspaceTarget(filePath), encoding || undefined),
+      writeFile: async (filePath, content, options) => {
+        const resolvedPath = resolveWorkspaceTarget(filePath);
+        await require('fs').promises.mkdir(path.dirname(resolvedPath), { recursive: true });
+        return require('fs').promises.writeFile(resolvedPath, content, options);
+      },
+      mkdir: async (dirPath, options) => require('fs').promises.mkdir(resolveWorkspaceTarget(dirPath), options),
+      readdir: async (dirPath, options) => require('fs').promises.readdir(resolveWorkspaceTarget(dirPath), options),
+      rm: async (targetPath, options) => require('fs').promises.rm(resolveWorkspaceTarget(targetPath), options),
+      stat: async targetPath => require('fs').promises.stat(resolveWorkspaceTarget(targetPath)),
+    },
+  };
+}
+
+async function executeJavaScriptInWorkspace(workspaceDir, workingDirectory, code, timeoutMs) {
+  const vm = require('vm');
+  const { console: sandboxConsole, state: consoleState } = createJavaScriptConsole();
+  const moduleCache = new Map();
+
+  const createRequire = baseDir => requestedPath => {
+    const normalizedRequest = requestedPath.startsWith('node:')
+      ? requestedPath.slice(5)
+      : requestedPath;
+
+    if (normalizedRequest === 'fs') {
+      return createSafeWorkspaceFs(workspaceDir, workingDirectory);
+    }
+
+    if (['path', 'assert', 'util', 'events', 'buffer', 'url', 'querystring', 'string_decoder'].includes(normalizedRequest)) {
+      return require(normalizedRequest);
+    }
+
+    if (requestedPath.startsWith('./') || requestedPath.startsWith('../') || requestedPath.startsWith('/')) {
+      let resolvedPath = requestedPath.startsWith('/')
+        ? path.resolve(workspaceDir, requestedPath.slice(1))
+        : path.resolve(baseDir, requestedPath);
+
+      if (!isPathInside(workspaceDir, resolvedPath)) {
+        throw new Error(`require path escapes the workspace: ${requestedPath}`);
+      }
+
+      if (!path.extname(resolvedPath)) {
+        if (require('fs').existsSync(`${resolvedPath}.js`)) {
+          resolvedPath = `${resolvedPath}.js`;
+        } else if (require('fs').existsSync(`${resolvedPath}.cjs`)) {
+          resolvedPath = `${resolvedPath}.cjs`;
+        } else if (require('fs').existsSync(`${resolvedPath}.json`)) {
+          resolvedPath = `${resolvedPath}.json`;
+        }
+      }
+
+      if (moduleCache.has(resolvedPath)) {
+        return moduleCache.get(resolvedPath).exports;
+      }
+
+      if (resolvedPath.endsWith('.json')) {
+        return JSON.parse(require('fs').readFileSync(resolvedPath, 'utf8'));
+      }
+
+      const source = require('fs').readFileSync(resolvedPath, 'utf8');
+      const module = { exports: {} };
+      moduleCache.set(resolvedPath, module);
+      const wrapped = new vm.Script(
+        `(function(exports, require, module, __filename, __dirname, console, process, Buffer, URL, URLSearchParams){${source}\n})`,
+        { filename: resolvedPath },
+      );
+      const fn = wrapped.runInContext(context, { timeout: timeoutMs });
+      fn(
+        module.exports,
+        createRequire(path.dirname(resolvedPath)),
+        module,
+        resolvedPath,
+        path.dirname(resolvedPath),
+        sandboxConsole,
+        sandboxProcess,
+        Buffer,
+        URL,
+        URLSearchParams,
+      );
+      return module.exports;
+    }
+
+    throw new Error(`Module is not allowed in runJavaScript: ${requestedPath}`);
+  };
+
+  const sandboxProcess = Object.freeze({
+    argv: [],
+    env: Object.freeze({}),
+    cwd: () => workingDirectory,
+    platform: process.platform,
+    version: process.version,
+  });
+
+  const context = vm.createContext({
+    Buffer,
+    URL,
+    URLSearchParams,
+    TextEncoder,
+    TextDecoder,
+  });
+  const inlinePath = path.join(workingDirectory, '__inline__.js');
+  const wrapped = new vm.Script(
+    `(async function(exports, require, module, __filename, __dirname, console, process, Buffer, URL, URLSearchParams){${code}\n})`,
+    { filename: inlinePath },
+  );
+  const fn = wrapped.runInContext(context, { timeout: timeoutMs });
+  const inlineModule = { exports: {} };
+  await fn(
+    inlineModule.exports,
+    createRequire(workingDirectory),
+    inlineModule,
+    inlinePath,
+    workingDirectory,
+    sandboxConsole,
+    sandboxProcess,
+    Buffer,
+    URL,
+    URLSearchParams,
+  );
+
+  return {
+    stdout: consoleState.stdout,
+    stderr: consoleState.stderr,
+    exitCode: 0,
+  };
+}
+
+function createStageHostPathTool(machine, workspaceDir) {
+  return tool({
+    description: [
+      'Copy a readable host file or directory into the current user workspace.',
+      'Use this when a needed host file lives outside the workspace and must be staged before sandboxed processing.',
+      `Destination paths must stay inside ${toPosixPath(path.resolve(workspaceDir))}.`,
+    ].join(' '),
+    inputSchema: z.object({
+      sourcePath: z.string().describe('Readable host file or directory path. Must be inside the workspace or a shared read-only root.'),
+      destinationDir: z.string().describe('Workspace directory where the staged copy should be placed. Create a dedicated task subdirectory when staging files for scripts.'),
+      newName: z.string().optional().describe('Optional replacement name for the copied file or directory.'),
+      overwrite: z.boolean().optional().describe('Whether to overwrite the destination if it already exists. Defaults to false.'),
+    }),
+    execute: async ({ sourcePath, destinationDir, newName, overwrite }) => {
+      const resolvedSourcePath = resolveReadablePath(workspaceDir, machine.sharedReadRoots, sourcePath);
+      const resolvedDestinationDir = resolveWorkspacePath(workspaceDir, destinationDir);
+      const destinationPath = path.join(
+        resolvedDestinationDir,
+        (typeof newName === 'string' && newName.trim()) || path.basename(resolvedSourcePath),
+      );
+      const result = await copyPathRecursive(resolvedSourcePath, destinationPath, {
+        overwrite: overwrite === true,
+      });
+
+      return {
+        success: true,
+        sourcePath: resolvedSourcePath,
+        destinationPath,
+        fileCount: result.fileCount,
+        directory: result.directory,
+      };
+    },
+  });
+}
+
+function createRunPythonTool(workspaceDir) {
+  return tool({
+    description: [
+      'Run Python code in a restricted in-memory sandbox mirrored from a workspace directory.',
+      'The script can only see files from the selected workspace directory, and any file changes are synced back into that same directory.',
+    ].join(' '),
+    inputSchema: z.object({
+      workingDirectory: z.string().describe('Workspace directory where the Python script should run. Relative paths resolve inside the current user workspace.'),
+      code: z.string().describe('Python code to execute.'),
+      timeoutMs: z.number().int().positive().optional().describe('Optional execution timeout in milliseconds.'),
+    }),
+    execute: async ({ workingDirectory, code, timeoutMs }) => {
+      const resolvedWorkingDirectory = resolveWorkspacePath(workspaceDir, workingDirectory);
+      await fs.mkdir(resolvedWorkingDirectory, { recursive: true });
+      const effectiveTimeoutMs = Math.min(
+        Number.isFinite(timeoutMs) ? timeoutMs : DEFAULT_BASH_TIMEOUT_MS,
+        DEFAULT_MAX_BASH_TIMEOUT_MS,
+      );
+      const { Bash, InMemoryFs } = await loadJustBashModule();
+      const { initialFiles, initialBuffers } = await snapshotHostDirectory(resolvedWorkingDirectory);
+      const virtualFs = new InMemoryFs({
+        ...initialFiles,
+        [`${SCRIPT_VIRTUAL_ROOT}/__runner.py`]: code,
+      });
+      const bashEnv = new Bash({
+        fs: virtualFs,
+        cwd: SCRIPT_VIRTUAL_ROOT,
+        python: true,
+        executionLimits: {
+          maxPythonTimeoutMs: effectiveTimeoutMs,
+        },
+      });
+      const result = await bashEnv.exec('python3 __runner.py');
+      const changedFiles = await syncVirtualWorkspaceToHost(
+        virtualFs,
+        resolvedWorkingDirectory,
+        initialBuffers,
+        new Set([`${SCRIPT_VIRTUAL_ROOT}/__runner.py`]),
+      );
+
+      return {
+        stdout: truncateText(result.stdout || '', MAX_BASH_OUTPUT_LENGTH, 'stdout'),
+        stderr: truncateText(result.stderr || '', MAX_BASH_OUTPUT_LENGTH, 'stderr'),
+        exitCode: result.exitCode,
+        changedFiles,
+      };
+    },
+  });
+}
+
+function createRunJavaScriptTool(workspaceDir) {
+  return tool({
+    description: [
+      'Run JavaScript code with access limited to the current user workspace.',
+      'The script may read or write files inside the workspace, but network access and external module loading are blocked.',
+    ].join(' '),
+    inputSchema: z.object({
+      workingDirectory: z.string().describe('Workspace directory where the JavaScript code should run. Relative paths resolve inside the current user workspace.'),
+      code: z.string().describe('JavaScript code to execute.'),
+      timeoutMs: z.number().int().positive().optional().describe('Optional execution timeout in milliseconds.'),
+    }),
+    execute: async ({ workingDirectory, code, timeoutMs }) => {
+      const resolvedWorkingDirectory = resolveWorkspacePath(workspaceDir, workingDirectory);
+      await fs.mkdir(resolvedWorkingDirectory, { recursive: true });
+      const effectiveTimeoutMs = Math.min(
+        Number.isFinite(timeoutMs) ? timeoutMs : DEFAULT_BASH_TIMEOUT_MS,
+        DEFAULT_MAX_BASH_TIMEOUT_MS,
+      );
+      const executionResult = await executeJavaScriptInWorkspace(
+        workspaceDir,
+        resolvedWorkingDirectory,
+        code,
+        effectiveTimeoutMs,
+      );
+
+      return {
+        stdout: truncateText(executionResult.stdout || '', MAX_BASH_OUTPUT_LENGTH, 'stdout'),
+        stderr: truncateText(executionResult.stderr || '', MAX_BASH_OUTPUT_LENGTH, 'stderr'),
+        exitCode: executionResult.exitCode,
+      };
+    },
+  });
 }
 
 function createReadFileTool(machine, workspaceDir, attachmentIndex) {
@@ -452,6 +924,9 @@ async function createRuntimeTools({
     bash: bashToolkit.tool,
     readFile: createReadFileTool(machine, workingDir, attachmentToolkit.attachmentIndex),
     writeFile: createWriteFileTool(machine, workingDir),
+    stageHostPath: createStageHostPathTool(machine, workingDir),
+    runPython: createRunPythonTool(workingDir),
+    runJavaScript: createRunJavaScriptTool(workingDir),
     sendFile: createSendFileTool(machine, workingDir),
     ...attachmentToolkit.tools,
   };
@@ -474,6 +949,18 @@ async function createRuntimeTools({
       displayName: '文件写入',
       statusText: '写入文件',
     }),
+    stageHostPath: createToolDisplayInfo('stageHostPath', {
+      displayName: '文件暂存',
+      statusText: '复制文件到工作区',
+    }),
+    runPython: createToolDisplayInfo('runPython', {
+      displayName: 'Python 执行',
+      statusText: '运行 Python 代码',
+    }),
+    runJavaScript: createToolDisplayInfo('runJavaScript', {
+      displayName: 'JavaScript 执行',
+      statusText: '运行 JavaScript 代码',
+    }),
     sendFile: createToolDisplayInfo('sendFile', {
       displayName: '文件发送',
       statusText: '准备发送文件',
@@ -491,7 +978,8 @@ async function createRuntimeTools({
     mcpReadOnlyToolNames: mcpToolkit.readOnlyToolNames || [],
     attachmentToolNames: attachmentToolkit.toolNames,
     promptSections: [
-      `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. The \`bash\` tool runs in a sandboxed copy-on-write environment rooted at this workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`) write only inside this workspace. Host read/send access is also allowed for the shared contract library root: \`${toPosixPath(sharedLibraryRoot)}\`.`,
+      `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`) operate on real host paths inside this workspace, and host read/send access is also allowed for the shared contract library root: \`${toPosixPath(sharedLibraryRoot)}\`.`,
+      'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly.',
       'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
       buildSkillsPrompt(skillsToolkit.skills),
       buildMcpPrompt(mcpToolkit.summaries),

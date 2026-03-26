@@ -133,6 +133,9 @@ module.exports = async function failingHandler({ llm, profileName }) {
   try {
     assert.equal(runtime.toolDisplayByName.bash.statusText, '执行命令');
     assert.equal(runtime.toolDisplayByName.readFile.statusText, '读取文件内容');
+    assert.equal(runtime.toolDisplayByName.stageHostPath.statusText, '复制文件到工作区');
+    assert.equal(runtime.toolDisplayByName.runPython.statusText, '运行 Python 代码');
+    assert.equal(runtime.toolDisplayByName.runJavaScript.statusText, '运行 JavaScript 代码');
     assert.equal(runtime.toolDisplayByName.inspectAttachment.statusText, '分析附件内容');
     assert.equal(runtime.toolDisplayByName.readAttachmentText.statusText, '提取附件文本');
     assert.equal(runtime.toolDisplayByName.sendFile.statusText, '准备发送文件');
@@ -153,13 +156,52 @@ module.exports = async function failingHandler({ llm, profileName }) {
     const prompt = buildBashToolPrompt(rootDir);
     assert.match(prompt, /sandboxed per-user workspace/i);
     assert.match(prompt, /cannot reach the shared host filesystem/i);
-    assert.match(prompt, /Use `writeFile` instead/i);
+    assert.match(prompt, /stageHostPath/i);
+    assert.match(prompt, /runPython/i);
 
     const localRead = await runtime.tools.readFile.execute({ path: localTextPath });
     assert.equal(localRead.content, 'hello local file');
 
     const sharedRead = await runtime.tools.readFile.execute({ path: sharedTextPath });
     assert.equal(sharedRead.content, 'shared contract note');
+
+    const stagedShared = await runtime.tools.stageHostPath.execute({
+      sourcePath: sharedTextPath,
+      destinationDir: 'jobs/stage-test',
+    });
+    assert.equal(stagedShared.success, true);
+    assert.equal(stagedShared.fileCount, 1);
+    assert.match(stagedShared.destinationPath, /jobs[\\/]stage-test[\\/]shared-note\.md$/);
+
+    const copiedRead = await runtime.tools.readFile.execute({ path: path.join(workspaceDir, 'jobs', 'stage-test', 'shared-note.md') });
+    assert.equal(copiedRead.content, 'shared contract note');
+
+    const pythonResult = await runtime.tools.runPython.execute({
+      workingDirectory: 'jobs/stage-test',
+      code: [
+        'print(open("shared-note.md", "r", encoding="utf-8").read())',
+        'open("py-out.txt", "w", encoding="utf-8").write("py-done")',
+      ].join('\n'),
+    });
+    assert.equal(pythonResult.exitCode, 0);
+    assert.equal(pythonResult.stdout.trim(), 'shared contract note');
+
+    const pythonOutput = await runtime.tools.readFile.execute({ path: path.join(workspaceDir, 'jobs', 'stage-test', 'py-out.txt') });
+    assert.equal(pythonOutput.content, 'py-done');
+
+    const nodeResult = await runtime.tools.runJavaScript.execute({
+      workingDirectory: 'jobs/stage-test',
+      code: [
+        "const fs = require('fs');",
+        "console.log(fs.readFileSync('shared-note.md', 'utf8'));",
+        "fs.writeFileSync('js-out.txt', 'js-done');",
+      ].join('\n'),
+    });
+    assert.equal(nodeResult.exitCode, 0);
+    assert.equal(nodeResult.stdout.trim(), 'shared contract note');
+
+    const jsOutput = await runtime.tools.readFile.execute({ path: path.join(workspaceDir, 'jobs', 'stage-test', 'js-out.txt') });
+    assert.equal(jsOutput.content, 'js-done');
 
     let receivedTimeoutMs = null;
     const fakeBashTool = createBashTool({

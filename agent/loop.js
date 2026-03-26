@@ -5,7 +5,7 @@ const READ_ONLY_BASH_PATTERNS = [
   /^\s*(git\s+(status|diff|log|show|branch)\b)/i,
   /^\s*(npm\s+(run\s+test|run\s+lint|test|view)\b)/i,
   /^\s*(node\s+(-v|--version)\b)/i,
-  /^\s*(python\s+(-V|--version)\b)/i,
+  /^\s*(python(?:3)?\s+(-V|--version)\b)/i,
   /^\s*(Get-ChildItem|Get-Content|Select-String|Resolve-Path|Test-Path)\b/i,
 ];
 
@@ -69,6 +69,14 @@ function isMutatingToolCall(toolCall, runtime) {
   }
 
   if (toolCall.toolName === 'writeFile') {
+    return true;
+  }
+
+  if (
+    toolCall.toolName === 'stageHostPath'
+    || toolCall.toolName === 'runPython'
+    || toolCall.toolName === 'runJavaScript'
+  ) {
     return true;
   }
 
