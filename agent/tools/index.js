@@ -95,6 +95,22 @@ function resolveWorkspacePath(baseDir, requestedPath) {
   return resolvedPath;
 }
 
+function resolveReadablePath(workspaceDir, sharedReadRoots, requestedPath) {
+  const resolvedPath = resolveRequestedPath(workspaceDir, requestedPath);
+
+  if (isPathInside(workspaceDir, resolvedPath)) {
+    return resolvedPath;
+  }
+
+  for (const rootDir of sharedReadRoots || []) {
+    if (isPathInside(rootDir, resolvedPath)) {
+      return resolvedPath;
+    }
+  }
+
+  throw new Error(`Path is outside the readable roots: ${requestedPath}`);
+}
+
 async function loadBashToolModule() {
   bashToolModulePromise ||= import('bash-tool');
   return bashToolModulePromise;
@@ -179,13 +195,16 @@ function runShellCommand(command, cwd, timeoutMs = DEFAULT_BASH_TIMEOUT_MS) {
 }
 
 class LocalWorkspaceBackend {
-  constructor(workingDir) {
+  constructor(workingDir, options = {}) {
     this.workingDir = path.resolve(workingDir);
+    this.sharedReadRoots = Array.isArray(options.sharedReadRoots)
+      ? options.sharedReadRoots.map(rootDir => path.resolve(rootDir))
+      : [];
     this.outboundAttachments = [];
   }
 
   async readFile(filePath) {
-    const resolvedPath = resolveWorkspacePath(this.workingDir, filePath);
+    const resolvedPath = resolveReadablePath(this.workingDir, this.sharedReadRoots, filePath);
     return fs.readFile(resolvedPath, 'utf8');
   }
 
@@ -197,7 +216,7 @@ class LocalWorkspaceBackend {
   }
 
   async registerOutboundAttachment(filePath, displayName) {
-    const resolvedPath = resolveWorkspacePath(this.workingDir, filePath);
+    const resolvedPath = resolveReadablePath(this.workingDir, this.sharedReadRoots, filePath);
     const stat = await fs.stat(resolvedPath);
 
     if (!stat.isFile()) {
@@ -327,14 +346,15 @@ function createReadFileTool(machine, workspaceDir, attachmentIndex) {
     description: [
       'Read a UTF-8 text file from the current user workspace on the host.',
       `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
-      'Paths must stay inside this workspace.',
+      'Relative paths must stay inside this workspace.',
+      'Absolute paths may also point to configured shared read-only roots.',
       'Do not use this for user-provided attachments; use the attachment tools instead.',
     ].join(' '),
     inputSchema: z.object({
       path: z.string().describe('The path to the local text file to read'),
     }),
     execute: async ({ path: filePath }) => {
-      const resolvedPath = resolveWorkspacePath(workspaceDir, filePath);
+      const resolvedPath = resolveReadablePath(workspaceDir, machine.sharedReadRoots, filePath);
       const fileInfo = await assertReadableLocalTextFile(resolvedPath, attachmentIndex);
       const content = await machine.readFile(filePath);
 
@@ -374,7 +394,8 @@ function createSendFileTool(machine, workspaceDir) {
     description: [
       'Queue a local file from the current user workspace to be sent back through the current channel before your final reply is delivered.',
       `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
-      'Paths must stay inside this workspace.',
+      'Relative paths must stay inside this workspace.',
+      'Absolute paths may also point to configured shared read-only roots.',
       'Use this after creating or locating a real file the user should receive.',
       'If channel delivery fails, the user will be told the file could not be sent and will receive the absolute path instead.',
     ].join(' '),
@@ -405,7 +426,10 @@ async function createRuntimeTools({
 }) {
   const workingDir = path.resolve(workspaceDir);
   await fs.mkdir(workingDir, { recursive: true });
-  const machine = new LocalWorkspaceBackend(workingDir);
+  const sharedLibraryRoot = path.resolve(projectRootDir, 'storage', '已签署协议电子档');
+  const machine = new LocalWorkspaceBackend(workingDir, {
+    sharedReadRoots: [sharedLibraryRoot],
+  });
   const normalizedAttachments = normalizeAttachments(attachments, path.resolve(projectRootDir), resolveRequestedPath);
   const attachmentToolkit = createAttachmentTools(
     normalizedAttachments,
@@ -467,7 +491,7 @@ async function createRuntimeTools({
     mcpReadOnlyToolNames: mcpToolkit.readOnlyToolNames || [],
     attachmentToolNames: attachmentToolkit.toolNames,
     promptSections: [
-      `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. The \`bash\` tool runs in a sandboxed copy-on-write environment rooted at this workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`) are restricted to this workspace only.`,
+      `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. The \`bash\` tool runs in a sandboxed copy-on-write environment rooted at this workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`) write only inside this workspace. Host read/send access is also allowed for the shared contract library root: \`${toPosixPath(sharedLibraryRoot)}\`.`,
       'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
       buildSkillsPrompt(skillsToolkit.skills),
       buildMcpPrompt(mcpToolkit.summaries),

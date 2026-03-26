@@ -145,6 +145,12 @@ module.exports = async function runContractServiceTest() {
     });
     assert.equal(searchResult.items.length >= 1, true);
 
+    const zeroMonthSearch = service.searchContracts({
+      keyword: '算力',
+      recentMonths: 0,
+    });
+    assert.equal(zeroMonthSearch.items.length >= 1, true);
+
     const directoryMatches = service.findDirectories({
       keywords: ['算力'],
     });
@@ -255,6 +261,17 @@ module.exports = async function runContractServiceTest() {
     });
     assert.equal(filteredArchiveSearch.items.length, 1);
     assert.equal(filteredArchiveSearch.items[0].archiveId, paymentArchived.archive.archiveId);
+
+    const relaxedArchiveSearch = service.searchArchiveRecords({
+      keyword: '付款供应商',
+      counterpartyName: '付款供应商',
+      direction: 'income',
+      hasSettlement: false,
+      limit: 5,
+    });
+    assert.equal(relaxedArchiveSearch.items.length, 1);
+    assert.equal(relaxedArchiveSearch.items[0].archiveId, paymentArchived.archive.archiveId);
+    assert.equal(relaxedArchiveSearch.fallbackUsed, true);
 
     service.repository.db.prepare(`
       UPDATE archive_records

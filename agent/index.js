@@ -132,6 +132,11 @@ Important attachment handling rule:
 
 function buildRequestContextPrompt(requestContext = {}) {
   const lines = [];
+  const temporalContext = buildTemporalContextPrompt(requestContext);
+
+  if (temporalContext) {
+    lines.push(temporalContext);
+  }
 
   if (requestContext.userId) {
     lines.push('Current Request');
@@ -143,6 +148,65 @@ function buildRequestContextPrompt(requestContext = {}) {
   }
 
   return lines.join('\n');
+}
+
+function resolvePromptNow(requestContext = {}) {
+  const candidates = [
+    requestContext.currentDateTime,
+    requestContext.currentDate,
+    requestContext.context?.currentDateTime,
+    requestContext.context?.currentDate,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+      continue;
+    }
+
+    const parsed = new Date(candidate);
+
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+
+  return new Date();
+}
+
+function formatDateTimeParts(value, timeZone) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  });
+  const parts = Object.fromEntries(
+    formatter.formatToParts(value)
+      .filter(part => part.type !== 'literal')
+      .map(part => [part.type, part.value]),
+  );
+
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}:${parts.second}`,
+  };
+}
+
+function buildTemporalContextPrompt(requestContext = {}) {
+  const configuredTimeZone = requestContext.timezone || requestContext.context?.timezone || 'Asia/Shanghai';
+  const now = resolvePromptNow(requestContext);
+  const { date, time } = formatDateTimeParts(now, configuredTimeZone);
+
+  return [
+    'Current Time',
+    `- Current date (${configuredTimeZone}): ${date}`,
+    `- Current time (${configuredTimeZone}): ${time}`,
+    '- Interpret relative time words such as today, tomorrow, yesterday, recent, and this month against this timestamp unless the user gives an explicit date.',
+  ].join('\n');
 }
 
 function parseToolResultOutput(part) {
@@ -595,3 +659,5 @@ class AgentCore {
 }
 
 module.exports = AgentCore;
+module.exports.buildRequestContextPrompt = buildRequestContextPrompt;
+module.exports.buildTemporalContextPrompt = buildTemporalContextPrompt;

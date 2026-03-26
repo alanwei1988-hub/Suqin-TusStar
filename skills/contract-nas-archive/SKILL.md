@@ -25,6 +25,11 @@ description: 使用真实 NAS 合同目录进行归档和查询的工作流。
    - `contract_search`：查 NAS 真实文件，适合回答“文件有没有”“在哪个目录”“手动复制进去的合同能不能找到”。
    - `contract_search_archive_records`：查 Agent 归档记录，适合回答“Agent 是否归档过”“归档 ID 是什么”“按金额/相对方/日期等字段筛选”。
    - 如果用户只说“找合同/查合同”而没说明是找文件还是找 Agent 记录，默认应同时查两边，并在答复中分别说明。
+   - 对这种泛查询，第一轮参数必须先宽后窄：
+     - `contract_search` 优先只传 `keyword` / `keywords` / `limit`；只有用户明确说了时间范围时，才传 `recentMonths`、`modifiedAfter`、`modifiedBefore`。
+     - 不要把 `recentMonths: 0` 当成默认值传入；未限定时间时应省略这个字段。
+     - `contract_search_archive_records` 优先只传 `keyword`、`counterpartyName`、`contractName` 这类直接来自用户的话；不要擅自补 `direction`、`hasSettlement`、`paymentStatus`、金额区间、日期区间。
+   - 如果第一轮查询返回空，而本轮参数里包含并非用户明确提出的结构化筛选条件，必须立刻去掉这些额外筛选再重查一次，然后才能回复“未找到”。
 7. 查 NAS 文件时，优先查最可能的目录分支，再按最近时间、目录名、文件名关键词过滤，例如“算力”“GPU”“A800”“4090”。
 8. 归档时，先列目录或查相似目录，确认目标分支后再准备归档。
 9. 当用户第一次只说“归档”时，不要立刻正式归档。

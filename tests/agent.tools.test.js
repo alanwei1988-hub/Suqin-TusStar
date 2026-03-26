@@ -13,16 +13,24 @@ const { makeTempDir, repoRoot } = require('./helpers/test-helpers');
 
 module.exports = async function runAgentToolsTest() {
   const rootDir = makeTempDir('agent-tools-');
+  const projectRootDir = path.join(rootDir, 'project');
+  const workspaceDir = path.join(rootDir, 'workspace');
+  const sharedLibraryRoot = path.join(projectRootDir, 'storage', '已签署协议电子档');
   const mockMarkItDownHandler = path.join(repoRoot, 'tests', 'helpers', 'mock-markitdown-handler.js');
-  const localTextPath = path.join(rootDir, 'notes.md');
-  const localPdfPath = path.join(rootDir, 'local.pdf');
-  const attachmentTextPath = path.join(rootDir, 'user-upload.txt');
-  const attachmentPdfPath = path.join(rootDir, 'scan.pdf');
-  const attachmentPagedPdfPath = path.join(rootDir, 'paged.pdf');
-  const largeTextPath = path.join(rootDir, 'large.txt');
-  const failingHandlerPath = path.join(rootDir, 'failing-markitdown-handler.js');
-  const pagedHandlerPath = path.join(rootDir, 'paged-markitdown-handler.js');
-  const headingOnlyHandlerPath = path.join(rootDir, 'heading-only-markitdown-handler.js');
+  const localTextPath = path.join(workspaceDir, 'notes.md');
+  const localPdfPath = path.join(workspaceDir, 'local.pdf');
+  const attachmentTextPath = path.join(workspaceDir, 'user-upload.txt');
+  const attachmentPdfPath = path.join(workspaceDir, 'scan.pdf');
+  const attachmentPagedPdfPath = path.join(workspaceDir, 'paged.pdf');
+  const largeTextPath = path.join(workspaceDir, 'large.txt');
+  const failingHandlerPath = path.join(workspaceDir, 'failing-markitdown-handler.js');
+  const pagedHandlerPath = path.join(workspaceDir, 'paged-markitdown-handler.js');
+  const headingOnlyHandlerPath = path.join(workspaceDir, 'heading-only-markitdown-handler.js');
+  const sharedTextPath = path.join(sharedLibraryRoot, 'shared-note.md');
+  const sharedPdfPath = path.join(sharedLibraryRoot, 'shared-contract.pdf');
+
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  fs.mkdirSync(sharedLibraryRoot, { recursive: true });
 
   fs.writeFileSync(localTextPath, 'hello local file');
   fs.writeFileSync(localPdfPath, '%PDF-1.7\nlocal pdf body');
@@ -66,6 +74,8 @@ trailer
 << /Root 1 0 R >>
 %%EOF`);
   fs.writeFileSync(largeTextPath, 'x'.repeat(300 * 1024));
+  fs.writeFileSync(sharedTextPath, 'shared contract note');
+  fs.writeFileSync(sharedPdfPath, '%PDF-1.7\nshared pdf body');
   fs.writeFileSync(failingHandlerPath, `const { createExtractionError } = require(${JSON.stringify(path.join(repoRoot, 'markitdown', 'extractor.js'))});
 module.exports = async function failingHandler({ llm, profileName }) {
   if (llm && llm.model === 'primary-ocr-model') {
@@ -102,7 +112,8 @@ module.exports = async function failingHandler({ llm, profileName }) {
 };`, 'utf8');
 
   const runtime = await createRuntimeTools({
-    workspaceDir: rootDir,
+    workspaceDir,
+    projectRootDir,
     skillsDir: path.join(repoRoot, 'skills'),
     mcpServers: [],
     attachmentExtraction: {
@@ -146,6 +157,9 @@ module.exports = async function failingHandler({ llm, profileName }) {
 
     const localRead = await runtime.tools.readFile.execute({ path: localTextPath });
     assert.equal(localRead.content, 'hello local file');
+
+    const sharedRead = await runtime.tools.readFile.execute({ path: sharedTextPath });
+    assert.equal(sharedRead.content, 'shared contract note');
 
     let receivedTimeoutMs = null;
     const fakeBashTool = createBashTool({
@@ -376,15 +390,26 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(outbound.success, true);
     assert.equal(outbound.attachment.name, 'result.pdf');
 
+    const sharedOutbound = await runtime.tools.sendFile.execute({
+      path: sharedPdfPath,
+      name: 'shared-contract.pdf',
+    });
+    assert.equal(sharedOutbound.success, true);
+    assert.equal(sharedOutbound.attachment.name, 'shared-contract.pdf');
+
     await assert.rejects(
       () => runtime.tools.readFile.execute({ path: path.join('..', 'outside.txt') }),
-      /escapes the user workspace/i,
+      /outside the readable roots/i,
     );
 
     assert.deepEqual(runtime.getOutboundAttachments(), [{
       path: localPdfPath,
       name: 'result.pdf',
       sizeBytes: fs.statSync(localPdfPath).size,
+    }, {
+      path: sharedPdfPath,
+      name: 'shared-contract.pdf',
+      sizeBytes: fs.statSync(sharedPdfPath).size,
     }]);
   } finally {
     await runtime.close();

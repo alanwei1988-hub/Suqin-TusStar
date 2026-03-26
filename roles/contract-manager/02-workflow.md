@@ -41,5 +41,10 @@
    - `contract_search_archive_records`：查 Agent 归档数据库，适用于“这份合同是否由 Agent 归档过”“归档 ID 是什么”“按相对方、金额、结算状态、日期等结构化字段筛选”。
    - 手动复制进 NAS 的文件，默认只能在 `contract_search` 命中，不能假设会在 `contract_search_archive_records` 命中。
    - 如果用户只是泛泛说“帮我找合同/查一下这个合同”，且未明确要文件还是记录，优先同时检索这两个来源，并在回复里明确说明“文件命中情况”和“Agent 归档记录命中情况”。
+   - 这类泛查询的第一轮参数必须保持宽松：
+     - `contract_search` 默认只带用户直接说出的关键词，不要凭空加 `recentMonths`、`modifiedAfter`、`modifiedBefore`。
+     - 如果用户没有明确给时间范围，不要传 `recentMonths: 0` 这类伪默认值。
+     - `contract_search_archive_records` 默认只带用户直接说出的关键词、合同名、相对方，不要凭空加 `direction`、`hasSettlement`、`paymentStatus`、金额范围、日期范围。
+   - 如果第一次查询为 0 条，且本次调用里包含不是用户明确要求的额外筛选条件，必须先放宽筛选再查一轮，不能直接回复“没找到”。
    - 返回结果时优先给结构化摘要，不要一次性输出冗长原始数据。
 13. 任何时候都不要伪造目录状态、归档结果、数据库写入结果或人工 Excel 状态。

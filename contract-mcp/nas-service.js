@@ -273,6 +273,75 @@ function buildSearchTerms(values = []) {
   return [...terms];
 }
 
+function buildRelaxedArchiveSearchFilters(filters = {}) {
+  return {
+    keyword: filters.keyword || '',
+    keyword_terms: Array.isArray(filters.keyword_terms) ? filters.keyword_terms : [],
+    archive_relative_dir: '',
+    contract_name: filters.contract_name || '',
+    counterparty_name: filters.counterparty_name || '',
+    agreement_type: '',
+    direction: '',
+    uploaded_by: '',
+    our_owner: '',
+    payment_status: '',
+    has_settlement: undefined,
+    signing_date_from: '',
+    signing_date_to: '',
+    effective_start_from: '',
+    effective_start_to: '',
+    effective_end_from: '',
+    effective_end_to: '',
+    first_payment_date_from: '',
+    first_payment_date_to: '',
+    final_payment_date_from: '',
+    final_payment_date_to: '',
+    min_amount: undefined,
+    max_amount: undefined,
+    archived_at_from: '',
+    archived_at_to: '',
+    created_at_from: '',
+    created_at_to: '',
+    updated_at_from: '',
+    updated_at_to: '',
+    limit: filters.limit,
+  };
+}
+
+function hasBroadArchiveSearchIntent(filters = {}) {
+  return Boolean(filters.keyword || filters.contract_name || filters.counterparty_name);
+}
+
+function hasRelaxableArchiveSearchFilters(filters = {}) {
+  return Boolean(
+    filters.archive_relative_dir
+    || filters.agreement_type
+    || filters.direction
+    || filters.uploaded_by
+    || filters.our_owner
+    || filters.payment_status
+    || typeof filters.has_settlement === 'number'
+    || filters.signing_date_from
+    || filters.signing_date_to
+    || filters.effective_start_from
+    || filters.effective_start_to
+    || filters.effective_end_from
+    || filters.effective_end_to
+    || filters.first_payment_date_from
+    || filters.first_payment_date_to
+    || filters.final_payment_date_from
+    || filters.final_payment_date_to
+    || typeof filters.min_amount === 'number'
+    || typeof filters.max_amount === 'number'
+    || filters.archived_at_from
+    || filters.archived_at_to
+    || filters.created_at_from
+    || filters.created_at_to
+    || filters.updated_at_from
+    || filters.updated_at_to
+  );
+}
+
 function hasMeaningfulContractInput(contract) {
   if (!contract || typeof contract !== 'object' || Array.isArray(contract)) {
     return false;
@@ -1374,7 +1443,17 @@ class ContractService {
       throw new Error(`Invalid maxAmount: ${input.maxAmount}`);
     }
 
-    const rows = this.repository.searchRecords(normalizedFilters);
+    let rows = this.repository.searchRecords(normalizedFilters);
+    let effectiveFilters = normalizedFilters;
+
+    if (
+      rows.length === 0
+      && hasBroadArchiveSearchIntent(normalizedFilters)
+      && hasRelaxableArchiveSearchFilters(normalizedFilters)
+    ) {
+      effectiveFilters = buildRelaxedArchiveSearchFilters(normalizedFilters);
+      rows = this.repository.searchRecords(effectiveFilters);
+    }
 
     return {
       items: rows.map(row => {
@@ -1382,6 +1461,7 @@ class ContractService {
         return this.mapArchiveRecordRow(row, fileRows);
       }),
       archiveDatabasePath: this.config.dbPath,
+      fallbackUsed: effectiveFilters !== normalizedFilters,
     };
   }
 
@@ -1515,7 +1595,7 @@ class ContractService {
     const modifiedAfter = input.modifiedAfter ? new Date(input.modifiedAfter) : null;
     const modifiedBefore = input.modifiedBefore ? new Date(input.modifiedBefore) : null;
     const recentMonths = Number.isFinite(input.recentMonths) ? Math.max(0, Math.trunc(input.recentMonths)) : null;
-    const effectiveModifiedAfter = recentMonths != null
+    const effectiveModifiedAfter = recentMonths != null && recentMonths > 0
       ? new Date(Date.now() - recentMonths * 30 * 24 * 60 * 60 * 1000)
       : modifiedAfter;
     const items = [];

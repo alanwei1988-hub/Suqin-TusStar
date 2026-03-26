@@ -7,6 +7,7 @@ const tests = [
   ['agent.streaming', require('./agent.streaming.test')],
   ['agent.user-config', require('./agent.user-config.test')],
   ['agent.session', require('./agent.session.test')],
+  ['agent.request-context', require('./agent.request-context.test')],
   ['agent.tools', require('./agent.tools.test')],
   ['markitdown.extractor', require('./markitdown.extractor.test')],
   ['agent.attachment-session', require('./agent.attachment-session.test')],

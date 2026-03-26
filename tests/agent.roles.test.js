@@ -11,6 +11,8 @@ module.exports = async function runAgentRoleTest() {
   assert.match(rolePrompt, /合同管理员/);
   assert.match(rolePrompt, /不要编造/);
   assert.match(rolePrompt, /不要因为“收到了文件”就立刻读取/);
+  assert.match(rolePrompt, /不要传 `recentMonths: 0`/);
+  assert.match(rolePrompt, /不要凭空加 `direction`、`hasSettlement`/);
 
   const rootDir = makeTempDir('agent-role-');
   const model = new MockLanguageModelV3({
