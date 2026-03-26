@@ -108,6 +108,7 @@ DEBUG=true
 - `agent`
   - 模型、工具调用策略、最大步骤数
   - 模型思考控制 `agent.thinking`
+  - 长期记忆控制 `agent.memory`
   - 工具超时配置 `agent.toolTimeouts`
   - 会话数据库路径 `agent.sessionDb`
   - 技能目录 `agent.skillsDir`
@@ -143,6 +144,7 @@ DEBUG=true
 - `roles`：优先加载用户目录 `roles/`，同相对路径提示词会覆盖全局角色；没找到再回退到项目根目录 `roles/`
 - `workspaceDir`：运行时自动切到当前用户的 `workspace/`
 - `attachmentExtraction.markitdown.cache.dbPath`：默认自动落到当前用户的 `data/attachment-extraction-cache.db`
+  - `memory`：支持在全局或用户配置里覆盖长期记忆参数
 - `mcp`、模型、工具超时等其他 agent 配置：用户配置里写了就覆盖，没写就继续用全局
 
 一个最小的用户覆盖配置示例：
@@ -158,6 +160,12 @@ DEBUG=true
   }
 }
 ```
+
+`agent.memory` 可用参数：
+
+- `reflectionIntervalTurns`：每多少个用户轮次触发一次后台异步 memory reflection
+- `dialogueLimit`：前台 `updateMemory` 和后台 reflection 送给 memory-LLM 的最近对话条数上限，只保留 user/assistant，不含 tool
+- `asyncReflectionEnabled`：是否启用后台异步 reflection
 
 ## 启动
 

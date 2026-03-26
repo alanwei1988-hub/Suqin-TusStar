@@ -72,6 +72,11 @@ module.exports = async function runAppConfigTest() {
     maxBashTimeoutMs: 300000,
     mcpToolTimeoutMs: 30000,
   });
+  assert.deepEqual(processedDefault.agent.memory, {
+    reflectionIntervalTurns: 20,
+    dialogueLimit: 8,
+    asyncReflectionEnabled: true,
+  });
   assert.equal(processedDefault.contractMcp.libraryRoot, `${__dirname}\\contract-library`);
   assert.equal(processedDefault.contractMcp.dbPath, `${__dirname}\\contract-library\\合同归档.db`);
   assert.equal(processedDefault.storage.userRootDir, `${__dirname}\\storage\\users`);
@@ -108,6 +113,11 @@ module.exports = async function runAppConfigTest() {
         maxBashTimeoutMs: 5678,
         mcpToolTimeoutMs: 4321,
       },
+      memory: {
+        reflectionIntervalTurns: 15,
+        dialogueLimit: 6,
+        asyncReflectionEnabled: false,
+      },
       thinking: {
         enabled: false,
         reasoningEffort: 'low',
@@ -126,6 +136,11 @@ module.exports = async function runAppConfigTest() {
     bashTimeoutMs: 1234,
     maxBashTimeoutMs: 5678,
     mcpToolTimeoutMs: 4321,
+  });
+  assert.deepEqual(processedToolTimeouts.agent.memory, {
+    reflectionIntervalTurns: 15,
+    dialogueLimit: 6,
+    asyncReflectionEnabled: false,
   });
   assert.deepEqual(processedToolTimeouts.agent.thinking, {
     enabled: false,

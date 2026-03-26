@@ -886,6 +886,32 @@ function createSendFileTool(machine, workspaceDir) {
   });
 }
 
+function createUpdateMemoryTool(memoryRuntime) {
+  return tool({
+    description: [
+      'Persist a direct patch to the current user long-term memory.',
+      'Use this when the current turn clearly reveals durable identity information, a preferred real name, or a lasting collaboration preference/correction.',
+      'Do not use this for one-off task details or short-lived context.',
+    ].join(' '),
+    inputSchema: z.object({
+      reason: z.string().optional().describe('Why this turn likely needs a durable memory update.'),
+      memoryPatch: z.object({
+        profile: z.object({
+          realName: z.string().optional(),
+          realNameSource: z.string().optional(),
+          awaitingRealNameReply: z.boolean().optional(),
+        }).optional(),
+        notes: z.array(z.object({
+          text: z.string(),
+          kind: z.string().optional(),
+          trigger: z.string().optional(),
+        })).optional(),
+      }).describe('Direct durable memory patch derived by the main agent from the current conversation.'),
+    }),
+    execute: async ({ reason, memoryPatch }) => memoryRuntime.applyPatch({ reason, patch: memoryPatch }),
+  });
+}
+
 async function createRuntimeTools({
   workspaceDir,
   projectRootDir = workspaceDir,
@@ -895,6 +921,7 @@ async function createRuntimeTools({
   attachmentExtraction = {},
   toolTimeouts = {},
   requestContext = {},
+  memoryRuntime = null,
 }) {
   const workingDir = path.resolve(workspaceDir);
   await fs.mkdir(workingDir, { recursive: true });
@@ -920,16 +947,17 @@ async function createRuntimeTools({
     }),
   ]);
 
-  const runtimeTools = {
-    bash: bashToolkit.tool,
-    readFile: createReadFileTool(machine, workingDir, attachmentToolkit.attachmentIndex),
-    writeFile: createWriteFileTool(machine, workingDir),
-    stageHostPath: createStageHostPathTool(machine, workingDir),
-    runPython: createRunPythonTool(workingDir),
-    runJavaScript: createRunJavaScriptTool(workingDir),
-    sendFile: createSendFileTool(machine, workingDir),
-    ...attachmentToolkit.tools,
-  };
+    const runtimeTools = {
+      bash: bashToolkit.tool,
+      readFile: createReadFileTool(machine, workingDir, attachmentToolkit.attachmentIndex),
+      writeFile: createWriteFileTool(machine, workingDir),
+      stageHostPath: createStageHostPathTool(machine, workingDir),
+      runPython: createRunPythonTool(workingDir),
+      runJavaScript: createRunJavaScriptTool(workingDir),
+      sendFile: createSendFileTool(machine, workingDir),
+      ...(memoryRuntime ? { updateMemory: createUpdateMemoryTool(memoryRuntime) } : {}),
+      ...attachmentToolkit.tools,
+    };
 
   const tools = mergeToolSets([
     runtimeTools,
@@ -961,29 +989,39 @@ async function createRuntimeTools({
       displayName: 'JavaScript 执行',
       statusText: '运行 JavaScript 代码',
     }),
-    sendFile: createToolDisplayInfo('sendFile', {
-      displayName: '文件发送',
-      statusText: '准备发送文件',
-    }),
-    ...(attachmentToolkit.toolDisplayByName || {}),
-    ...(skillsToolkit.toolDisplayByName || {}),
-    ...(mcpToolkit.toolDisplayByName || {}),
+      sendFile: createToolDisplayInfo('sendFile', {
+        displayName: '文件发送',
+        statusText: '准备发送文件',
+      }),
+      ...(memoryRuntime ? {
+        updateMemory: createToolDisplayInfo('updateMemory', {
+          displayName: '记忆更新',
+          statusText: '更新长期记忆',
+        }),
+      } : {}),
+      ...(attachmentToolkit.toolDisplayByName || {}),
+      ...(skillsToolkit.toolDisplayByName || {}),
+      ...(mcpToolkit.toolDisplayByName || {}),
   };
 
-  return {
-    tools,
-    toolDisplayByName,
-    toolNames: Object.keys(tools),
-    mcpToolNames: Object.keys(mcpToolkit.tools),
-    mcpReadOnlyToolNames: mcpToolkit.readOnlyToolNames || [],
-    attachmentToolNames: attachmentToolkit.toolNames,
-    promptSections: [
-      `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`) operate on real host paths inside this workspace, and host read/send access is also allowed for the shared contract library root: \`${toPosixPath(sharedLibraryRoot)}\`.`,
-      'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly.',
-      'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
-      buildSkillsPrompt(skillsToolkit.skills),
-      buildMcpPrompt(mcpToolkit.summaries),
-      buildAttachmentsPrompt(normalizedAttachments),
+    return {
+      tools,
+      toolDisplayByName,
+      toolNames: Object.keys(tools),
+      mcpToolNames: Object.keys(mcpToolkit.tools),
+      mcpReadOnlyToolNames: mcpToolkit.readOnlyToolNames || [],
+      attachmentToolNames: attachmentToolkit.toolNames,
+      memoryToolNames: memoryRuntime ? ['updateMemory'] : [],
+      promptSections: [
+        `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`) operate on real host paths inside this workspace, and host read/send access is also allowed for the shared contract library root: \`${toPosixPath(sharedLibraryRoot)}\`.`,
+        'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly.',
+        'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
+        memoryRuntime
+          ? 'Memory\nUse `updateMemory` when the current turn reveals durable identity, a preferred real name, or a lasting collaboration preference/correction that should influence future turns. When you call it, provide the memory patch directly from your own understanding of the conversation. Do not store one-off task details.'
+          : '',
+        buildSkillsPrompt(skillsToolkit.skills),
+        buildMcpPrompt(mcpToolkit.summaries),
+        buildAttachmentsPrompt(normalizedAttachments),
     ].filter(Boolean),
     getOutboundAttachments: () => machine.getOutboundAttachments(),
     close: async () => {

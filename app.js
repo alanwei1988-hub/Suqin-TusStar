@@ -103,6 +103,22 @@ function normalizeAgentThinkingConfig(config = {}) {
   return normalizeThinkingConfig(config);
 }
 
+function normalizeMemoryConfig(config = {}) {
+  const normalizedConfig = config && typeof config === 'object' && !Array.isArray(config)
+    ? config
+    : {};
+
+  return {
+    reflectionIntervalTurns: Number.isFinite(normalizedConfig.reflectionIntervalTurns)
+      ? Math.max(1, Math.trunc(normalizedConfig.reflectionIntervalTurns))
+      : 20,
+    dialogueLimit: Number.isFinite(normalizedConfig.dialogueLimit)
+      ? Math.max(1, Math.trunc(normalizedConfig.dialogueLimit))
+      : 8,
+    asyncReflectionEnabled: normalizedConfig.asyncReflectionEnabled !== false,
+  };
+}
+
 function normalizeMarkItDownConfig(rootDir, config = {}) {
   const runnerPath = getProjectMarkItDownPython(rootDir);
   const llmConfig = config && typeof config.llm === 'object' && !Array.isArray(config.llm)
@@ -226,6 +242,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
   const sessionDbPath = resolveRelativePath(rootDir, rawConfig.agent.sessionDb);
   const markitdownConfig = normalizeMarkItDownConfig(rootDir, rawConfig.agent.attachmentExtraction?.markitdown || {});
   const toolTimeouts = normalizeToolTimeouts(rawConfig.agent.toolTimeouts || {});
+  const memoryConfig = normalizeMemoryConfig(rawConfig.agent.memory || {});
   const userRootDir = resolveRelativePath(rootDir, rawConfig.storage.userRootDir || './storage/users');
   const normalizedChannelConfig = {
     ...channelConfig,
@@ -252,6 +269,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       ...rawConfig.agent,
       model: env.MODEL_NAME || rawConfig.agent.model,
       thinking: normalizeAgentThinkingConfig(rawConfig.agent.thinking),
+      memory: memoryConfig,
       workspaceDir: path.resolve(rootDir),
       projectRootDir: path.resolve(rootDir),
       userRootDir,

@@ -10,7 +10,15 @@ module.exports = async function runAgentMcpIntegrationTest() {
   const rootDir = makeTempDir('agent-mcp-');
   const fixture = createContractMcpFixture(rootDir);
   const attachmentPath = path.join(rootDir, 'contract.pdf');
+  const memoryPath = path.join(rootDir, 'storage', 'users', 'u1', 'data', 'memory.json');
   fs.writeFileSync(attachmentPath, 'fake contract file');
+  fs.mkdirSync(path.dirname(memoryPath), { recursive: true });
+  fs.writeFileSync(memoryPath, JSON.stringify({
+    profile: {
+      realName: '王小明',
+    },
+    stats: {},
+  }, null, 2));
 
   let callIndex = 0;
   const model = new MockLanguageModelV3({
@@ -121,10 +129,10 @@ module.exports = async function runAgentMcpIntegrationTest() {
     `).get('Agent MCP 测试算力采购合同');
     db.close();
     assert.equal(row.uploader_user_id, 'u1');
-    assert.equal(row.operator, 'u1');
+    assert.equal(row.operator, '王小明');
     assert.equal(row.source_channel, 'wxwork');
     assert.equal(row.source_message_id, 'wxwork-req-1');
-    assert.equal(row.uploaded_by, '模型里随便写的人');
+    assert.equal(row.uploaded_by, '王小明');
   } finally {
     agent.close();
     fs.rmSync(rootDir, { recursive: true, force: true });

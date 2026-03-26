@@ -21,6 +21,11 @@
       "summaryLineCount": 10,
       "summaryMaxChars": 240
     },
+    "memory": {
+      "reflectionIntervalTurns": 15,
+      "dialogueLimit": 20,
+      "asyncReflectionEnabled": true
+    },
     "mcpServers": [
       {
         "name": "contract-manager",

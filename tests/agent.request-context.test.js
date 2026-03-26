@@ -4,6 +4,7 @@ const AgentCore = require('../agent');
 module.exports = async function runAgentRequestContextTest() {
   const prompt = AgentCore.buildRequestContextPrompt({
     userId: 'XiaoDao',
+    userDisplayName: '小刀',
     context: {
       chatId: 'room-1',
       chatType: 2,
@@ -17,5 +18,6 @@ module.exports = async function runAgentRequestContextTest() {
   assert.match(prompt, /Current time \(Asia\/Shanghai\): 00:30:00/);
   assert.match(prompt, /Interpret relative time words such as today, tomorrow, yesterday, recent, and this month against this timestamp/);
   assert.match(prompt, /Current requester user id: XiaoDao/);
+  assert.match(prompt, /Current requester display name: 小刀/);
   assert.match(prompt, /Current chat target: room-1 \(chatType=2\)/);
 };

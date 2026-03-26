@@ -136,12 +136,14 @@ function computeLoopState(steps, runtime) {
 }
 
 function getActiveTools(stepNumber, loopState, runtime) {
+  const memoryToolNames = runtime.memoryToolNames || [];
+
   if (loopState.pendingVerification) {
-    return ['readFile', 'bash', ...runtime.attachmentToolNames];
+    return ['readFile', 'bash', ...runtime.attachmentToolNames, ...memoryToolNames];
   }
 
   if (stepNumber === 0) {
-    return ['skill', 'readFile', 'bash', ...runtime.attachmentToolNames];
+    return ['skill', 'readFile', 'bash', ...runtime.attachmentToolNames, ...memoryToolNames];
   }
 
   return runtime.toolNames;

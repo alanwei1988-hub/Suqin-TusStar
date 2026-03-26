@@ -15,6 +15,7 @@ const {
 } = require('./loop');
 const { createRuntimeTools } = require('./tools/index');
 const { createMcpToolkit } = require('./tools/mcp');
+const { buildMemoryPrompt, MemoryManager } = require('./memory');
 const { listAvailableSkills } = require('./tools/skills');
 const { loadRolePrompt } = require('./roles');
 const SessionManager = require('./session');
@@ -141,6 +142,10 @@ function buildRequestContextPrompt(requestContext = {}) {
   if (requestContext.userId) {
     lines.push('Current Request');
     lines.push(`- Current requester user id: ${requestContext.userId}`);
+  }
+
+  if (requestContext.userDisplayName) {
+    lines.push(`- Current requester display name: ${requestContext.userDisplayName}`);
   }
 
   if (Number.isFinite(requestContext.context?.chatType) || requestContext.context?.chatId) {
@@ -340,6 +345,7 @@ class AgentCore {
   constructor(config, options = {}) {
     this.config = config;
     this.modelOverride = options.model;
+    this.memoryManagers = new Map();
     this.sessionManagers = new Map();
     this.sessionManager = this.getSessionManager(config.sessionDb);
     this.skills = [];
@@ -353,6 +359,16 @@ class AgentCore {
     }
 
     return this.sessionManagers.get(key);
+  }
+
+  getMemoryManager(filePath, options = {}) {
+    const key = path.resolve(filePath);
+
+    if (!this.memoryManagers.has(key)) {
+      this.memoryManagers.set(key, new MemoryManager(key, options));
+    }
+
+    return this.memoryManagers.get(key);
   }
 
   async init() {
@@ -390,6 +406,10 @@ class AgentCore {
     const toolChoice = getToolChoiceSetting(effectiveConfig);
     const sessionManager = this.getSessionManager(effectiveConfig.sessionDb);
     const fullMessages = sessionManager.getMessages(userId);
+    const memoryPath = path.join(effectiveConfig.userPaths.dataDir, 'memory.json');
+    const memoryManager = this.getMemoryManager(memoryPath, {
+      reflectionIntervalTurns: effectiveConfig.memory?.reflectionIntervalTurns,
+    });
     const normalizedAttachments = await enrichAttachmentMetadata(
       normalizeConversationAttachments(attachments),
       effectiveConfig.projectRootDir || effectiveConfig.workspaceDir,
@@ -400,6 +420,11 @@ class AgentCore {
     const content = buildUserContent(userMessage, normalizedAttachments);
 
     fullMessages.push({ role: 'user', content, attachments: normalizedAttachments });
+    const turnMemory = memoryManager.prepareForTurn({ userMessage });
+    const memory = turnMemory.memory;
+    const userDisplayName = typeof memory.profile?.realName === 'string'
+      ? memory.profile.realName.trim()
+      : '';
     const conversationAttachments = collectConversationAttachments(fullMessages);
     const pendingArchiveDraftPrompt = buildPendingArchiveDraftPrompt(fullMessages);
     const context = sessionManager.buildModelContext(fullMessages, {
@@ -408,6 +433,17 @@ class AgentCore {
       summaryMaxChars: contextSettings.summaryMaxChars,
     });
 
+    const provider = createOpenAICompatible({
+      name: effectiveConfig.provider || 'openaiCompatible',
+      apiKey: effectiveConfig.openai.apiKey,
+      baseURL: effectiveConfig.openai.baseURL,
+      includeUsage: true,
+    });
+    const model = this.modelOverride || provider(effectiveConfig.model);
+    const providerOptions = buildOpenAICompatibleProviderOptions(
+      effectiveConfig.provider || 'openaiCompatible',
+      effectiveConfig.thinking,
+    );
     const runtime = await createRuntimeTools({
       workspaceDir: effectiveConfig.workspaceDir,
       projectRootDir: effectiveConfig.projectRootDir || effectiveConfig.workspaceDir,
@@ -416,29 +452,36 @@ class AgentCore {
       attachments: conversationAttachments,
       attachmentExtraction: effectiveConfig.attachmentExtraction || {},
       toolTimeouts: effectiveConfig.toolTimeouts || {},
-      requestContext,
+      requestContext: {
+        ...requestContext,
+        memory,
+        userDisplayName,
+      },
+      memoryRuntime: {
+        applyPatch({ reason = '', patch = {} } = {}) {
+          return memoryManager.applyPatch({
+            reason,
+            patch,
+            trigger: 'tool_call',
+          });
+        },
+      },
     });
     const rolePrompt = await loadRolePrompt(effectiveConfig.rolePromptDirs || effectiveConfig.rolePromptDir);
-    const provider = createOpenAICompatible({
-      name: effectiveConfig.provider || 'openaiCompatible',
-      apiKey: effectiveConfig.openai.apiKey,
-      baseURL: effectiveConfig.openai.baseURL,
-      includeUsage: true,
-    });
-    const providerOptions = buildOpenAICompatibleProviderOptions(
-      effectiveConfig.provider || 'openaiCompatible',
-      effectiveConfig.thinking,
-    );
     const promptSections = [
       rolePrompt,
-      buildRequestContextPrompt(requestContext),
+      buildRequestContextPrompt({
+        ...requestContext,
+        userDisplayName,
+      }),
+      buildMemoryPrompt(memory, { userId }),
       ...runtime.promptSections,
       pendingArchiveDraftPrompt,
       context.summary,
     ].filter(Boolean);
 
     const agent = new ToolLoopAgent({
-      model: this.modelOverride || provider(effectiveConfig.model),
+      model,
       instructions: buildSystemPrompt(promptSections),
       tools: runtime.tools,
       stopWhen: stepCountIs(effectiveConfig.maxSteps || 12),
@@ -636,6 +679,16 @@ class AgentCore {
 
       appendFinalAssistantMessageIfNeeded(fullMessages, responseMessages, finalResponse);
       sessionManager.saveMessages(userId, fullMessages);
+      memoryManager.finalizeTurn({ assistantMessage: finalResponse });
+      if (effectiveConfig.memory?.asyncReflectionEnabled !== false) {
+        memoryManager.triggerReflectionAsync({
+          model,
+          providerOptions,
+          userId,
+          conversationMessages: fullMessages,
+          dialogueLimit: effectiveConfig.memory?.dialogueLimit,
+        });
+      }
 
       if (includeArtifacts) {
         return {
@@ -651,6 +704,7 @@ class AgentCore {
   }
 
   close() {
+    this.memoryManagers.clear();
     for (const sessionManager of this.sessionManagers.values()) {
       sessionManager.close();
     }

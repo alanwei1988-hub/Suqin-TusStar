@@ -31,9 +31,16 @@ function buildArchiveToolIdentity(requestContext = {}) {
   const context = requestContext.context && typeof requestContext.context === 'object'
     ? requestContext.context
     : {};
+  const rememberedRealName = typeof requestContext.memory?.profile?.realName === 'string'
+    ? requestContext.memory.profile.realName.trim()
+    : '';
+  const userDisplayName = typeof requestContext.userDisplayName === 'string'
+    ? requestContext.userDisplayName.trim()
+    : rememberedRealName;
 
   return {
     userId: typeof requestContext.userId === 'string' ? requestContext.userId.trim() : '',
+    userDisplayName,
     sourceChannel: typeof context.channelType === 'string'
       ? context.channelType.trim()
       : (typeof requestContext.channelType === 'string' ? requestContext.channelType.trim() : ''),
@@ -54,8 +61,19 @@ function injectArchiveToolRequestContext(originalToolName, args, requestContext 
     : {};
 
   if (identity.userId) {
-    nextArgs.operator = identity.userId;
     nextArgs.uploaderUserId = identity.userId;
+  }
+
+  if (identity.userDisplayName) {
+    nextArgs.operator = identity.userDisplayName;
+    nextArgs.contract = nextArgs.contract && typeof nextArgs.contract === 'object' && !Array.isArray(nextArgs.contract)
+      ? {
+        ...nextArgs.contract,
+        uploadedBy: identity.userDisplayName,
+      }
+      : nextArgs.contract;
+  } else if (identity.userId) {
+    nextArgs.operator = identity.userId;
   }
 
   if (identity.sourceChannel) {
