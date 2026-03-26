@@ -4,6 +4,7 @@ const tests = [
   ['contract-mcp.config', require('./contract-mcp.config.test')],
   ['contract-mcp.service', require('./contract-mcp.service.test')],
   ['agent.roles', require('./agent.roles.test')],
+  ['agent.streaming', require('./agent.streaming.test')],
   ['agent.user-config', require('./agent.user-config.test')],
   ['agent.session', require('./agent.session.test')],
   ['agent.tools', require('./agent.tools.test')],

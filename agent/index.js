@@ -393,38 +393,162 @@ class AgentCore {
       let finalResponse = '已处理完成。';
       let messagesForRun = context.messages;
       const maxContinuationAttempts = 3;
+      const preferStreaming = !(this.modelOverride && this.modelOverride.provider === 'mock-provider');
 
       for (let continuationAttempt = 0; continuationAttempt < maxContinuationAttempts; continuationAttempt += 1) {
-        const result = await agent.generate({
-          messages: messagesForRun,
-          experimental_onStepStart: async step => {
-            if (callbacks.onStepStart) {
-              await callbacks.onStepStart(step);
-            }
-          },
-          experimental_onToolCallStart: async event => {
-            if (callbacks.onToolCallStart) {
-              await callbacks.onToolCallStart(enrichToolEventWithDisplay(event, runtime));
-            }
-          },
-          experimental_onToolCallFinish: async event => {
-            if (callbacks.onToolCallFinish) {
-              await callbacks.onToolCallFinish(enrichToolEventWithDisplay(event, runtime));
-            }
-          },
-          onStepFinish: async step => {
-            if (callbacks.onStepFinish) {
-              await callbacks.onStepFinish(enrichStepWithDisplay(step, runtime));
-            }
-          },
-        });
+        if (!preferStreaming) {
+          const result = await agent.generate({
+            messages: messagesForRun,
+            experimental_onStepStart: async step => {
+              if (callbacks.onStepStart) {
+                await callbacks.onStepStart(step);
+              }
+            },
+            experimental_onToolCallStart: async event => {
+              if (callbacks.onToolCallStart) {
+                await callbacks.onToolCallStart(enrichToolEventWithDisplay(event, runtime));
+              }
+            },
+            experimental_onToolCallFinish: async event => {
+              if (callbacks.onToolCallFinish) {
+                await callbacks.onToolCallFinish(enrichToolEventWithDisplay(event, runtime));
+              }
+            },
+            onStepFinish: async step => {
+              if (callbacks.onStepFinish) {
+                await callbacks.onStepFinish(enrichStepWithDisplay(step, runtime));
+              }
+            },
+          });
 
-        const newResponseMessages = Array.isArray(result?.response?.messages)
-          ? result.response.messages
+          const newResponseMessages = Array.isArray(result?.response?.messages)
+            ? result.response.messages
+            : [];
+
+          responseMessages.push(...newResponseMessages);
+          finalResponse = buildFinalResponse(result);
+          const toolErrors = extractToolErrorSummaries(newResponseMessages);
+          const needsToolErrorRecovery = toolErrors.length > 0;
+
+          if (continuationAttempt === maxContinuationAttempts - 1 || !needsToolErrorRecovery) {
+            break;
+          }
+
+          messagesForRun = [
+            ...messagesForRun,
+            ...newResponseMessages,
+            {
+              role: 'user',
+              content: buildToolErrorContinuationPrompt(toolErrors),
+            },
+          ];
+          continue;
+        }
+
+        let streamResult;
+
+        try {
+          streamResult = await agent.stream({
+            messages: messagesForRun,
+            experimental_onStepStart: async step => {
+              if (callbacks.onStepStart) {
+                await callbacks.onStepStart(step);
+              }
+            },
+            experimental_onToolCallStart: async event => {
+              if (callbacks.onToolCallStart) {
+                await callbacks.onToolCallStart(enrichToolEventWithDisplay(event, runtime));
+              }
+            },
+            experimental_onToolCallFinish: async event => {
+              if (callbacks.onToolCallFinish) {
+                await callbacks.onToolCallFinish(enrichToolEventWithDisplay(event, runtime));
+              }
+            },
+            onStepFinish: async step => {
+              if (callbacks.onStepFinish) {
+                await callbacks.onStepFinish(enrichStepWithDisplay(step, runtime));
+              }
+            },
+          });
+        } catch (error) {
+          const shouldFallbackToGenerate = error instanceof Error && error.message === 'Not implemented';
+
+          if (!shouldFallbackToGenerate) {
+            throw error;
+          }
+
+          const result = await agent.generate({
+            messages: messagesForRun,
+            experimental_onStepStart: async step => {
+              if (callbacks.onStepStart) {
+                await callbacks.onStepStart(step);
+              }
+            },
+            experimental_onToolCallStart: async event => {
+              if (callbacks.onToolCallStart) {
+                await callbacks.onToolCallStart(enrichToolEventWithDisplay(event, runtime));
+              }
+            },
+            experimental_onToolCallFinish: async event => {
+              if (callbacks.onToolCallFinish) {
+                await callbacks.onToolCallFinish(enrichToolEventWithDisplay(event, runtime));
+              }
+            },
+            onStepFinish: async step => {
+              if (callbacks.onStepFinish) {
+                await callbacks.onStepFinish(enrichStepWithDisplay(step, runtime));
+              }
+            },
+          });
+
+          const newResponseMessages = Array.isArray(result?.response?.messages)
+            ? result.response.messages
+            : [];
+
+          responseMessages.push(...newResponseMessages);
+          finalResponse = buildFinalResponse(result);
+          const toolErrors = extractToolErrorSummaries(newResponseMessages);
+          const needsToolErrorRecovery = toolErrors.length > 0;
+
+          if (continuationAttempt === maxContinuationAttempts - 1 || !needsToolErrorRecovery) {
+            break;
+          }
+
+          messagesForRun = [
+            ...messagesForRun,
+            ...newResponseMessages,
+            {
+              role: 'user',
+              content: buildToolErrorContinuationPrompt(toolErrors),
+            },
+          ];
+          continue;
+        }
+
+        let streamedText = '';
+        for await (const delta of streamResult.textStream) {
+          streamedText += delta;
+
+          if (callbacks.onTextDelta && delta) {
+            await callbacks.onTextDelta({
+              textDelta: delta,
+              text: streamedText,
+              continuationAttempt,
+            });
+          }
+        }
+
+        const [streamResponse, streamText] = await Promise.all([
+          streamResult.response,
+          streamResult.text,
+        ]);
+        const newResponseMessages = Array.isArray(streamResponse?.messages)
+          ? streamResponse.messages
           : [];
 
         responseMessages.push(...newResponseMessages);
-        finalResponse = buildFinalResponse(result);
+        finalResponse = streamText || '已处理完成。';
         const toolErrors = extractToolErrorSummaries(newResponseMessages);
         const needsToolErrorRecovery = toolErrors.length > 0;
 

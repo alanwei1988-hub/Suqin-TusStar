@@ -284,35 +284,6 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
   };
 }
 
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function splitReplyIntoChunks(content, maxChunkLength = 48) {
-  const normalized = String(content || '');
-
-  if (normalized.length <= maxChunkLength) {
-    return [normalized];
-  }
-
-  const chunks = [];
-  let buffer = '';
-
-  for (const char of normalized) {
-    buffer += char;
-    if (buffer.length >= maxChunkLength || /[，。！？；\n]/.test(char)) {
-      chunks.push(buffer);
-      buffer = '';
-    }
-  }
-
-  if (buffer.length > 0) {
-    chunks.push(buffer);
-  }
-
-  return chunks.filter(Boolean);
-}
-
 function formatStepStatus(step) {
   if (step.text && step.text.trim().length > 0) {
     return `正在整理回复（第 ${step.stepNumber + 1} 步）...`;
@@ -389,18 +360,99 @@ function createConversationQueue() {
 
 async function streamFinalReply(streamReply, response) {
   const finalResponse = response || '已处理完成。';
-  const chunks = splitReplyIntoChunks(finalResponse);
-  let partial = '';
+  await streamReply.finish(finalResponse);
+}
 
-  await streamReply.updateStatus('正在整理回复...');
+function createLiveDraftBridge(streamReply, options = {}) {
+  const flushIntervalMs = Number.isFinite(options.flushIntervalMs) ? Math.max(20, Math.trunc(options.flushIntervalMs)) : 120;
+  const minChunkChars = Number.isFinite(options.minChunkChars) ? Math.max(1, Math.trunc(options.minChunkChars)) : 24;
+  const state = {
+    fullText: '',
+    lastSentText: '',
+    lastFlushAt: 0,
+    hasStreamedDraft: false,
+    timer: null,
+    updateChain: Promise.resolve(),
+  };
 
-  for (const chunk of chunks) {
-    partial += chunk;
-    await streamReply.updateDraft(partial);
-    await delay(80);
+  function clearScheduledFlush() {
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
   }
 
-  await streamReply.finish(finalResponse);
+  function enqueueFlush(force = false) {
+    if (!streamReply) {
+      return state.updateChain;
+    }
+
+    const nextText = state.fullText;
+    if (!force && nextText === state.lastSentText) {
+      return state.updateChain;
+    }
+
+    state.updateChain = state.updateChain
+      .catch(() => {})
+      .then(async () => {
+        const latestText = state.fullText;
+
+        if (!force && latestText === state.lastSentText) {
+          return;
+        }
+
+        state.lastSentText = latestText;
+        state.lastFlushAt = Date.now();
+        await streamReply.updateDraft(latestText);
+      });
+
+    return state.updateChain;
+  }
+
+  function scheduleFlush(delayMs) {
+    if (!streamReply || state.timer) {
+      return;
+    }
+
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      void enqueueFlush();
+    }, Math.max(0, delayMs));
+  }
+
+  return {
+    get hasStreamedDraft() {
+      return state.hasStreamedDraft;
+    },
+    push(delta) {
+      if (!streamReply || !delta) {
+        return;
+      }
+
+      state.fullText += delta;
+      state.hasStreamedDraft = true;
+
+      const unsentChars = state.fullText.length - state.lastSentText.length;
+      const elapsedMs = Date.now() - state.lastFlushAt;
+
+      if (unsentChars >= minChunkChars || elapsedMs >= flushIntervalMs) {
+        clearScheduledFlush();
+        void enqueueFlush();
+        return;
+      }
+
+      scheduleFlush(flushIntervalMs - elapsedMs);
+    },
+    async finish(finalText) {
+      clearScheduledFlush();
+
+      if (typeof finalText === 'string' && finalText.length > state.fullText.length) {
+        state.fullText = finalText;
+      }
+
+      await state.updateChain.catch(() => {});
+    },
+  };
 }
 
 function isLikelyFileTooLargeMessage(message = '') {
@@ -493,6 +545,7 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
     const queueKey = getConversationQueueKey(userId, context);
     const { queuedAhead, promise } = messageQueue.enqueue(queueKey, async () => {
       try {
+        const draftBridge = createLiveDraftBridge(streamReply);
         let resolvedText = initialText;
         let resolvedAttachments = initialAttachments;
 
@@ -535,9 +588,12 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
               console.log('[Main] Agent tools:', step.toolCalls.map(toolCall => toolCall.toolName).join(', '));
             }
 
-            if (streamReply) {
+            if (streamReply && !draftBridge.hasStreamedDraft) {
               await streamReply.updateStatus(formatStepStatus(step));
             }
+          },
+          onTextDelta: async ({ textDelta }) => {
+            draftBridge.push(textDelta);
           },
         }));
 
@@ -560,7 +616,12 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
         }
 
         if (streamReply) {
-          await streamFinalReply(streamReply, finalText);
+          if (draftBridge.hasStreamedDraft) {
+            await draftBridge.finish(finalText);
+            await streamReply.finish(finalText);
+          } else {
+            await streamFinalReply(streamReply, finalText);
+          }
         } else {
           await channel.reply(userId, finalText, context);
         }
@@ -611,5 +672,4 @@ module.exports = {
   normalizeMcpServer,
   processConfig,
   registerChannelHandlers,
-  splitReplyIntoChunks,
 };

@@ -131,6 +131,7 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
 }
 
 module.exports = {
+  createUsage,
   createContractMcpFixture,
   generateResult,
   markitdownOcrSamplePdf,
