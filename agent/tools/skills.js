@@ -63,41 +63,53 @@ async function listSkillFiles(skillDir) {
   return files;
 }
 
+function normalizeSkillsDirs(skillsDir) {
+  const values = Array.isArray(skillsDir) ? skillsDir : [skillsDir];
+  return [...new Set(
+    values
+      .filter(value => typeof value === 'string' && value.trim().length > 0)
+      .map(value => path.resolve(value)),
+  )];
+}
+
 async function discoverSkills(skillsDir) {
-  const resolvedSkillsDir = path.resolve(skillsDir);
   const skills = [];
+  const seenNames = new Set();
 
-  let entries = [];
-  try {
-    entries = await fs.readdir(resolvedSkillsDir, { withFileTypes: true });
-  } catch (error) {
-    throw new Error(`Failed to read skills directory: ${resolvedSkillsDir}. ${error.message}`);
-  }
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
+  for (const resolvedSkillsDir of normalizeSkillsDirs(skillsDir)) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(resolvedSkillsDir, { withFileTypes: true });
+    } catch (error) {
       continue;
     }
 
-    const localPath = path.join(resolvedSkillsDir, entry.name);
-    const skillFilePath = path.join(localPath, 'SKILL.md');
-
-    try {
-      const content = await fs.readFile(skillFilePath, 'utf8');
-      const metadata = normalizeSkillMetadata(content);
-
-      if (!metadata) {
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
         continue;
       }
 
-      skills.push({
-        ...metadata,
-        localPath,
-        skillFilePath,
-        files: await listSkillFiles(localPath),
-      });
-    } catch {
-      // Ignore directories without a valid SKILL.md file.
+      const localPath = path.join(resolvedSkillsDir, entry.name);
+      const skillFilePath = path.join(localPath, 'SKILL.md');
+
+      try {
+        const content = await fs.readFile(skillFilePath, 'utf8');
+        const metadata = normalizeSkillMetadata(content);
+
+        if (!metadata || seenNames.has(metadata.name)) {
+          continue;
+        }
+
+        seenNames.add(metadata.name);
+        skills.push({
+          ...metadata,
+          localPath,
+          skillFilePath,
+          files: await listSkillFiles(localPath),
+        });
+      } catch {
+        // Ignore directories without a valid SKILL.md file.
+      }
     }
   }
 

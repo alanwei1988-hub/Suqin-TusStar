@@ -34,8 +34,22 @@
 ├─ skills/                # Agent 技能目录
 ├─ markitdown/            # 附件解析依赖安装与运行时封装
 ├─ data/                  # 会话数据库等本地数据
-├─ storage/               # 临时文件与合同文件存储
+├─ storage/               # 临时文件、用户隔离空间与合同文件存储
 └─ tests/                 # 测试
+```
+
+多用户运行时会在 `storage/users/` 下为每个 `userId` 建独立目录，默认结构如下：
+
+```text
+storage/
+└─ users/
+   └─ <encodeURIComponent(userId)>/
+      ├─ workspace/       # 当前用户的持久工作区；readFile/writeFile/sendFile 只允许访问这里
+      ├─ attachments/     # 当前用户从通道下载下来的原始附件
+      ├─ data/            # 当前用户专属数据，如附件提取缓存库
+      ├─ config.json      # 当前用户配置覆盖文件；不存在则完全使用全局配置
+      ├─ skills/          # 当前用户自定义 skills；同名时覆盖全局 skills
+      └─ roles/           # 当前用户自定义角色提示词；同相对路径时覆盖全局 roles
 ```
 
 ## 运行要求
@@ -112,11 +126,38 @@ DEBUG=true
   - `streamingResponse` 控制是否启用流式回复
 - `storage`
   - `tempDir`：通道下载附件和处理临时文件目录
+  - `userRootDir`：多用户隔离根目录，默认是 `./storage/users`
 
 注意：
 
 - 当前仓库里的 `contractMcp.libraryRoot` 默认指向测试用目录 `storage/已签署协议电子档`，落地部署前通常需要改成真实 NAS 路径。
 - 若不希望将合同归档到共享盘，可以直接改为本机绝对路径。
+
+### 用户隔离与覆盖规则
+
+运行时会先加载全局 `config.json`，再尝试读取当前用户目录下的 `storage/users/<userId编码>/config.json` 进行覆盖。
+
+- 没有用户配置：完全使用全局配置
+- 用户配置里只写一部分：只覆盖那一部分，其他项继续沿用全局配置
+- `skills`：优先加载用户目录 `skills/`，同名 skill 会覆盖全局 skill；没找到再回退到项目根目录 `skills/`
+- `roles`：优先加载用户目录 `roles/`，同相对路径提示词会覆盖全局角色；没找到再回退到项目根目录 `roles/`
+- `workspaceDir`：运行时自动切到当前用户的 `workspace/`
+- `attachmentExtraction.markitdown.cache.dbPath`：默认自动落到当前用户的 `data/attachment-extraction-cache.db`
+- `mcp`、模型、工具超时等其他 agent 配置：用户配置里写了就覆盖，没写就继续用全局
+
+一个最小的用户覆盖配置示例：
+
+```json
+{
+  "agent": {
+    "model": "qwen3.5-plus",
+    "mcpServers": [],
+    "toolTimeouts": {
+      "mcpToolTimeoutMs": 20000
+    }
+  }
+}
+```
 
 ## 启动
 
@@ -132,6 +173,22 @@ npm start
 4. 企业微信通道建立长连接并开始接收消息
 
 启动成功后会输出当前通道类型。
+
+## 多用户实际运行行为
+
+当前版本的多用户行为刻意保持简单：
+
+- 队列按 `userId` 串行，而不是按群聊或频道串行
+- 同一个用户连续发多条消息时，会按顺序一条一条处理，避免会话上下文和工具操作互相打架
+- 不同用户之间互不排队，可以并发处理
+- 会话历史仍按 `userId` 隔离保存
+- 每个用户看到和能操作的本地文件范围，只是自己的 `workspace/` 和本次消息带来的附件
+
+对共享 NAS 的影响是：
+
+- 合同正式归档入口仍然是同一个共享 NAS `contractMcp.libraryRoot`
+- 但归档工具会强制注入当前请求的 `userId`、来源渠道和来源消息 ID
+- 所以归档结果仍然进入同一个 NAS，但能区分是谁发起的操作，而不是所有人都混成匿名来源
 
 ## 测试
 
@@ -183,12 +240,24 @@ npm test
 - 查询尽量区分 NAS 文件检索和数据库字段检索
 - 不伪造目录状态、归档结果、数据库状态或台账状态
 
+再补一条和用户工作区有关的行为约束：
+
+- Agent 的 `bash` 工具运行在沙箱里，沙箱根目录就是当前用户 `workspace/` 的镜像，不是宿主机真实 shell
+- `bash` 在沙箱里新建或修改的文件默认只对当前这次运行可见，不会直接持久写回宿主机
+- 如果要把结果真正保存到用户目录，并且后续可被 `readFile` / `sendFile` 看到，Agent 应该使用 `writeFile`
+- `readFile` / `writeFile` / `sendFile` 只允许访问当前用户 `workspace/` 内的路径，不能越界到项目其他目录
+
 ## 附件处理
 
 收到用户附件后，Agent 不会把它们当普通本地文本文件直接读取，而是通过附件工具做安全处理：
 
 - `inspectAttachment`：查看附件元数据和预览
 - `readAttachmentText`：按需提取有限长度文本
+
+附件在本地的默认落点是当前用户目录下的 `storage/users/<userId编码>/attachments/`。这些附件和 `workspace/` 是分开的：
+
+- `attachments/` 保存用户原始上传件
+- `workspace/` 保存 Agent 需要长期保留、编辑或回传给用户的工作产物
 
 支持通过 MarkItDown 提取文本的格式由 `config.json` 中的 `supportedExtensions` 控制，当前默认包括：
 

@@ -14,9 +14,11 @@ const {
   getToolChoiceSetting,
 } = require('./loop');
 const { createRuntimeTools } = require('./tools/index');
+const { createMcpToolkit } = require('./tools/mcp');
 const { listAvailableSkills } = require('./tools/skills');
 const { loadRolePrompt } = require('./roles');
 const SessionManager = require('./session');
+const { resolveUserAgentConfig } = require('./user-config');
 const { buildOpenAICompatibleProviderOptions } = require('../llm-thinking');
 
 function normalizeConversationAttachments(attachments = []) {
@@ -273,21 +275,26 @@ function enrichStepWithDisplay(step, runtime) {
 class AgentCore {
   constructor(config, options = {}) {
     this.config = config;
-    this.provider = createOpenAICompatible({
-      name: config.provider || 'openaiCompatible',
-      apiKey: config.openai.apiKey,
-      baseURL: config.openai.baseURL,
-      includeUsage: true,
-    });
     this.modelOverride = options.model;
-    this.sessionManager = new SessionManager(config.sessionDb);
+    this.sessionManagers = new Map();
+    this.sessionManager = this.getSessionManager(config.sessionDb);
     this.skills = [];
+  }
+
+  getSessionManager(dbPath) {
+    const key = path.resolve(dbPath);
+
+    if (!this.sessionManagers.has(key)) {
+      this.sessionManagers.set(key, new SessionManager(key));
+    }
+
+    return this.sessionManagers.get(key);
   }
 
   async init() {
     this.skills = await listAvailableSkills({
-      skillsDir: this.config.skillsDir,
-      workspaceDir: this.config.workspaceDir,
+      skillsDir: this.config.skillsDirs || this.config.skillsDir,
+      workspaceDir: this.config.projectRootDir || this.config.workspaceDir,
     });
     console.log(`[Agent] Loaded ${this.skills.length} skills: ${this.skills.map(s => s.name).join(', ')}`);
 
@@ -297,22 +304,15 @@ class AgentCore {
 
     if (strictMcpServers.length > 0) {
       console.log(`[Agent] Preflighting strict MCP servers: ${strictMcpServers.map(server => server.name || server.command || server.url).join(', ')}`);
-      const runtime = await createRuntimeTools({
-        workspaceDir: this.config.workspaceDir,
-        skillsDir: this.config.skillsDir,
-        mcpServers: this.config.mcpServers || [],
-        attachmentExtraction: this.config.attachmentExtraction || {},
-        toolTimeouts: this.config.toolTimeouts || {},
+      const toolkit = await createMcpToolkit(this.config.mcpServers || [], {
+        defaultToolTimeoutMs: this.config.toolTimeouts?.mcpToolTimeoutMs,
       });
-      await runtime.close();
+      await toolkit.close();
       console.log('[Agent] MCP preflight passed.');
     }
   }
 
   async chat(userId, userMessage, attachments = [], options = {}) {
-    const contextSettings = getContextSettings(this.config);
-    const toolChoice = getToolChoiceSetting(this.config);
-    const fullMessages = this.sessionManager.getMessages(userId);
     const normalizedOptions = typeof options === 'function'
       ? { onStepFinish: options }
       : (options || {});
@@ -321,37 +321,49 @@ class AgentCore {
       requestContext = {},
       ...callbacks
     } = normalizedOptions;
+    const { config: effectiveConfig } = resolveUserAgentConfig(this.config, userId);
+    const contextSettings = getContextSettings(effectiveConfig);
+    const toolChoice = getToolChoiceSetting(effectiveConfig);
+    const sessionManager = this.getSessionManager(effectiveConfig.sessionDb);
+    const fullMessages = sessionManager.getMessages(userId);
     const normalizedAttachments = await enrichAttachmentMetadata(
       normalizeConversationAttachments(attachments),
-      this.config.workspaceDir,
+      effectiveConfig.projectRootDir || effectiveConfig.workspaceDir,
       (_workspaceDir, requestedPath) => path.isAbsolute(requestedPath)
         ? path.normalize(requestedPath)
-        : path.resolve(this.config.workspaceDir, requestedPath),
+        : path.resolve(effectiveConfig.projectRootDir || effectiveConfig.workspaceDir, requestedPath),
     );
     const content = buildUserContent(userMessage, normalizedAttachments);
 
     fullMessages.push({ role: 'user', content, attachments: normalizedAttachments });
     const conversationAttachments = collectConversationAttachments(fullMessages);
     const pendingArchiveDraftPrompt = buildPendingArchiveDraftPrompt(fullMessages);
-    const context = this.sessionManager.buildModelContext(fullMessages, {
+    const context = sessionManager.buildModelContext(fullMessages, {
       recentMessagesCount: contextSettings.recentMessagesCount,
       summaryLineCount: contextSettings.summaryLineCount,
       summaryMaxChars: contextSettings.summaryMaxChars,
     });
 
     const runtime = await createRuntimeTools({
-      workspaceDir: this.config.workspaceDir,
-      skillsDir: this.config.skillsDir,
-      mcpServers: this.config.mcpServers || [],
+      workspaceDir: effectiveConfig.workspaceDir,
+      projectRootDir: effectiveConfig.projectRootDir || effectiveConfig.workspaceDir,
+      skillsDir: effectiveConfig.skillsDirs || effectiveConfig.skillsDir,
+      mcpServers: effectiveConfig.mcpServers || [],
       attachments: conversationAttachments,
-      attachmentExtraction: this.config.attachmentExtraction || {},
-      toolTimeouts: this.config.toolTimeouts || {},
+      attachmentExtraction: effectiveConfig.attachmentExtraction || {},
+      toolTimeouts: effectiveConfig.toolTimeouts || {},
       requestContext,
     });
-    const rolePrompt = await loadRolePrompt(this.config.rolePromptDir);
+    const rolePrompt = await loadRolePrompt(effectiveConfig.rolePromptDirs || effectiveConfig.rolePromptDir);
+    const provider = createOpenAICompatible({
+      name: effectiveConfig.provider || 'openaiCompatible',
+      apiKey: effectiveConfig.openai.apiKey,
+      baseURL: effectiveConfig.openai.baseURL,
+      includeUsage: true,
+    });
     const providerOptions = buildOpenAICompatibleProviderOptions(
-      this.config.provider || 'openaiCompatible',
-      this.config.thinking,
+      effectiveConfig.provider || 'openaiCompatible',
+      effectiveConfig.thinking,
     );
     const promptSections = [
       rolePrompt,
@@ -362,10 +374,10 @@ class AgentCore {
     ].filter(Boolean);
 
     const agent = new ToolLoopAgent({
-      model: this.modelOverride || this.provider(this.config.model),
+      model: this.modelOverride || provider(effectiveConfig.model),
       instructions: buildSystemPrompt(promptSections),
       tools: runtime.tools,
-      stopWhen: stepCountIs(this.config.maxSteps || 12),
+      stopWhen: stepCountIs(effectiveConfig.maxSteps || 12),
       toolChoice,
       providerOptions,
       prepareStep: createPrepareStep({
@@ -435,7 +447,7 @@ class AgentCore {
         : [];
 
       appendFinalAssistantMessageIfNeeded(fullMessages, responseMessages, finalResponse);
-      this.sessionManager.saveMessages(userId, fullMessages);
+      sessionManager.saveMessages(userId, fullMessages);
 
       if (includeArtifacts) {
         return {
@@ -451,7 +463,10 @@ class AgentCore {
   }
 
   close() {
-    this.sessionManager.close();
+    for (const sessionManager of this.sessionManagers.values()) {
+      sessionManager.close();
+    }
+    this.sessionManagers.clear();
   }
 }
 

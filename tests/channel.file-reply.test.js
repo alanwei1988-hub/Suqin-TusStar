@@ -5,11 +5,15 @@ const { MockLanguageModelV3 } = require('ai/test');
 const { registerChannelHandlers } = require('../app');
 const AgentCore = require('../agent');
 const MockChannelAdapter = require('../channel/mock/adapter');
+const { buildUserPaths, ensureUserPaths } = require('../user-space');
 const { generateResult, makeTempDir, repoRoot, textPart, toolCall, waitFor } = require('./helpers/test-helpers');
 
 module.exports = async function runChannelFileReplyTest() {
   const rootDir = makeTempDir('channel-file-reply-');
-  const reportPath = path.join(rootDir, 'report.txt');
+  const userRootDir = path.join(rootDir, 'users');
+  const userPaths = buildUserPaths(userRootDir, 'user-1');
+  ensureUserPaths(userPaths);
+  const reportPath = path.join(userPaths.workspaceDir, 'report.txt');
   fs.writeFileSync(reportPath, 'export ready');
   let callIndex = 0;
 
@@ -48,6 +52,7 @@ module.exports = async function runChannelFileReplyTest() {
       baseURL: 'http://example.invalid/v1',
     },
     workspaceDir: rootDir,
+    userRootDir,
     skillsDir: path.join(repoRoot, 'skills'),
     rolePromptDir: path.join(repoRoot, 'roles', 'contract-manager'),
     sessionDb: path.join(rootDir, 'sessions.db'),

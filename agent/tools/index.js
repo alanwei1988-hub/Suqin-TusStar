@@ -18,6 +18,7 @@ const { buildSkillsPrompt, createSkillsToolkit } = require('./skills');
 const MAX_BASH_OUTPUT_LENGTH = 20000;
 const DEFAULT_BASH_TIMEOUT_MS = 30000;
 const DEFAULT_MAX_BASH_TIMEOUT_MS = 300000;
+let bashToolModulePromise;
 
 const BLOCKED_COMMAND_RULES = [
   {
@@ -77,6 +78,26 @@ function resolveRequestedPath(baseDir, requestedPath) {
   return path.isAbsolute(requestedPath)
     ? path.normalize(requestedPath)
     : path.resolve(baseDir, requestedPath);
+}
+
+function isPathInside(baseDir, candidatePath) {
+  const relativePath = path.relative(path.resolve(baseDir), path.resolve(candidatePath));
+  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+}
+
+function resolveWorkspacePath(baseDir, requestedPath) {
+  const resolvedPath = resolveRequestedPath(baseDir, requestedPath);
+
+  if (!isPathInside(baseDir, resolvedPath)) {
+    throw new Error(`Path escapes the user workspace: ${requestedPath}`);
+  }
+
+  return resolvedPath;
+}
+
+async function loadBashToolModule() {
+  bashToolModulePromise ||= import('bash-tool');
+  return bashToolModulePromise;
 }
 
 function wrapWindowsPowerShellCommand(command) {
@@ -157,51 +178,26 @@ function runShellCommand(command, cwd, timeoutMs = DEFAULT_BASH_TIMEOUT_MS) {
   });
 }
 
-class MachineBackend {
-  constructor(workingDir, options = {}) {
+class LocalWorkspaceBackend {
+  constructor(workingDir) {
     this.workingDir = path.resolve(workingDir);
     this.outboundAttachments = [];
-    this.bashTimeoutMs = Number.isFinite(options.bashTimeoutMs)
-      ? Math.max(1, Math.trunc(options.bashTimeoutMs))
-      : DEFAULT_BASH_TIMEOUT_MS;
-    this.maxBashTimeoutMs = Number.isFinite(options.maxBashTimeoutMs)
-      ? Math.max(1, Math.trunc(options.maxBashTimeoutMs))
-      : DEFAULT_MAX_BASH_TIMEOUT_MS;
-  }
-
-  async executeCommand(command, timeoutMs = this.bashTimeoutMs) {
-    const blockedReason = getBlockedCommandReason(command);
-
-    if (blockedReason) {
-      return {
-        stdout: '',
-        stderr: blockedReason,
-        exitCode: 126,
-        timedOut: false,
-      };
-    }
-
-    const normalizedTimeoutMs = Number.isFinite(timeoutMs)
-      ? Math.max(1, Math.min(Math.trunc(timeoutMs), this.maxBashTimeoutMs))
-      : this.bashTimeoutMs;
-
-    return runShellCommand(command, this.workingDir, normalizedTimeoutMs);
   }
 
   async readFile(filePath) {
-    const resolvedPath = resolveRequestedPath(this.workingDir, filePath);
+    const resolvedPath = resolveWorkspacePath(this.workingDir, filePath);
     return fs.readFile(resolvedPath, 'utf8');
   }
 
   async writeFile(filePath, content) {
-    const resolvedPath = resolveRequestedPath(this.workingDir, filePath);
+    const resolvedPath = resolveWorkspacePath(this.workingDir, filePath);
     await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
     await fs.writeFile(resolvedPath, content);
     return resolvedPath;
   }
 
   async registerOutboundAttachment(filePath, displayName) {
-    const resolvedPath = resolveRequestedPath(this.workingDir, filePath);
+    const resolvedPath = resolveWorkspacePath(this.workingDir, filePath);
     const stat = await fs.stat(resolvedPath);
 
     if (!stat.isFile()) {
@@ -262,28 +258,18 @@ function mergeToolSets(toolSets) {
   return merged;
 }
 
-function buildBashToolPrompt(workspaceDir, defaultTimeoutMs = DEFAULT_BASH_TIMEOUT_MS, maxTimeoutMs = DEFAULT_MAX_BASH_TIMEOUT_MS) {
+function buildBashToolPrompt(workspaceDir) {
   const promptLines = [
-    'Use the bash tool to inspect and operate on the local machine you are responsible for maintaining.',
-    `Default working directory: ${toPosixPath(path.resolve(workspaceDir))}`,
-    '- This is a shared working environment used to serve multiple employees.',
-    '- Relative paths resolve from the default working directory.',
-    '- Absolute paths are allowed when you need to inspect or modify files elsewhere on the machine.',
+    'Use the bash tool inside the sandboxed per-user workspace.',
+    `Workspace root: ${toPosixPath(path.resolve(workspaceDir))}`,
+    '- Commands run in an isolated bash sandbox, not on the host machine shell.',
+    '- The sandbox only mirrors this user workspace and cannot reach the shared host filesystem.',
     '- Prefer `rg` for fast file and text search when available.',
     '- Use shell commands for directory listing, script execution, builds, tests, file operations, and system inspection.',
-    '- Inspect first, then act. Confirm target paths and current state before mutating files or running impactful commands.',
-    '- Prefer the smallest effective action and avoid unnecessary disruption to the environment.',
-    '- Use `readFile` for precise inspection of local text files and `writeFile` for direct edits.',
-    `- Commands time out by default after ${defaultTimeoutMs}ms. You may raise this per call with \`timeoutMs\` when the work is intentionally long-running, up to ${maxTimeoutMs}ms.`,
+    '- Any files written by bash stay inside the sandbox for this run only.',
+    '- If you need a persistent file that `readFile`, `writeFile`, or `sendFile` can see, use `writeFile` instead of shell redirection.',
+    '- Avoid destructive commands even inside the sandbox unless they are truly necessary.',
   ];
-
-  if (process.platform === 'win32') {
-    promptLines.push('- On Windows, this tool runs in Windows PowerShell, not bash and not cmd.exe.');
-    promptLines.push('- Use PowerShell syntax and cmdlets such as `Get-ChildItem`, `Get-Content`, `Select-String`, and `ConvertTo-Json`.');
-    promptLines.push('- Do not use bash/cmd-only syntax like `&&`, `ls -la`, `dir /a`, or `chcp` unless you explicitly invoke the correct shell yourself.');
-    promptLines.push('- Prefer `-LiteralPath` for Windows paths and UNC paths that may contain spaces or non-ASCII characters.');
-    promptLines.push('- When you need machine-readable results, prefer structured PowerShell output over formatted tables.');
-  }
 
   return promptLines.join('\n');
 }
@@ -307,19 +293,48 @@ function createBashTool(machine, workspaceDir) {
   });
 }
 
+async function createSandboxedBashTool(workspaceDir) {
+  const { createBashTool: createSdkBashTool } = await loadBashToolModule();
+  const toolkit = await createSdkBashTool({
+    uploadDirectory: {
+      source: workspaceDir,
+    },
+    extraInstructions: buildBashToolPrompt(workspaceDir),
+    onBeforeBashCall: ({ command }) => {
+      const blockedReason = getBlockedCommandReason(command);
+
+      if (blockedReason) {
+        throw new Error(blockedReason);
+      }
+
+      return undefined;
+    },
+    maxOutputLength: MAX_BASH_OUTPUT_LENGTH,
+  });
+
+  return {
+    tool: toolkit.bash,
+    close: async () => {
+      if (typeof toolkit.sandbox?.stop === 'function') {
+        await toolkit.sandbox.stop();
+      }
+    },
+  };
+}
+
 function createReadFileTool(machine, workspaceDir, attachmentIndex) {
   return tool({
     description: [
-      'Read a local UTF-8 text file from the machine.',
+      'Read a UTF-8 text file from the current user workspace on the host.',
       `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
-      'Absolute paths are allowed.',
+      'Paths must stay inside this workspace.',
       'Do not use this for user-provided attachments; use the attachment tools instead.',
     ].join(' '),
     inputSchema: z.object({
       path: z.string().describe('The path to the local text file to read'),
     }),
     execute: async ({ path: filePath }) => {
-      const resolvedPath = resolveRequestedPath(workspaceDir, filePath);
+      const resolvedPath = resolveWorkspacePath(workspaceDir, filePath);
       const fileInfo = await assertReadableLocalTextFile(resolvedPath, attachmentIndex);
       const content = await machine.readFile(filePath);
 
@@ -335,9 +350,9 @@ function createReadFileTool(machine, workspaceDir, attachmentIndex) {
 function createWriteFileTool(machine, workspaceDir) {
   return tool({
     description: [
-      'Write UTF-8 text content to a file on the local machine.',
+      'Write UTF-8 text content to a file in the current user workspace on the host.',
       `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
-      'Absolute paths are allowed.',
+      'Paths must stay inside this workspace.',
     ].join(' '),
     inputSchema: z.object({
       path: z.string().describe('The path where the file should be written'),
@@ -357,8 +372,9 @@ function createWriteFileTool(machine, workspaceDir) {
 function createSendFileTool(machine, workspaceDir) {
   return tool({
     description: [
-      'Queue a local file to be sent back to the user through the current channel before your final reply is delivered.',
+      'Queue a local file from the current user workspace to be sent back through the current channel before your final reply is delivered.',
       `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
+      'Paths must stay inside this workspace.',
       'Use this after creating or locating a real file the user should receive.',
       'If channel delivery fails, the user will be told the file could not be sent and will receive the absolute path instead.',
     ].join(' '),
@@ -379,6 +395,7 @@ function createSendFileTool(machine, workspaceDir) {
 
 async function createRuntimeTools({
   workspaceDir,
+  projectRootDir = workspaceDir,
   skillsDir,
   mcpServers,
   attachments = [],
@@ -387,17 +404,20 @@ async function createRuntimeTools({
   requestContext = {},
 }) {
   const workingDir = path.resolve(workspaceDir);
-  const machine = new MachineBackend(workingDir, toolTimeouts);
-  const normalizedAttachments = normalizeAttachments(attachments, workingDir, resolveRequestedPath);
+  await fs.mkdir(workingDir, { recursive: true });
+  const machine = new LocalWorkspaceBackend(workingDir);
+  const normalizedAttachments = normalizeAttachments(attachments, path.resolve(projectRootDir), resolveRequestedPath);
   const attachmentToolkit = createAttachmentTools(
     normalizedAttachments,
-    workingDir,
+    path.resolve(projectRootDir),
     resolveRequestedPath,
     attachmentExtraction,
   );
+  const bashToolkitPromise = createSandboxedBashTool(workingDir);
 
-  const [skillsToolkit, mcpToolkit] = await Promise.all([
-    createSkillsToolkit({ skillsDir, workspaceDir }),
+  const [bashToolkit, skillsToolkit, mcpToolkit] = await Promise.all([
+    bashToolkitPromise,
+    createSkillsToolkit({ skillsDir, workspaceDir: workingDir }),
     createMcpToolkit(mcpServers, {
       defaultToolTimeoutMs: toolTimeouts.mcpToolTimeoutMs,
       requestContext,
@@ -405,7 +425,7 @@ async function createRuntimeTools({
   ]);
 
   const runtimeTools = {
-    bash: createBashTool(machine, workingDir),
+    bash: bashToolkit.tool,
     readFile: createReadFileTool(machine, workingDir, attachmentToolkit.attachmentIndex),
     writeFile: createWriteFileTool(machine, workingDir),
     sendFile: createSendFileTool(machine, workingDir),
@@ -447,7 +467,7 @@ async function createRuntimeTools({
     mcpReadOnlyToolNames: mcpToolkit.readOnlyToolNames || [],
     attachmentToolNames: attachmentToolkit.toolNames,
     promptSections: [
-      `Machine\nYou are operating on a shared local machine. Default working directory: \`${toPosixPath(workingDir)}\`. You may use absolute filesystem paths when needed, but you are responsible for preserving the machine's long-term usability and file integrity.`,
+      `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. The \`bash\` tool runs in a sandboxed copy-on-write environment rooted at this workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`) are restricted to this workspace only.`,
       'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
       buildSkillsPrompt(skillsToolkit.skills),
       buildMcpPrompt(mcpToolkit.summaries),
@@ -458,6 +478,7 @@ async function createRuntimeTools({
       if (typeof attachmentToolkit.close === 'function') {
         await attachmentToolkit.close();
       }
+      await bashToolkit.close();
       await mcpToolkit.close();
     },
   };

@@ -4,14 +4,21 @@ const path = require('path');
 const SUPPORTED_ROLE_EXTENSIONS = new Set(['.md', '.txt']);
 
 async function listRolePromptFiles(rolePromptDir) {
-  if (!rolePromptDir) {
+  const values = Array.isArray(rolePromptDir) ? rolePromptDir : [rolePromptDir];
+  const rootDirs = [...new Set(
+    values
+      .filter(value => typeof value === 'string' && value.trim().length > 0)
+      .map(value => path.resolve(value)),
+  )];
+
+  if (rootDirs.length === 0) {
     return [];
   }
 
-  const rootDir = path.resolve(rolePromptDir);
   const files = [];
+  const seenRelativePaths = new Set();
 
-  async function walk(currentDir, prefix = '') {
+  async function walk(rootDir, currentDir, prefix = '') {
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
     entries.sort((left, right) => left.name.localeCompare(right.name, 'en'));
 
@@ -20,11 +27,12 @@ async function listRolePromptFiles(rolePromptDir) {
       const fullPath = path.join(currentDir, entry.name);
 
       if (entry.isDirectory()) {
-        await walk(fullPath, relativePath);
+        await walk(rootDir, fullPath, relativePath);
         continue;
       }
 
-      if (SUPPORTED_ROLE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+      if (SUPPORTED_ROLE_EXTENSIONS.has(path.extname(entry.name).toLowerCase()) && !seenRelativePaths.has(relativePath)) {
+        seenRelativePaths.add(relativePath);
         files.push({
           relativePath,
           fullPath,
@@ -33,10 +41,12 @@ async function listRolePromptFiles(rolePromptDir) {
     }
   }
 
-  try {
-    await walk(rootDir);
-  } catch {
-    return [];
+  for (const rootDir of rootDirs) {
+    try {
+      await walk(rootDir, rootDir);
+    } catch {
+      continue;
+    }
   }
 
   return files;

@@ -18,7 +18,7 @@ module.exports = async function runChannelStreamingStatusTest() {
       if (callIndex === 1) {
         return generateResult([
           toolCall('bash-1', 'bash', {
-            command: 'Write-Output step-1',
+            command: 'printf "step-1\\n"',
           }),
         ]);
       }
@@ -26,7 +26,7 @@ module.exports = async function runChannelStreamingStatusTest() {
       if (callIndex === 2) {
         return generateResult([
           toolCall('bash-2', 'bash', {
-            command: 'Start-Sleep -Milliseconds 900; Write-Output step-2',
+            command: 'sleep 0.9; printf "step-2\\n"',
           }),
         ]);
       }

@@ -5,11 +5,15 @@ const { MockLanguageModelV3 } = require('ai/test');
 const { registerChannelHandlers } = require('../app');
 const AgentCore = require('../agent');
 const MockChannelAdapter = require('../channel/mock/adapter');
+const { buildUserPaths, ensureUserPaths } = require('../user-space');
 const { generateResult, makeTempDir, repoRoot, textPart, toolCall, waitFor } = require('./helpers/test-helpers');
 
 module.exports = async function runChannelFileSendFailureTest() {
   const rootDir = makeTempDir('channel-file-send-failure-');
-  const reportPath = path.join(rootDir, 'oversized-report.txt');
+  const userRootDir = path.join(rootDir, 'users');
+  const userPaths = buildUserPaths(userRootDir, 'user-1');
+  ensureUserPaths(userPaths);
+  const reportPath = path.join(userPaths.workspaceDir, 'oversized-report.txt');
   fs.writeFileSync(reportPath, 'export ready');
   let callIndex = 0;
   let sendAttempts = 0;
@@ -41,6 +45,7 @@ module.exports = async function runChannelFileSendFailureTest() {
       baseURL: 'http://example.invalid/v1',
     },
     workspaceDir: rootDir,
+    userRootDir,
     skillsDir: path.join(repoRoot, 'skills'),
     rolePromptDir: path.join(repoRoot, 'roles', 'contract-manager'),
     sessionDb: path.join(rootDir, 'sessions.db'),

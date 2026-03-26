@@ -74,6 +74,8 @@ module.exports = async function runAppConfigTest() {
   });
   assert.equal(processedDefault.contractMcp.libraryRoot, `${__dirname}\\contract-library`);
   assert.equal(processedDefault.contractMcp.dbPath, `${__dirname}\\contract-library\\合同归档.db`);
+  assert.equal(processedDefault.storage.userRootDir, `${__dirname}\\storage\\users`);
+  assert.equal(processedDefault.agent.userRootDir, `${__dirname}\\storage\\users`);
   assert.equal(fs.existsSync(path.join(tempRootDir, 'data')), false);
 
   processConfig(baseConfig, {

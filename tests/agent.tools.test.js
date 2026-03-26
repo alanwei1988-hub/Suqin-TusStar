@@ -132,16 +132,17 @@ module.exports = async function failingHandler({ llm, profileName }) {
       assert.match(wrappedCommand, /\$OutputEncoding = \[System\.Text\.UTF8Encoding\]::new\(\$false\)/);
       assert.match(wrappedCommand, /chcp\.com 65001 > \$null/);
 
-      const prompt = buildBashToolPrompt(rootDir);
-      assert.match(prompt, /runs in Windows PowerShell/i);
-      assert.match(prompt, /Do not use bash\/cmd-only syntax like `&&`, `ls -la`, `dir \/a`, or `chcp`/i);
-
       assert.equal(getBlockedCommandReason("'ok' | Format-Table"), null);
       assert.match(getBlockedCommandReason('format C:'), /destructive system command/i);
 
       const unicodeOutput = decodeShellOutput(Buffer.from('已签署协议电子档', 'utf8'));
       assert.equal(unicodeOutput, '已签署协议电子档');
     }
+
+    const prompt = buildBashToolPrompt(rootDir);
+    assert.match(prompt, /sandboxed per-user workspace/i);
+    assert.match(prompt, /cannot reach the shared host filesystem/i);
+    assert.match(prompt, /Use `writeFile` instead/i);
 
     const localRead = await runtime.tools.readFile.execute({ path: localTextPath });
     assert.equal(localRead.content, 'hello local file');
@@ -374,6 +375,11 @@ module.exports = async function failingHandler({ llm, profileName }) {
     });
     assert.equal(outbound.success, true);
     assert.equal(outbound.attachment.name, 'result.pdf');
+
+    await assert.rejects(
+      () => runtime.tools.readFile.execute({ path: path.join('..', 'outside.txt') }),
+      /escapes the user workspace/i,
+    );
 
     assert.deepEqual(runtime.getOutboundAttachments(), [{
       path: localPdfPath,

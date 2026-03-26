@@ -3,6 +3,7 @@ const WeComAIBot = require('./src/wecom-bot');
 const fs = require('fs');
 const path = require('path');
 const { getPdfInfo } = require('../../markitdown/pdf-info');
+const { buildUserPaths, ensureUserPaths } = require('../../user-space');
 
 const FALLBACK_MEDIA_EXTENSIONS = {
   image: '.jpg',
@@ -264,6 +265,7 @@ class WxWorkAdapter extends EventEmitter {
       debug: config.debug
     });
     this.tempDir = storageConfig.tempDir;
+    this.userRootDir = storageConfig.userRootDir || '';
     if (!fs.existsSync(this.tempDir)) {
       fs.mkdirSync(this.tempDir, { recursive: true });
     }
@@ -308,7 +310,14 @@ class WxWorkAdapter extends EventEmitter {
               const decryptedBuffer = this.bot.decryptMedia(encryptedBuffer, mediaObj.aeskey);
 
               const safeFileName = await buildStoredFileName(body.msgtype, originalName, decryptedBuffer);
-              const filePath = path.join(this.tempDir, safeFileName);
+              const attachmentDir = this.userRootDir
+                ? (() => {
+                  const userPaths = buildUserPaths(this.userRootDir, userId);
+                  ensureUserPaths(userPaths);
+                  return userPaths.attachmentsDir;
+                })()
+                : this.tempDir;
+              const filePath = path.join(attachmentDir, safeFileName);
               fs.writeFileSync(filePath, decryptedBuffer);
               const extension = path.extname(filePath).toLowerCase();
               const mimeType = inferMimeType(extension, body.msgtype);

@@ -114,6 +114,7 @@
     }
   },
   "storage": {
-    "tempDir": "./storage/temp"
+    "tempDir": "./storage/temp",
+    "userRootDir": "./storage/users"
   }
 }

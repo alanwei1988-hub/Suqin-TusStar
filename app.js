@@ -226,6 +226,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
   const sessionDbPath = resolveRelativePath(rootDir, rawConfig.agent.sessionDb);
   const markitdownConfig = normalizeMarkItDownConfig(rootDir, rawConfig.agent.attachmentExtraction?.markitdown || {});
   const toolTimeouts = normalizeToolTimeouts(rawConfig.agent.toolTimeouts || {});
+  const userRootDir = resolveRelativePath(rootDir, rawConfig.storage.userRootDir || './storage/users');
   const normalizedChannelConfig = {
     ...channelConfig,
     botId: env.BOT_ID,
@@ -244,6 +245,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
   ensureParentDirExists(sessionDbPath);
   ensureParentDirExists(markitdownConfig.cache.dbPath);
   ensureParentDirExists(contractMcpConfig?.dbPath);
+  ensureDirExists(userRootDir);
 
   return {
     agent: {
@@ -251,13 +253,17 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       model: env.MODEL_NAME || rawConfig.agent.model,
       thinking: normalizeAgentThinkingConfig(rawConfig.agent.thinking),
       workspaceDir: path.resolve(rootDir),
+      projectRootDir: path.resolve(rootDir),
+      userRootDir,
       openai: {
         ...rawConfig.agent.openai,
         apiKey: env.OPENAI_API_KEY,
         baseURL: env.OPENAI_BASE_URL || rawConfig.agent.openai.baseURL,
       },
       skillsDir: resolveRelativePath(rootDir, rawConfig.agent.skillsDir),
+      skillsDirs: [resolveRelativePath(rootDir, rawConfig.agent.skillsDir)],
       rolePromptDir: resolveRelativePath(rootDir, rawConfig.agent.rolePromptDir),
+      rolePromptDirs: [resolveRelativePath(rootDir, rawConfig.agent.rolePromptDir)],
       sessionDb: sessionDbPath,
       toolTimeouts,
       mcpServers: (rawConfig.agent.mcpServers || []).map(server => normalizeMcpServer(rootDir, server)),
@@ -272,6 +278,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
     storage: {
       ...rawConfig.storage,
       tempDir: resolveRelativePath(rootDir, rawConfig.storage.tempDir),
+      userRootDir,
     },
     contractMcp: contractMcpConfig,
   };
