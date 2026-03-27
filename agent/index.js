@@ -388,6 +388,29 @@ function enrichStepWithDisplay(step, runtime) {
   };
 }
 
+function checkpointSessionMessages(sessionManager, userId, fullMessages, responseMessages) {
+  sessionManager.saveMessages(userId, [
+    ...fullMessages,
+    ...responseMessages,
+  ]);
+}
+
+function checkpointSessionMessagesForStep(sessionManager, userId, fullMessages, responseMessages, step) {
+  const stepMessages = Array.isArray(step?.response?.messages)
+    ? step.response.messages
+    : [];
+
+  if (stepMessages.length === 0) {
+    return;
+  }
+
+  sessionManager.saveMessages(userId, [
+    ...fullMessages,
+    ...responseMessages,
+    ...stepMessages,
+  ]);
+}
+
 /**
  * AgentCore - 纯粹的通用 AI 大脑，通过配置初始化
  */
@@ -592,6 +615,7 @@ class AgentCore {
               }
             },
             onStepFinish: async step => {
+              checkpointSessionMessagesForStep(sessionManager, userId, fullMessages, responseMessages, step);
               if (callbacks.onStepFinish) {
                 await callbacks.onStepFinish(enrichStepWithDisplay(step, runtime));
               }
@@ -603,6 +627,7 @@ class AgentCore {
             : [];
 
           responseMessages.push(...newResponseMessages);
+          checkpointSessionMessages(sessionManager, userId, fullMessages, responseMessages);
           finalResponse = buildFinalResponse(result);
           const toolErrors = extractToolErrorSummaries(newResponseMessages);
           const needsToolErrorRecovery = toolErrors.length > 0;
@@ -643,6 +668,7 @@ class AgentCore {
               }
             },
             onStepFinish: async step => {
+              checkpointSessionMessagesForStep(sessionManager, userId, fullMessages, responseMessages, step);
               if (callbacks.onStepFinish) {
                 await callbacks.onStepFinish(enrichStepWithDisplay(step, runtime));
               }
@@ -673,6 +699,7 @@ class AgentCore {
               }
             },
             onStepFinish: async step => {
+              checkpointSessionMessagesForStep(sessionManager, userId, fullMessages, responseMessages, step);
               if (callbacks.onStepFinish) {
                 await callbacks.onStepFinish(enrichStepWithDisplay(step, runtime));
               }
@@ -684,6 +711,7 @@ class AgentCore {
             : [];
 
           responseMessages.push(...newResponseMessages);
+          checkpointSessionMessages(sessionManager, userId, fullMessages, responseMessages);
           finalResponse = buildFinalResponse(result);
           const toolErrors = extractToolErrorSummaries(newResponseMessages);
           const needsToolErrorRecovery = toolErrors.length > 0;
@@ -725,6 +753,7 @@ class AgentCore {
           : [];
 
         responseMessages.push(...newResponseMessages);
+        checkpointSessionMessages(sessionManager, userId, fullMessages, responseMessages);
         finalResponse = streamText || '已处理完成。';
         const toolErrors = extractToolErrorSummaries(newResponseMessages);
         const needsToolErrorRecovery = toolErrors.length > 0;

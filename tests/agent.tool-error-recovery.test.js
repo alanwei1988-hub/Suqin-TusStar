@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const Database = require('better-sqlite3');
 const { MockLanguageModelV3 } = require('ai/test');
 const AgentCore = require('../agent');
 const { createContractMcpFixture, generateResult, makeTempDir, repoRoot, textPart, toolCall } = require('./helpers/test-helpers');
@@ -91,5 +92,66 @@ module.exports = async function runAgentToolErrorRecoveryTest() {
   } finally {
     agent.close();
     fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+
+  const checkpointRootDir = makeTempDir('agent-tool-error-checkpoint-');
+  const checkpointFixture = createContractMcpFixture(checkpointRootDir);
+  const checkpointAttachmentPath = path.join(checkpointRootDir, 'contract.pdf');
+  const checkpointSessionDb = path.join(checkpointRootDir, 'sessions.db');
+  fs.writeFileSync(checkpointAttachmentPath, 'tool error checkpoint contract file');
+
+  let checkpointCallIndex = 0;
+  const checkpointModel = new MockLanguageModelV3({
+    doGenerate: () => {
+      checkpointCallIndex += 1;
+
+      if (checkpointCallIndex === 1) {
+        return generateResult([
+          toolCall('mcp-checkpoint-1', 'contract_archive', {
+            sourceFiles: [{ path: checkpointAttachmentPath, name: 'contract.pdf' }],
+            archiveRelativeDir: '专业服务收入协议（活动+算力+商业化）\\算力客户协议（启迪收入）',
+            sheetName: '有结算款项协议',
+            operator: 'user-1',
+            uploaderUserId: 'user-1',
+          }),
+        ]);
+      }
+
+      throw new Error('checkpoint-stop');
+    },
+  });
+
+  const checkpointAgent = new AgentCore({
+    model: 'mock-model',
+    provider: 'openai',
+    openai: {
+      apiKey: 'test',
+      baseURL: 'http://example.invalid/v1',
+    },
+    workspaceDir: checkpointRootDir,
+    skillsDir: path.join(repoRoot, 'skills'),
+    rolePromptDir: path.join(repoRoot, 'roles', 'contract-manager'),
+    sessionDb: checkpointSessionDb,
+    mcpServers: [checkpointFixture.mcpServer],
+  }, { model: checkpointModel });
+
+  try {
+    await checkpointAgent.init();
+    await assert.rejects(
+      () => checkpointAgent.chat('user-1', '帮我归档这份算力合同', [
+        { name: 'contract.pdf', path: checkpointAttachmentPath },
+      ]),
+      /checkpoint-stop/,
+    );
+
+    const inspectDb = new Database(checkpointSessionDb, { readonly: true });
+    const savedRow = inspectDb.prepare('SELECT messages FROM sessions WHERE userId = ?').get('user-1');
+    inspectDb.close();
+    assert.equal(Boolean(savedRow), true);
+    assert.match(savedRow.messages, /contract_archive/);
+    assert.match(savedRow.messages, /不能省略 contract，也不能传空对象/);
+  } finally {
+    checkpointAgent.close();
+    fs.rmSync(checkpointRootDir, { recursive: true, force: true });
   }
 };
