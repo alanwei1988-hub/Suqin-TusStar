@@ -30,7 +30,9 @@
 ├─ agent/                 # Agent 核心、会话、工具装配、角色加载
 ├─ channel/wxwork/        # 企业微信通道适配器
 ├─ contract-mcp/          # 合同管理 MCP 服务、工具、仓储实现
-├─ roles/contract-manager/# 合同管理员角色提示词
+├─ roles/suqin/          # 苏秦（AI员工）角色提示词
+│  ├─ 01-role.md        # 身份定位与公司背景
+│  └─ 02-workflow.md    # 通用业务流程规范
 ├─ skills/                # Agent 技能目录
 ├─ markitdown/            # 附件解析依赖安装与运行时封装
 ├─ data/                  # 会话数据库等本地数据
@@ -234,18 +236,17 @@ npm test
 
 ## Agent 工作方式
 
-合同机器人角色定义在：
+苏秦（AI 员工）角色定义在：
 
-- [roles/contract-manager/01-role.md](./roles/contract-manager/01-role.md)
-- [roles/contract-manager/02-workflow.md](./roles/contract-manager/02-workflow.md)
+- [roles/suqin/01-role.md](./roles/suqin/01-role.md)
+- [roles/suqin/02-workflow.md](./roles/suqin/02-workflow.md)
 
-这个角色的约束重点是：
+这个角色的核心约束是：
 
-- 先识别任务类型，再决定调用什么工具
-- 缺字段时继续追问，不编造
-- 字段与文件内容冲突时先核实
-- 归档类请求默认先整理拟归档字段给上传人确认，再正式归档到 NAS + 数据库
-- 查询尽量区分 NAS 文件检索和数据库字段检索
+- **意图驱动**：先识别业务意图（如合同、算力、咨询等），再激活对应专业技能（Skill）。
+- **确认机制**：所有产生物理影响或数据变更的操作（如归档、修改记录），必须先预览并由用户确认。
+- **专业交付**：使用 Markdown 表格结构化展示数据，保持专业且亲和的沟通风格。
+- **业务深度**：不只是执行指令，而是站在启迪创业孵化器的业务视角，提供有洞察力的辅助建议。
 - 不伪造目录状态、归档结果、数据库状态或台账状态
 
 再补一条和用户工作区有关的行为约束：

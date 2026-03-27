@@ -107,7 +107,7 @@
       }
     },
     "skillsDir": "./skills",
-    "rolePromptDir": "./roles/contract-manager",
+    "rolePromptDir": "./roles/suqin",
     "sessionDb": "./data/sessions.db"
   },
   "contractMcp": {
