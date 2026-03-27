@@ -291,6 +291,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       rolePromptDirs: [resolveRelativePath(rootDir, rawConfig.agent.rolePromptDir)],
       sessionDb: sessionDbPath,
       toolTimeouts,
+      sharedReadRoots: contractMcpConfig?.libraryRoot ? [contractMcpConfig.libraryRoot] : [],
       mcpServers: (rawConfig.agent.mcpServers || []).map(server => normalizeMcpServer(rootDir, server)),
       attachmentExtraction: {
         markitdown: markitdownConfig,

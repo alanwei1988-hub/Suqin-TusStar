@@ -510,6 +510,7 @@ class AgentCore {
     const runtime = await createRuntimeTools({
       workspaceDir: effectiveConfig.workspaceDir,
       projectRootDir: effectiveConfig.projectRootDir || effectiveConfig.workspaceDir,
+      sharedReadRoots: effectiveConfig.sharedReadRoots || [],
       skillsDir: effectiveConfig.skillsDirs || effectiveConfig.skillsDir,
       mcpServers: effectiveConfig.mcpServers || [],
       attachments: conversationAttachments,

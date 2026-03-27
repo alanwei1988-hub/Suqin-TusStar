@@ -915,6 +915,7 @@ function createUpdateMemoryTool(memoryRuntime) {
 async function createRuntimeTools({
   workspaceDir,
   projectRootDir = workspaceDir,
+  sharedReadRoots = [],
   skillsDir,
   mcpServers,
   attachments = [],
@@ -925,9 +926,19 @@ async function createRuntimeTools({
 }) {
   const workingDir = path.resolve(workspaceDir);
   await fs.mkdir(workingDir, { recursive: true });
-  const sharedLibraryRoot = path.resolve(projectRootDir, 'storage', '已签署协议电子档');
+  const defaultSharedLibraryRoot = path.resolve(projectRootDir, 'storage', '已签署协议电子档');
+  const effectiveSharedReadRoots = [
+    ...new Set(
+      [
+        ...sharedReadRoots,
+        defaultSharedLibraryRoot,
+      ]
+        .filter(rootDir => typeof rootDir === 'string' && rootDir.trim().length > 0)
+        .map(rootDir => path.resolve(rootDir)),
+    ),
+  ];
   const machine = new LocalWorkspaceBackend(workingDir, {
-    sharedReadRoots: [sharedLibraryRoot],
+    sharedReadRoots: effectiveSharedReadRoots,
   });
   const normalizedAttachments = normalizeAttachments(attachments, path.resolve(projectRootDir), resolveRequestedPath);
   const attachmentToolkit = createAttachmentTools(
@@ -1013,7 +1024,7 @@ async function createRuntimeTools({
       attachmentToolNames: attachmentToolkit.toolNames,
       memoryToolNames: memoryRuntime ? ['updateMemory'] : [],
       promptSections: [
-        `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`) operate on real host paths inside this workspace, and host read/send access is also allowed for the shared contract library root: \`${toPosixPath(sharedLibraryRoot)}\`.`,
+        `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`) operate on real host paths inside this workspace, and host read/send access is also allowed for these shared read-only roots: ${effectiveSharedReadRoots.map(rootDir => `\`${toPosixPath(rootDir)}\``).join(', ')}.`,
         'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly.',
         'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
         memoryRuntime

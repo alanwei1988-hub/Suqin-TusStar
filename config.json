@@ -10,7 +10,7 @@
     },
     "toolChoice": "auto",
     "maxSteps": 12,
-    "maxContinuationAttempts": 2,
+    "maxContinuationAttempts": 1,
     "toolTimeouts": {
       "bashTimeoutMs": 30000,
       "maxBashTimeoutMs": 300000,
@@ -103,8 +103,8 @@
     "sessionDb": "./data/sessions.db"
   },
   "contractMcp": {
-    "_libraryRoot": "\\\\192.168.20.100\\启迪之星\\技术商业化事业部\\板块-产业化\\合同管理",
-    "libraryRoot": "storage/已签署协议电子档",
+    "libraryRoot": "\\\\192.168.20.100\\启迪之星\\已签署协议电子档",
+    "_libraryRoot": "storage/已签署协议电子档",
     "dbPath": "协议台账_agent.db",
     "archiveIdPrefix": "Agent_",
     "ourCompanyAliases": ["上海启迪创业孵化器有限公司", "上海启迪创业孵化器", "上海启迪"],

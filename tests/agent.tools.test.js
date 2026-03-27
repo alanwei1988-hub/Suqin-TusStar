@@ -21,6 +21,7 @@ module.exports = async function runAgentToolsTest() {
   const projectRootDir = path.join(rootDir, 'project');
   const workspaceDir = path.join(rootDir, 'workspace');
   const sharedLibraryRoot = path.join(projectRootDir, 'storage', '已签署协议电子档');
+  const externalSharedLibraryRoot = path.join(rootDir, 'nas-share', '已签署协议电子档');
   const mockMarkItDownHandler = path.join(repoRoot, 'tests', 'helpers', 'mock-markitdown-handler.js');
   const localTextPath = path.join(workspaceDir, 'notes.md');
   const localPdfPath = path.join(workspaceDir, 'local.pdf');
@@ -33,9 +34,11 @@ module.exports = async function runAgentToolsTest() {
   const headingOnlyHandlerPath = path.join(workspaceDir, 'heading-only-markitdown-handler.js');
   const sharedTextPath = path.join(sharedLibraryRoot, 'shared-note.md');
   const sharedPdfPath = path.join(sharedLibraryRoot, 'shared-contract.pdf');
+  const externalSharedPdfPath = path.join(externalSharedLibraryRoot, '赞存信息-4090采购.pdf');
 
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.mkdirSync(sharedLibraryRoot, { recursive: true });
+  fs.mkdirSync(externalSharedLibraryRoot, { recursive: true });
 
   fs.writeFileSync(localTextPath, 'hello local file');
   fs.writeFileSync(localPdfPath, '%PDF-1.7\nlocal pdf body');
@@ -81,6 +84,7 @@ trailer
   fs.writeFileSync(largeTextPath, 'x'.repeat(300 * 1024));
   fs.writeFileSync(sharedTextPath, 'shared contract note');
   fs.writeFileSync(sharedPdfPath, '%PDF-1.7\nshared pdf body');
+  fs.writeFileSync(externalSharedPdfPath, '%PDF-1.7\nexternal shared pdf body');
   fs.writeFileSync(failingHandlerPath, `const { createExtractionError } = require(${JSON.stringify(path.join(repoRoot, 'markitdown', 'extractor.js'))});
 module.exports = async function failingHandler({ llm, profileName }) {
   if (llm && llm.model === 'primary-ocr-model') {
@@ -119,6 +123,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
   const runtime = await createRuntimeTools({
     workspaceDir,
     projectRootDir,
+    sharedReadRoots: [externalSharedLibraryRoot],
     skillsDir: path.join(repoRoot, 'skills'),
     mcpServers: [],
     attachmentExtraction: {
@@ -444,6 +449,13 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(sharedOutbound.success, true);
     assert.equal(sharedOutbound.attachment.name, 'shared-contract.pdf');
 
+    const externalSharedOutbound = await runtime.tools.sendFile.execute({
+      path: externalSharedPdfPath,
+      name: '赞存信息-4090采购.pdf',
+    });
+    assert.equal(externalSharedOutbound.success, true);
+    assert.equal(externalSharedOutbound.attachment.name, '赞存信息-4090采购.pdf');
+
     await assert.rejects(
       () => runtime.tools.readFile.execute({ path: path.join('..', 'outside.txt') }),
       /outside the readable roots/i,
@@ -457,6 +469,10 @@ module.exports = async function failingHandler({ llm, profileName }) {
       path: sharedPdfPath,
       name: 'shared-contract.pdf',
       sizeBytes: fs.statSync(sharedPdfPath).size,
+    }, {
+      path: externalSharedPdfPath,
+      name: '赞存信息-4090采购.pdf',
+      sizeBytes: fs.statSync(externalSharedPdfPath).size,
     }]);
   } finally {
     await runtime.close();

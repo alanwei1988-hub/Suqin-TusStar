@@ -67,6 +67,7 @@ module.exports = async function runAppConfigTest() {
   });
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.fallbackLlm, null);
   assert.equal(processedDefault.agent.thinking, null);
+  assert.equal(processedDefault.agent.maxContinuationAttempts, 2);
   assert.deepEqual(processedDefault.agent.toolTimeouts, {
     bashTimeoutMs: 30000,
     maxBashTimeoutMs: 300000,
@@ -108,6 +109,7 @@ module.exports = async function runAppConfigTest() {
     ...baseConfig,
     agent: {
       ...baseConfig.agent,
+      maxContinuationAttempts: 5,
       toolTimeouts: {
         bashTimeoutMs: 1234,
         maxBashTimeoutMs: 5678,
@@ -132,6 +134,7 @@ module.exports = async function runAppConfigTest() {
     rootDir: __dirname,
     env: {},
   });
+  assert.equal(processedToolTimeouts.agent.maxContinuationAttempts, 5);
   assert.deepEqual(processedToolTimeouts.agent.toolTimeouts, {
     bashTimeoutMs: 1234,
     maxBashTimeoutMs: 5678,
