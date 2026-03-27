@@ -539,6 +539,7 @@ class AgentCore {
       attachments: conversationAttachments,
       attachmentExtraction: effectiveConfig.attachmentExtraction || {},
       toolTimeouts: effectiveConfig.toolTimeouts || {},
+      workspacePython: effectiveConfig.workspacePython || {},
       requestContext: liveRequestContext,
       memoryRuntime: {
         applyPatch({ reason = '', patch = {} } = {}) {

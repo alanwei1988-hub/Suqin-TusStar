@@ -9,6 +9,7 @@ const {
   QWEN_OPENAI_COMPAT_BASE_URL,
 } = require('../markitdown/llm');
 const { getProjectMarkItDownPython } = require('../markitdown/runtime');
+const { getProjectWorkspacePython, getWorkspacePythonRequirementsPath } = require('../workspace-runtime/runtime');
 
 module.exports = async function runAppConfigTest() {
   const tempRootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wxwork-app-config-'));
@@ -72,6 +73,15 @@ module.exports = async function runAppConfigTest() {
     bashTimeoutMs: 30000,
     maxBashTimeoutMs: 300000,
     mcpToolTimeoutMs: 30000,
+  });
+  assert.deepEqual(processedDefault.agent.workspacePython, {
+    enabled: true,
+    command: getProjectWorkspacePython(__dirname),
+    timeoutMs: 120000,
+    maxTimeoutMs: 600000,
+    requirementsPath: getWorkspacePythonRequirementsPath(__dirname),
+    allowUserPackageInstall: true,
+    userVenvDir: `${__dirname}\\data\\workspace-python-user`,
   });
   assert.deepEqual(processedDefault.agent.memory, {
     reflectionIntervalTurns: 20,
@@ -153,6 +163,34 @@ module.exports = async function runAppConfigTest() {
     extraBody: {
       foo: 'bar',
     },
+  });
+
+  const processedWorkspacePython = processConfig({
+    ...baseConfig,
+    agent: {
+      ...baseConfig.agent,
+      workspacePython: {
+        enabled: true,
+        command: '{runtime}',
+        timeoutMs: 4567,
+        maxTimeoutMs: 9876,
+        requirementsPath: './custom-workspace-python.txt',
+        allowUserPackageInstall: false,
+        userVenvDir: './workspace-python-user',
+      },
+    },
+  }, {
+    rootDir: __dirname,
+    env: {},
+  });
+  assert.deepEqual(processedWorkspacePython.agent.workspacePython, {
+    enabled: true,
+    command: getProjectWorkspacePython(__dirname),
+    timeoutMs: 4567,
+    maxTimeoutMs: 9876,
+    requirementsPath: `${__dirname}\\custom-workspace-python.txt`,
+    allowUserPackageInstall: false,
+    userVenvDir: `${__dirname}\\workspace-python-user`,
   });
 
   const processedMarkItDown = processConfig({

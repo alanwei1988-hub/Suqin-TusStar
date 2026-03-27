@@ -69,6 +69,15 @@ user skill body
         },
       },
     },
+    workspacePython: {
+      enabled: true,
+      command: path.join(rootDir, '.tools', 'workspace-python', 'Scripts', 'python.exe'),
+      timeoutMs: 120000,
+      maxTimeoutMs: 600000,
+      requirementsPath: path.join(rootDir, 'workspace-runtime', 'requirements.txt'),
+      allowUserPackageInstall: true,
+      userVenvDir: path.join(rootDir, 'data', 'global-workspace-python'),
+    },
   }, 'u/1');
 
   assert.equal(resolved.config.model, 'user-model');
@@ -76,6 +85,7 @@ user skill body
   assert.equal(resolved.config.workspaceDir, path.join(userConfigDir, 'workspace'));
   assert.equal(resolved.config.sessionDb, path.join(userConfigDir, 'data', 'user-sessions.db'));
   assert.equal(resolved.config.attachmentExtraction.markitdown.cache.dbPath, path.join(userConfigDir, 'data', 'attachment-extraction-cache.db'));
+  assert.equal(resolved.config.workspacePython.userVenvDir, path.join(userConfigDir, 'data', 'workspace-python'));
   assert.deepEqual(resolved.config.skillsDirs, [
     path.join(userConfigDir, 'skills'),
     globalSkillsDir,

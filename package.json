@@ -9,7 +9,8 @@
     "test:markitdown-ocr": "node tests/markitdown.ocr.integration.test.js",
     "test:markitdown-ocr:full": "node tests/markitdown.ocr.integration.test.js --full --timing --timeout-ms 900000",
     "markitdown:install": "node markitdown/setup.js",
-    "postinstall": "node markitdown/setup.js"
+    "workspace-python:install": "node workspace-runtime/setup.js",
+    "postinstall": "node markitdown/setup.js && node workspace-runtime/setup.js"
   },
   "dependencies": {
     "@ai-sdk/mcp": "^1.0.25",

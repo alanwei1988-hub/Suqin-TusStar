@@ -10,6 +10,126 @@ const {
   wrapWindowsPowerShellCommand,
 } = require('../agent/tools');
 const { makeTempDir, repoRoot } = require('./helpers/test-helpers');
+const { getWorkspacePythonBinary } = require('../workspace-runtime/runtime');
+
+function createFakeWorkspacePythonRuntime() {
+  const installedWorkspacePackages = new Set();
+
+  return {
+    async runCommand(command, args = [], options = {}) {
+      if (args[0] === '--version') {
+        return { stdout: 'Python 3.11.9\n', stderr: '', exitCode: 0, timedOut: false };
+      }
+
+      if (args[0] === '-c') {
+        const runtimeBaseDir = path.isAbsolute(command)
+          ? path.dirname(path.dirname(command))
+          : (options.cwd || repoRoot);
+        return {
+          stdout: JSON.stringify({
+            sitePackages: [path.join(runtimeBaseDir, '.fake-site-packages')],
+            stdlib: [path.join(runtimeBaseDir, '.fake-stdlib')],
+          }),
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+        };
+      }
+
+      if (args[0] === '-m' && args[1] === 'venv') {
+        const venvDir = args[2];
+        const pythonPath = getWorkspacePythonBinary(venvDir);
+        fs.mkdirSync(path.dirname(pythonPath), { recursive: true });
+        fs.writeFileSync(pythonPath, '', 'utf8');
+        fs.mkdirSync(path.join(venvDir, '.fake-site-packages'), { recursive: true });
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      }
+
+      if (args[0] === '-m' && args[1] === 'pip' && args[2] === 'install') {
+        for (const spec of args.slice(4)) {
+          if (String(spec).includes('local-py-package')) {
+            installedWorkspacePackages.add('demo_pkg');
+          }
+        }
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      }
+
+      const invokedScriptPath = args[0] || '';
+      if (invokedScriptPath.endsWith(path.join('workspace-runtime', 'run_python_in_workspace.py'))) {
+        const code = fs.readFileSync(options.env.WXWORK_CODE_PATH, 'utf8');
+        const tempWorkspaceDir = options.env.WXWORK_WORKSPACE_ROOT;
+        if (code.includes('../escape.txt')) {
+          return {
+            stdout: '',
+            stderr: 'path escapes workspace: ../escape.txt',
+            exitCode: 1,
+            timedOut: false,
+          };
+        }
+
+        if (code.includes('demo_pkg')) {
+          if (!installedWorkspacePackages.has('demo_pkg')) {
+            return {
+              stdout: '',
+              stderr: 'No module named demo_pkg',
+              exitCode: 1,
+              timedOut: false,
+            };
+          }
+
+          return {
+            stdout: 'demo-installed\n',
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          };
+        }
+
+        if (code.includes('py-out.txt')) {
+          fs.writeFileSync(path.join(tempWorkspaceDir, 'py-out.txt'), 'py-done', 'utf8');
+          return {
+            stdout: 'shared contract note\n',
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          };
+        }
+
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      }
+
+      if (invokedScriptPath.endsWith(path.join('workspace-runtime', 'archive_workspace_zip.py'))) {
+        const sourcePath = args[1];
+        const outputPath = args[2];
+        const countFiles = targetPath => {
+          const stat = fs.statSync(targetPath);
+          if (stat.isFile()) {
+            return 1;
+          }
+
+          return fs.readdirSync(targetPath, { withFileTypes: true }).reduce((sum, entry) => {
+            const childPath = path.join(targetPath, entry.name);
+            return sum + (entry.isDirectory() ? countFiles(childPath) : 1);
+          }, 0);
+        };
+
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        fs.writeFileSync(outputPath, 'PK\x03\x04fake', 'utf8');
+        return {
+          stdout: `${outputPath}\n${countFiles(sourcePath)}\n`,
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+        };
+      }
+
+      throw new Error(`Unexpected fake python command: ${command} ${args.join(' ')}`);
+    },
+    async pathExists(candidatePath) {
+      return fs.existsSync(candidatePath);
+    },
+  };
+}
 
 module.exports = async function runAgentToolsTest() {
   const packageJson = require('../package.json');
@@ -32,6 +152,7 @@ module.exports = async function runAgentToolsTest() {
   const failingHandlerPath = path.join(workspaceDir, 'failing-markitdown-handler.js');
   const pagedHandlerPath = path.join(workspaceDir, 'paged-markitdown-handler.js');
   const headingOnlyHandlerPath = path.join(workspaceDir, 'heading-only-markitdown-handler.js');
+  const localPythonPackageDir = path.join(workspaceDir, 'local-py-package');
   const sharedTextPath = path.join(sharedLibraryRoot, 'shared-note.md');
   const sharedPdfPath = path.join(sharedLibraryRoot, 'shared-contract.pdf');
   const externalSharedPdfPath = path.join(externalSharedLibraryRoot, '赞存信息-4090采购.pdf');
@@ -85,6 +206,12 @@ trailer
   fs.writeFileSync(sharedTextPath, 'shared contract note');
   fs.writeFileSync(sharedPdfPath, '%PDF-1.7\nshared pdf body');
   fs.writeFileSync(externalSharedPdfPath, '%PDF-1.7\nexternal shared pdf body');
+  fs.mkdirSync(path.join(localPythonPackageDir, 'demo_pkg'), { recursive: true });
+  fs.writeFileSync(path.join(localPythonPackageDir, 'setup.py'), `from setuptools import setup
+setup(name='demo-pkg', version='0.1.0', packages=['demo_pkg'])
+`, 'utf8');
+  fs.writeFileSync(path.join(localPythonPackageDir, 'demo_pkg', '__init__.py'), `VALUE = 'demo-installed'
+`, 'utf8');
   fs.writeFileSync(failingHandlerPath, `const { createExtractionError } = require(${JSON.stringify(path.join(repoRoot, 'markitdown', 'extractor.js'))});
 module.exports = async function failingHandler({ llm, profileName }) {
   if (llm && llm.model === 'primary-ocr-model') {
@@ -134,6 +261,15 @@ module.exports = async function failingHandler({ llm, profileName }) {
         maxOutputChars: 24000,
       },
     },
+    workspacePython: {
+      enabled: true,
+      command: process.platform === 'win32' ? 'python' : 'python3',
+      timeoutMs: 120000,
+      maxTimeoutMs: 120000,
+      allowUserPackageInstall: true,
+      userVenvDir: path.join(rootDir, 'user-python-runtime'),
+    },
+    workspacePythonRuntime: createFakeWorkspacePythonRuntime(),
     attachments: [
       { id: 'attachment-1', name: 'user-upload.txt', path: attachmentTextPath, kind: 'text' },
       { id: 'attachment-2', name: 'scan.pdf', path: attachmentPdfPath },
@@ -144,6 +280,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(runtime.toolDisplayByName.bash.statusText, '执行命令');
     assert.equal(runtime.toolDisplayByName.readFile.statusText, '读取文件内容');
     assert.equal(runtime.toolDisplayByName.stageHostPath.statusText, '复制文件到工作区');
+    assert.equal(runtime.toolDisplayByName.archiveWorkspacePath.statusText, '打包工作区文件');
     assert.equal(runtime.toolDisplayByName.runPython.statusText, '运行 Python 代码');
     assert.equal(runtime.toolDisplayByName.runJavaScript.statusText, '运行 JavaScript 代码');
     assert.equal(runtime.toolDisplayByName.inspectAttachment.statusText, '分析附件内容');
@@ -167,27 +304,33 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.match(prompt, /sandboxed per-user workspace/i);
     assert.match(prompt, /cannot reach the shared host filesystem/i);
     assert.match(prompt, /stageHostPath/i);
+    assert.match(prompt, /workspace:\/\//i);
     assert.match(prompt, /runPython/i);
 
     const localRead = await runtime.tools.readFile.execute({ path: localTextPath });
     assert.equal(localRead.content, 'hello local file');
 
+    const sharedLogicalRead = await runtime.tools.readFile.execute({ path: 'shared://shared-note.md' });
+    assert.equal(sharedLogicalRead.content, 'shared contract note');
+
     const sharedRead = await runtime.tools.readFile.execute({ path: sharedTextPath });
     assert.equal(sharedRead.content, 'shared contract note');
 
     const stagedShared = await runtime.tools.stageHostPath.execute({
-      sourcePath: sharedTextPath,
-      destinationDir: 'jobs/stage-test',
+      sourcePath: 'shared://shared-note.md',
+      destinationDir: 'workspace://jobs/stage-test',
     });
     assert.equal(stagedShared.success, true);
     assert.equal(stagedShared.fileCount, 1);
     assert.match(stagedShared.destinationPath, /jobs[\\/]stage-test[\\/]shared-note\.md$/);
+    assert.equal(stagedShared.workspaceRelativePath, 'jobs/stage-test/shared-note.md');
+    assert.equal(stagedShared.logicalPath, 'workspace://jobs/stage-test/shared-note.md');
 
     const copiedRead = await runtime.tools.readFile.execute({ path: path.join(workspaceDir, 'jobs', 'stage-test', 'shared-note.md') });
     assert.equal(copiedRead.content, 'shared contract note');
 
     const pythonResult = await runtime.tools.runPython.execute({
-      workingDirectory: 'jobs/stage-test',
+      workingDirectory: 'workspace://jobs/stage-test',
       code: [
         'print(open("shared-note.md", "r", encoding="utf-8").read())',
         'open("py-out.txt", "w", encoding="utf-8").write("py-done")',
@@ -195,12 +338,31 @@ module.exports = async function failingHandler({ llm, profileName }) {
     });
     assert.equal(pythonResult.exitCode, 0);
     assert.equal(pythonResult.stdout.trim(), 'shared contract note');
+    assert.equal(pythonResult.runtimeKind, 'user');
 
     const pythonOutput = await runtime.tools.readFile.execute({ path: path.join(workspaceDir, 'jobs', 'stage-test', 'py-out.txt') });
     assert.equal(pythonOutput.content, 'py-done');
 
+    const pythonPackageResult = await runtime.tools.runPython.execute({
+      workingDirectory: 'workspace://jobs/stage-test',
+      packages: ['workspace://local-py-package'],
+      code: [
+        'import demo_pkg',
+        'print(demo_pkg.VALUE)',
+      ].join('\n'),
+    });
+    assert.equal(pythonPackageResult.exitCode, 0);
+    assert.equal(pythonPackageResult.stdout.trim(), 'demo-installed');
+
+    const pythonEscapeResult = await runtime.tools.runPython.execute({
+      workingDirectory: 'workspace://jobs/stage-test',
+      code: 'open("../escape.txt", "w", encoding="utf-8").write("nope")',
+    });
+    assert.equal(pythonEscapeResult.exitCode, 1);
+    assert.match(pythonEscapeResult.stderr, /escapes workspace/i);
+
     const nodeResult = await runtime.tools.runJavaScript.execute({
-      workingDirectory: 'jobs/stage-test',
+      workingDirectory: 'workspace://jobs/stage-test',
       code: [
         "const fs = require('fs');",
         "console.log(fs.readFileSync('shared-note.md', 'utf8'));",
@@ -212,6 +374,16 @@ module.exports = async function failingHandler({ llm, profileName }) {
 
     const jsOutput = await runtime.tools.readFile.execute({ path: path.join(workspaceDir, 'jobs', 'stage-test', 'js-out.txt') });
     assert.equal(jsOutput.content, 'js-done');
+
+    const archiveResult = await runtime.tools.archiveWorkspacePath.execute({
+      sourcePath: 'workspace://jobs/stage-test',
+      outputPath: 'workspace://jobs/stage-test.zip',
+      overwrite: true,
+    });
+    assert.equal(archiveResult.success, true);
+    assert.equal(archiveResult.logicalPath, 'workspace://jobs/stage-test.zip');
+    assert.ok(archiveResult.entryCount >= 3);
+    assert.ok(fs.existsSync(path.join(workspaceDir, 'jobs', 'stage-test.zip')));
 
     let receivedTimeoutMs = null;
     const fakeBashTool = createBashTool({
@@ -436,11 +608,18 @@ module.exports = async function failingHandler({ llm, profileName }) {
     }
 
     const outbound = await runtime.tools.sendFile.execute({
-      path: localPdfPath,
+      path: 'workspace://local.pdf',
       name: 'result.pdf',
     });
     assert.equal(outbound.success, true);
     assert.equal(outbound.attachment.name, 'result.pdf');
+
+    const archiveOutbound = await runtime.tools.sendFile.execute({
+      path: 'workspace://jobs/stage-test.zip',
+      name: 'stage-test.zip',
+    });
+    assert.equal(archiveOutbound.success, true);
+    assert.equal(archiveOutbound.attachment.name, 'stage-test.zip');
 
     const sharedOutbound = await runtime.tools.sendFile.execute({
       path: sharedPdfPath,
@@ -465,6 +644,10 @@ module.exports = async function failingHandler({ llm, profileName }) {
       path: localPdfPath,
       name: 'result.pdf',
       sizeBytes: fs.statSync(localPdfPath).size,
+    }, {
+      path: path.join(workspaceDir, 'jobs', 'stage-test.zip'),
+      name: 'stage-test.zip',
+      sizeBytes: fs.statSync(path.join(workspaceDir, 'jobs', 'stage-test.zip')).size,
     }, {
       path: sharedPdfPath,
       name: 'shared-contract.pdf',

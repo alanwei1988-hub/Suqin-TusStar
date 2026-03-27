@@ -9,6 +9,10 @@ const {
   getDefaultPromptForLlmClient,
 } = require('./markitdown/llm');
 const { getProjectMarkItDownPython } = require('./markitdown/runtime');
+const {
+  getProjectWorkspacePython,
+  getWorkspacePythonRequirementsPath,
+} = require('./workspace-runtime/runtime');
 const { normalizeThinkingConfig } = require('./llm-thinking');
 
 function loadRawConfig(rootDir = __dirname) {
@@ -242,12 +246,50 @@ function normalizeToolTimeouts(config = {}) {
   };
 }
 
+function normalizeWorkspacePythonConfig(rootDir, config = {}) {
+  const normalizedConfig = config && typeof config === 'object' && !Array.isArray(config)
+    ? config
+    : {};
+  const defaultCommand = getProjectWorkspacePython(rootDir);
+  const defaultRequirementsPath = getWorkspacePythonRequirementsPath(rootDir);
+
+  let command = typeof normalizedConfig.command === 'string' && normalizedConfig.command.trim().length > 0
+    ? normalizedConfig.command.trim()
+    : defaultCommand;
+  if (command === '{runtime}') {
+    command = defaultCommand;
+  } else if (command.startsWith('.')) {
+    command = resolveRelativePath(rootDir, command);
+  }
+
+  const requirementsPath = typeof normalizedConfig.requirementsPath === 'string' && normalizedConfig.requirementsPath.trim().length > 0
+    ? resolveRelativePath(rootDir, normalizedConfig.requirementsPath.trim())
+    : defaultRequirementsPath;
+
+  return {
+    enabled: normalizedConfig.enabled !== false,
+    command,
+    timeoutMs: Number.isFinite(normalizedConfig.timeoutMs)
+      ? Math.max(1, Math.trunc(normalizedConfig.timeoutMs))
+      : 120000,
+    maxTimeoutMs: Number.isFinite(normalizedConfig.maxTimeoutMs)
+      ? Math.max(1, Math.trunc(normalizedConfig.maxTimeoutMs))
+      : 600000,
+    requirementsPath,
+    allowUserPackageInstall: normalizedConfig.allowUserPackageInstall !== false,
+    userVenvDir: typeof normalizedConfig.userVenvDir === 'string' && normalizedConfig.userVenvDir.trim().length > 0
+      ? resolveRelativePath(rootDir, normalizedConfig.userVenvDir.trim())
+      : path.resolve(rootDir, 'data', 'workspace-python-user'),
+  };
+}
+
 function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {}) {
   const channelType = rawConfig.channel.type;
   const channelConfig = rawConfig.channel[channelType] || {};
   const sessionDbPath = resolveRelativePath(rootDir, rawConfig.agent.sessionDb);
   const markitdownConfig = normalizeMarkItDownConfig(rootDir, rawConfig.agent.attachmentExtraction?.markitdown || {});
   const toolTimeouts = normalizeToolTimeouts(rawConfig.agent.toolTimeouts || {});
+  const workspacePythonConfig = normalizeWorkspacePythonConfig(rootDir, rawConfig.agent.workspacePython || {});
   const memoryConfig = normalizeMemoryConfig(rawConfig.agent.memory || {});
   const userRootDir = resolveRelativePath(rootDir, rawConfig.storage.userRootDir || './storage/users');
   const normalizedChannelConfig = {
@@ -267,6 +309,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
 
   ensureParentDirExists(sessionDbPath);
   ensureParentDirExists(markitdownConfig.cache.dbPath);
+  ensureDirExists(path.dirname(workspacePythonConfig.userVenvDir));
   ensureParentDirExists(contractMcpConfig?.dbPath);
   ensureDirExists(userRootDir);
 
@@ -291,6 +334,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       rolePromptDirs: [resolveRelativePath(rootDir, rawConfig.agent.rolePromptDir)],
       sessionDb: sessionDbPath,
       toolTimeouts,
+      workspacePython: workspacePythonConfig,
       sharedReadRoots: contractMcpConfig?.libraryRoot ? [contractMcpConfig.libraryRoot] : [],
       mcpServers: (rawConfig.agent.mcpServers || []).map(server => normalizeMcpServer(rootDir, server)),
       attachmentExtraction: {

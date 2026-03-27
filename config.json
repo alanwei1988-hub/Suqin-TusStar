@@ -11,6 +11,14 @@
     "toolChoice": "auto",
     "maxSteps": 12,
     "maxContinuationAttempts": 1,
+    "workspacePython": {
+      "enabled": true,
+      "command": "{runtime}",
+      "timeoutMs": 120000,
+      "maxTimeoutMs": 600000,
+      "requirementsPath": "./workspace-runtime/requirements.txt",
+      "allowUserPackageInstall": true
+    },
     "toolTimeouts": {
       "bashTimeoutMs": 30000,
       "maxBashTimeoutMs": 300000,

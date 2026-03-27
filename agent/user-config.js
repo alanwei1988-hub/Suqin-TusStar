@@ -146,6 +146,20 @@ function normalizeAgentOverrides(agentOverrides, rootDir) {
     }
   }
 
+  if (isPlainObject(normalized.workspacePython)) {
+    if (typeof normalized.workspacePython.command === 'string' && normalized.workspacePython.command.startsWith('.')) {
+      normalized.workspacePython.command = resolveRelativePath(rootDir, normalized.workspacePython.command);
+    }
+
+    if (typeof normalized.workspacePython.requirementsPath === 'string' && normalized.workspacePython.requirementsPath.trim().length > 0) {
+      normalized.workspacePython.requirementsPath = resolveRelativePath(rootDir, normalized.workspacePython.requirementsPath);
+    }
+
+    if (typeof normalized.workspacePython.userVenvDir === 'string' && normalized.workspacePython.userVenvDir.trim().length > 0) {
+      normalized.workspacePython.userVenvDir = resolveRelativePath(rootDir, normalized.workspacePython.userVenvDir);
+    }
+  }
+
   if (Array.isArray(normalized.mcpServers)) {
     normalized.mcpServers = normalized.mcpServers.map(server => normalizeMcpServer(rootDir, server));
   }
@@ -213,6 +227,19 @@ function resolveUserAgentConfig(baseConfig, userId) {
         dbPath: path.join(userPaths.dataDir, 'attachment-extraction-cache.db'),
       };
     }
+  }
+
+  if (!isPlainObject(normalizedAgentOverrides.workspacePython) || !normalizedAgentOverrides.workspacePython.userVenvDir) {
+    if (isPlainObject(mergedConfig.workspacePython)) {
+      mergedConfig.workspacePython = {
+        ...mergedConfig.workspacePython,
+        userVenvDir: path.join(userPaths.dataDir, 'workspace-python'),
+      };
+    }
+  }
+
+  if (isPlainObject(mergedConfig.workspacePython) && mergedConfig.workspacePython.command === '{runtime}') {
+    mergedConfig.workspacePython.command = baseConfig.workspacePython?.command || mergedConfig.workspacePython.command;
   }
 
   return {

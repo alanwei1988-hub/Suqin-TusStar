@@ -74,6 +74,7 @@ function isMutatingToolCall(toolCall, runtime) {
 
   if (
     toolCall.toolName === 'stageHostPath'
+    || toolCall.toolName === 'archiveWorkspacePath'
     || toolCall.toolName === 'runPython'
     || toolCall.toolName === 'runJavaScript'
   ) {
