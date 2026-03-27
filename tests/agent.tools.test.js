@@ -12,6 +12,11 @@ const {
 const { makeTempDir, repoRoot } = require('./helpers/test-helpers');
 
 module.exports = async function runAgentToolsTest() {
+  const packageJson = require('../package.json');
+
+  assert.equal(typeof packageJson.dependencies['bash-tool'], 'string');
+  assert.equal(typeof packageJson.dependencies['just-bash'], 'string');
+
   const rootDir = makeTempDir('agent-tools-');
   const projectRootDir = path.join(rootDir, 'project');
   const workspaceDir = path.join(rootDir, 'workspace');
