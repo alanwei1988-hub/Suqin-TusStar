@@ -119,6 +119,12 @@ function normalizeMemoryConfig(config = {}) {
   };
 }
 
+function normalizeMaxContinuationAttempts(value) {
+  return Number.isFinite(value)
+    ? Math.max(1, Math.trunc(value))
+    : 2;
+}
+
 function normalizeMarkItDownConfig(rootDir, config = {}) {
   const runnerPath = getProjectMarkItDownPython(rootDir);
   const llmConfig = config && typeof config.llm === 'object' && !Array.isArray(config.llm)
@@ -269,6 +275,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       ...rawConfig.agent,
       model: env.MODEL_NAME || rawConfig.agent.model,
       thinking: normalizeAgentThinkingConfig(rawConfig.agent.thinking),
+      maxContinuationAttempts: normalizeMaxContinuationAttempts(rawConfig.agent.maxContinuationAttempts),
       memory: memoryConfig,
       workspaceDir: path.resolve(rootDir),
       projectRootDir: path.resolve(rootDir),

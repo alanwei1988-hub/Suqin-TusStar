@@ -566,7 +566,9 @@ class AgentCore {
       const responseMessages = [];
       let finalResponse = '已处理完成。';
       let messagesForRun = context.messages;
-      const maxContinuationAttempts = 3;
+      const maxContinuationAttempts = Number.isFinite(effectiveConfig.maxContinuationAttempts)
+        ? Math.max(1, Math.trunc(effectiveConfig.maxContinuationAttempts))
+        : 2;
       const preferStreaming = !(this.modelOverride && this.modelOverride.provider === 'mock-provider');
 
       for (let continuationAttempt = 0; continuationAttempt < maxContinuationAttempts; continuationAttempt += 1) {

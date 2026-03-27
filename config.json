@@ -10,6 +10,7 @@
     },
     "toolChoice": "auto",
     "maxSteps": 12,
+    "maxContinuationAttempts": 2,
     "toolTimeouts": {
       "bashTimeoutMs": 30000,
       "maxBashTimeoutMs": 300000,
