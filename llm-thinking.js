@@ -10,6 +10,12 @@ function toProviderOptionsName(providerName = '') {
     .replace(/^[A-Z]/, char => char.toLowerCase());
 }
 
+function supportsImplicitThinkingExtraBody(providerName = '') {
+  const normalized = String(providerName || '').trim().toLowerCase();
+
+  return normalized === 'qwen' || normalized === 'dashscope';
+}
+
 function normalizeThinkingConfig(config, { defaultEnabled } = {}) {
   const normalizedConfig = typeof config === 'boolean'
     ? { enabled: config }
@@ -41,14 +47,17 @@ function normalizeThinkingConfig(config, { defaultEnabled } = {}) {
   return Object.keys(normalized).length > 0 ? normalized : null;
 }
 
-function buildThinkingExtraBody(thinkingConfig, { includeStandardized = true } = {}) {
+function buildThinkingExtraBody(thinkingConfig, {
+  includeStandardized = true,
+  includeImplicitExtraBody = true,
+} = {}) {
   if (!thinkingConfig || typeof thinkingConfig !== 'object') {
     return null;
   }
 
   const extraBody = {};
 
-  if (typeof thinkingConfig.enabled === 'boolean') {
+  if (includeImplicitExtraBody && typeof thinkingConfig.enabled === 'boolean') {
     extraBody.enable_thinking = thinkingConfig.enabled;
   }
 
@@ -60,7 +69,7 @@ function buildThinkingExtraBody(thinkingConfig, { includeStandardized = true } =
     extraBody.verbosity = thinkingConfig.textVerbosity.trim();
   }
 
-  if (Number.isFinite(thinkingConfig.budgetTokens)) {
+  if (includeImplicitExtraBody && Number.isFinite(thinkingConfig.budgetTokens)) {
     extraBody.budget_tokens = Math.max(0, Math.trunc(thinkingConfig.budgetTokens));
   }
 
@@ -86,7 +95,10 @@ function buildOpenAICompatibleProviderOptions(providerName, thinkingConfig) {
     providerSpecificOptions.textVerbosity = thinkingConfig.textVerbosity.trim();
   }
 
-  const extraBody = buildThinkingExtraBody(thinkingConfig, { includeStandardized: false });
+  const extraBody = buildThinkingExtraBody(thinkingConfig, {
+    includeStandardized: false,
+    includeImplicitExtraBody: supportsImplicitThinkingExtraBody(providerName),
+  });
   if (extraBody) {
     Object.assign(providerSpecificOptions, extraBody);
   }
@@ -104,5 +116,6 @@ module.exports = {
   buildOpenAICompatibleProviderOptions,
   buildThinkingExtraBody,
   normalizeThinkingConfig,
+  supportsImplicitThinkingExtraBody,
   toProviderOptionsName,
 };
