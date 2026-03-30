@@ -17,6 +17,7 @@ const {
   normalizeAttachments,
 } = require('./attachments');
 const { createToolDisplayInfo } = require('./display');
+const { buildImageGenerationPrompt, createImageGenerationTool } = require('./image-generation');
 const { buildMcpPrompt, createMcpToolkit } = require('./mcp');
 const { buildSkillsPrompt, createSkillsToolkit } = require('./skills');
 
@@ -1289,10 +1290,13 @@ async function createRuntimeTools({
   toolTimeouts = {},
   workspacePython = {},
   workspacePythonRuntime = {},
+  imageGeneration = {},
   requestContext = {},
   memoryRuntime = null,
 }) {
   const workingDir = path.resolve(workspaceDir);
+  const runCommandImpl = workspacePythonRuntime.runCommand || runCommand;
+  const pathExistsImpl = workspacePythonRuntime.pathExists || pathExists;
   await fs.mkdir(workingDir, { recursive: true });
   const defaultSharedLibraryRoot = path.resolve(projectRootDir, 'storage', '已签署协议电子档');
   const effectiveSharedReadRoots = [
@@ -1341,6 +1345,23 @@ async function createRuntimeTools({
         workspacePython,
         workspacePythonRuntime,
       ),
+      generateImage: createImageGenerationTool({
+        workspaceDir: workingDir,
+        workspacePythonConfig: workspacePython,
+        imageGenerationConfig: imageGeneration,
+        ensureUserPythonEnvironment,
+        runCommand: runCommandImpl,
+        pathExists: pathExistsImpl,
+        resolveWorkspacePath: requestedPath => resolveWorkspacePath(workingDir, requestedPath),
+        resolveReadablePath: requestedPath => resolveReadablePath(
+          workingDir,
+          machine.sharedReadRoots,
+          machine.primarySharedRoot,
+          requestedPath,
+        ),
+        buildWorkspacePathMetadata,
+        registerOutboundAttachment: (filePath, displayName) => machine.registerOutboundAttachment(filePath, displayName),
+      }),
       runPython: createRunPythonTool(
         workingDir,
         path.resolve(projectRootDir),
@@ -1379,6 +1400,10 @@ async function createRuntimeTools({
       displayName: '文件打包',
       statusText: '打包工作区文件',
     }),
+    generateImage: createToolDisplayInfo('generateImage', {
+      displayName: '图片生成',
+      statusText: '生成或编辑图片',
+    }),
     runPython: createToolDisplayInfo('runPython', {
       displayName: 'Python 执行',
       statusText: '运行 Python 代码',
@@ -1414,6 +1439,7 @@ async function createRuntimeTools({
         `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. Prefer \`workspace://...\` for workspace files and \`shared://...\` for files under the primary shared read-only root. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`, \`archiveWorkspacePath\`) operate on real host paths inside this workspace, and host read/send access is also allowed for these shared read-only roots: ${effectiveSharedReadRoots.map(rootDir => `\`${toPosixPath(rootDir)}\``).join(', ')}.`,
         'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly. When the user asks for a zip or package, prefer `archiveWorkspacePath` instead of improvising archive commands in bash.',
         'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
+        buildImageGenerationPrompt(imageGeneration),
         memoryRuntime
           ? 'Memory\nUse `updateMemory` when the current turn reveals durable identity, a preferred real name, or a lasting collaboration preference/correction that should influence future turns. When you call it, provide the memory patch directly from your own understanding of the conversation. Do not store one-off task details.'
           : '',

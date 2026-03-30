@@ -283,6 +283,54 @@ function normalizeWorkspacePythonConfig(rootDir, config = {}) {
   };
 }
 
+function normalizeImageGenerationConfig(rootDir, config = {}) {
+  const normalizedConfig = config && typeof config === 'object' && !Array.isArray(config)
+    ? config
+    : {};
+  const profiles = normalizedConfig.profiles && typeof normalizedConfig.profiles === 'object' && !Array.isArray(normalizedConfig.profiles)
+    ? normalizedConfig.profiles
+    : {};
+  const normalizedProfiles = Object.fromEntries(
+    Object.entries(profiles).map(([name, profile]) => {
+      const normalizedProfile = profile && typeof profile === 'object' && !Array.isArray(profile)
+        ? profile
+        : {};
+
+      return [name, {
+        ...normalizedProfile,
+        baseUrl: typeof normalizedProfile.baseUrl === 'string' && normalizedProfile.baseUrl.trim().length > 0
+          ? normalizedProfile.baseUrl.trim()
+          : (typeof normalizedProfile.baseURL === 'string' && normalizedProfile.baseURL.trim().length > 0
+            ? normalizedProfile.baseURL.trim()
+            : ''),
+      }];
+    }),
+  );
+
+  return {
+    enabled: normalizedConfig.enabled !== false,
+    scriptPath: typeof normalizedConfig.scriptPath === 'string' && normalizedConfig.scriptPath.trim().length > 0
+      ? resolveRelativePath(rootDir, normalizedConfig.scriptPath.trim())
+      : path.resolve(rootDir, 'workspace-runtime', 'generate_image.py'),
+    timeoutMs: Number.isFinite(normalizedConfig.timeoutMs)
+      ? Math.max(1, Math.trunc(normalizedConfig.timeoutMs))
+      : 300000,
+    maxTimeoutMs: Number.isFinite(normalizedConfig.maxTimeoutMs)
+      ? Math.max(1, Math.trunc(normalizedConfig.maxTimeoutMs))
+      : 900000,
+    outputDir: typeof normalizedConfig.outputDir === 'string' && normalizedConfig.outputDir.trim().length > 0
+      ? normalizedConfig.outputDir.trim()
+      : 'generated-images',
+    defaultResolution: typeof normalizedConfig.defaultResolution === 'string' && normalizedConfig.defaultResolution.trim().length > 0
+      ? normalizedConfig.defaultResolution.trim().toUpperCase()
+      : '1K',
+    currentProfile: typeof normalizedConfig.currentProfile === 'string' && normalizedConfig.currentProfile.trim().length > 0
+      ? normalizedConfig.currentProfile.trim()
+      : '',
+    profiles: normalizedProfiles,
+  };
+}
+
 function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {}) {
   const channelType = rawConfig.channel.type;
   const channelConfig = rawConfig.channel[channelType] || {};
@@ -290,6 +338,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
   const markitdownConfig = normalizeMarkItDownConfig(rootDir, rawConfig.agent.attachmentExtraction?.markitdown || {});
   const toolTimeouts = normalizeToolTimeouts(rawConfig.agent.toolTimeouts || {});
   const workspacePythonConfig = normalizeWorkspacePythonConfig(rootDir, rawConfig.agent.workspacePython || {});
+  const imageGenerationConfig = normalizeImageGenerationConfig(rootDir, rawConfig.agent.imageGeneration || {});
   const memoryConfig = normalizeMemoryConfig(rawConfig.agent.memory || {});
   const userRootDir = resolveRelativePath(rootDir, rawConfig.storage.userRootDir || './storage/users');
   const normalizedChannelConfig = {
@@ -335,6 +384,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       sessionDb: sessionDbPath,
       toolTimeouts,
       workspacePython: workspacePythonConfig,
+      imageGeneration: imageGenerationConfig,
       sharedReadRoots: contractMcpConfig?.libraryRoot ? [contractMcpConfig.libraryRoot] : [],
       mcpServers: (rawConfig.agent.mcpServers || []).map(server => normalizeMcpServer(rootDir, server)),
       attachmentExtraction: {

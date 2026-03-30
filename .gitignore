@@ -5,3 +5,4 @@ data/
 .env
 .tools/
 tests/test_data
+__pycache__

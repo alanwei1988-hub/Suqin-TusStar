@@ -540,6 +540,7 @@ class AgentCore {
       attachmentExtraction: effectiveConfig.attachmentExtraction || {},
       toolTimeouts: effectiveConfig.toolTimeouts || {},
       workspacePython: effectiveConfig.workspacePython || {},
+      imageGeneration: effectiveConfig.imageGeneration || {},
       requestContext: liveRequestContext,
       memoryRuntime: {
         applyPatch({ reason = '', patch = {} } = {}) {

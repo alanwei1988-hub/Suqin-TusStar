@@ -19,6 +19,27 @@
       "requirementsPath": "./workspace-runtime/requirements.txt",
       "allowUserPackageInstall": true
     },
+    "imageGeneration": {
+      "enabled": true,
+      "scriptPath": "./workspace-runtime/generate_image.py",
+      "timeoutMs": 100000,
+      "maxTimeoutMs": 100000,
+      "outputDir": "generated-images",
+      "defaultResolution": "1K",
+      "currentProfile": "apiyi",
+      "profiles": {
+        "zetatechs": {
+          "apiKeyEnv": "OPENAI_API_KEY",
+          "baseUrl": "https://api.zetatechs.com",
+          "model": "gemini-3-pro-image-preview-flatfee"
+        },
+        "apiyi": {
+          "apiKeyEnv": "APIYI_API_KEY",
+          "baseUrl": "https://api.apiyi.com",
+          "model": "nano-banana-pro"
+        }
+      }
+    },
     "toolTimeouts": {
       "bashTimeoutMs": 30000,
       "maxBashTimeoutMs": 300000,
