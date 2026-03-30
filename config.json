@@ -30,21 +30,22 @@
     "imageGeneration": {
       "enabled": true,
       "scriptPath": "./workspace-runtime/generate_image.py",
-      "timeoutMs": 100000,
-      "maxTimeoutMs": 100000,
+      "timeoutMs": 200000,
+      "maxTimeoutMs": 200000,
       "outputDir": "generated-images",
       "defaultResolution": "1K",
-      "currentProfile": "apiyi",
+      "currentProfile": "zetatechs",
       "profiles": {
         "zetatechs": {
           "apiKeyEnv": "OPENAI_API_KEY",
           "baseUrl": "https://api.zetatechs.com",
-          "model": "gemini-3-pro-image-preview-flatfee"
+          "model": "gemini-3-pro-image-preview"
         },
         "apiyi": {
           "apiKeyEnv": "APIYI_API_KEY",
           "baseUrl": "https://api.apiyi.com",
-          "model": "nano-banana-pro"
+          "model": "gemini-3.1-flash-image-preview",
+          "_model": "nano banana pro"
         }
       }
     },
@@ -140,8 +141,8 @@
     "sessionDb": "./data/sessions.db"
   },
   "contractMcp": {
-    "libraryRoot": "\\\\192.168.20.100\\启迪之星\\已签署协议电子档",
-    "_libraryRoot": "storage/已签署协议电子档",
+    "_libraryRoot": "\\\\192.168.20.100\\启迪之星\\已签署协议电子档",
+    "libraryRoot": "storage/已签署协议电子档",
     "dbPath": "协议台账_agent.db",
     "archiveIdPrefix": "Agent_",
     "ourCompanyAliases": ["上海启迪创业孵化器有限公司", "上海启迪创业孵化器", "上海启迪"],

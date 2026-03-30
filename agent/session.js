@@ -95,14 +95,103 @@ function sanitizeMessageForModel(message, options = {}) {
   };
 }
 
+function hasToolCallPart(message) {
+  return Array.isArray(message?.content)
+    && message.content.some(part => part?.type === 'tool-call');
+}
+
+function hasToolResultPart(message) {
+  return message?.role === 'tool'
+    && Array.isArray(message?.content)
+    && message.content.some(part => part?.type === 'tool-result');
+}
+
+function findLatestTurnToolContextIndexes(messages = []) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return [];
+  }
+
+  let effectiveEnd = messages.length - 1;
+
+  if (messages[effectiveEnd]?.role === 'user') {
+    effectiveEnd -= 1;
+  }
+
+  if (effectiveEnd < 0) {
+    return [];
+  }
+
+  let turnStart = -1;
+
+  for (let index = effectiveEnd; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') {
+      turnStart = index;
+      break;
+    }
+  }
+
+  if (turnStart < 0) {
+    return [];
+  }
+
+  let toolResultIndex = -1;
+
+  for (let index = effectiveEnd; index > turnStart; index -= 1) {
+    if (hasToolResultPart(messages[index])) {
+      toolResultIndex = index;
+      break;
+    }
+  }
+
+  const toolCallSearchEnd = toolResultIndex >= 0 ? toolResultIndex - 1 : effectiveEnd;
+  let toolCallIndex = -1;
+
+  for (let index = toolCallSearchEnd; index > turnStart; index -= 1) {
+    if (hasToolCallPart(messages[index])) {
+      toolCallIndex = index;
+      break;
+    }
+  }
+
+  return [toolCallIndex, toolResultIndex].filter(index => index >= 0);
+}
+
 function sanitizeMessagesForModel(messages, options = {}) {
   if (!Array.isArray(messages)) {
     return [];
   }
 
-  return messages
-    .map(message => sanitizeMessageForModel(message, options))
-    .filter(Boolean);
+  const recentMessagesCount = options.recentMessagesCount || 12;
+  const toolContextIndexes = new Set(findLatestTurnToolContextIndexes(messages));
+  const sanitizedByIndex = new Map();
+  const conversationalIndexes = [];
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const sanitized = sanitizeMessageForModel(messages[index], options);
+
+    if (!sanitized) {
+      continue;
+    }
+
+    sanitizedByIndex.set(index, sanitized);
+    conversationalIndexes.push(index);
+  }
+
+  const recentConversationIndexes = conversationalIndexes.slice(-Math.max(1, recentMessagesCount));
+  const retainedIndexes = new Set([...recentConversationIndexes, ...toolContextIndexes]);
+
+  return messages.flatMap((message, index) => {
+    if (!retainedIndexes.has(index)) {
+      return [];
+    }
+
+    if (toolContextIndexes.has(index)) {
+      return [message];
+    }
+
+    const sanitized = sanitizedByIndex.get(index);
+    return sanitized ? [sanitized] : [];
+  });
 }
 
 class SessionManager {
@@ -178,17 +267,20 @@ class SessionManager {
     const recentMessagesCount = options.recentMessagesCount || 12;
     const summaryLineCount = options.summaryLineCount || 10;
     const cleanMessages = sanitizeMessagesForModel(messages, options);
+    const conversationalMessages = messages
+      .map(message => sanitizeMessageForModel(message, options))
+      .filter(Boolean);
 
-    if (cleanMessages.length <= recentMessagesCount) {
+    if (conversationalMessages.length <= recentMessagesCount) {
       return {
         messages: [...cleanMessages],
         summary: '',
       };
     }
 
-    const splitIndex = Math.max(0, cleanMessages.length - recentMessagesCount);
-    const olderMessages = cleanMessages.slice(0, splitIndex);
-    const recentMessages = cleanMessages.slice(splitIndex);
+    const splitIndex = Math.max(0, conversationalMessages.length - recentMessagesCount);
+    const olderMessages = conversationalMessages.slice(0, splitIndex);
+    const recentMessages = cleanMessages;
     const summaryLines = [];
 
     for (let index = olderMessages.length - 1; index >= 0; index -= 1) {

@@ -28,6 +28,7 @@ const DEFAULT_MAX_BASH_TIMEOUT_MS = 300000;
 const LOGICAL_WORKSPACE_PREFIX = 'workspace://';
 const LOGICAL_SHARED_PREFIX = 'shared://';
 let bashToolModulePromise;
+let justBashModulePromise;
 
 const BLOCKED_COMMAND_RULES = [
   {
@@ -221,6 +222,11 @@ function resolveReadablePath(workspaceDir, sharedReadRoots, primarySharedRoot, a
 async function loadBashToolModule() {
   bashToolModulePromise ||= import('bash-tool');
   return bashToolModulePromise;
+}
+
+async function loadJustBashModule() {
+  justBashModulePromise ||= import('just-bash');
+  return justBashModulePromise;
 }
 
 function wrapWindowsPowerShellCommand(command) {
@@ -476,10 +482,7 @@ function createBashTool(machine, workspaceDir) {
 
 async function createSandboxedBashTool(workspaceDir) {
   const { createBashTool: createSdkBashTool } = await loadBashToolModule();
-  const toolkit = await createSdkBashTool({
-    uploadDirectory: {
-      source: workspaceDir,
-    },
+  const baseOptions = {
     extraInstructions: buildBashToolPrompt(workspaceDir),
     onBeforeBashCall: ({ command }) => {
       const blockedReason = getBlockedCommandReason(command);
@@ -491,7 +494,25 @@ async function createSandboxedBashTool(workspaceDir) {
       return undefined;
     },
     maxOutputLength: MAX_BASH_OUTPUT_LENGTH,
-  });
+  };
+  const toolkit = process.platform === 'win32'
+    ? await (async () => {
+      const { Bash } = await loadJustBashModule();
+      return createSdkBashTool({
+        ...baseOptions,
+        sandbox: new Bash({ cwd: '/workspace' }),
+        destination: '/workspace',
+        uploadDirectory: {
+          source: workspaceDir,
+        },
+      });
+    })()
+    : await createSdkBashTool({
+      ...baseOptions,
+      uploadDirectory: {
+        source: workspaceDir,
+      },
+    });
 
   return {
     tool: toolkit.bash,

@@ -43,6 +43,50 @@ module.exports = async function runAgentSessionTest() {
 
     assert.match(migratedRow.messages, /\n/);
     assert.match(migratedRow.messages, /  "content": "legacy"/);
+
+    const contextSessionManager = new SessionManager(path.join(rootDir, 'context.db'));
+    const context = contextSessionManager.buildModelContext([
+      { role: 'user', content: 'old request' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'old-1', toolName: 'inspectAttachment', input: '{}' },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          { type: 'tool-result', toolCallId: 'old-1', toolName: 'inspectAttachment', output: { type: 'json', value: { ok: true } } },
+        ],
+      },
+      { role: 'assistant', content: 'old done' },
+      { role: 'user', content: 'previous request' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'new-1', toolName: 'generateImage', input: '{"prompt":"green"}' },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          { type: 'tool-result', toolCallId: 'new-1', toolName: 'generateImage', output: { type: 'json', value: { logicalPath: 'workspace://generated-images/green.png' } } },
+        ],
+      },
+      { role: 'assistant', content: '上一版已经生成好了。' },
+      { role: 'user', content: '在这一版基础上改背景色' },
+    ], {
+      recentMessagesCount: 2,
+      summaryLineCount: 10,
+      summaryMaxChars: 240,
+    });
+    contextSessionManager.close();
+
+    assert.equal(context.messages.some(message => message.role === 'assistant' && Array.isArray(message.content) && JSON.stringify(message.content).includes('"new-1"')), true);
+    assert.equal(context.messages.some(message => message.role === 'tool' && JSON.stringify(message.content).includes('workspace://generated-images/green.png')), true);
+    assert.equal(context.messages.some(message => JSON.stringify(message).includes('"old-1"')), false);
+    assert.equal(context.messages.some(message => message.role === 'user' && message.content === '在这一版基础上改背景色'), true);
+    assert.match(context.summary, /User: old request/);
   } finally {
     fs.rmSync(rootDir, { recursive: true, force: true });
   }

@@ -214,6 +214,8 @@ trailer
   fs.writeFileSync(sharedTextPath, 'shared contract note');
   fs.writeFileSync(sharedPdfPath, '%PDF-1.7\nshared pdf body');
   fs.writeFileSync(externalSharedPdfPath, '%PDF-1.7\nexternal shared pdf body');
+  fs.mkdirSync(path.join(workspaceDir, 'bash-visible-dir'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'bash-visible-dir', 'nested.txt'), 'bash nested file');
   fs.mkdirSync(path.join(localPythonPackageDir, 'demo_pkg'), { recursive: true });
   fs.writeFileSync(path.join(localPythonPackageDir, 'setup.py'), `from setuptools import setup
 setup(name='demo-pkg', version='0.1.0', packages=['demo_pkg'])
@@ -322,6 +324,14 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.match(prompt, /workspace:\/\//i);
     assert.match(prompt, /runPython/i);
     assert.match(runtime.promptSections.join('\n'), /attachment:\/\//i);
+
+    const bashListResult = await runtime.tools.bash.execute({
+      command: "ls -la && printf '\\n---\\n' && ls -la bash-visible-dir && printf '\\n---\\n' && cat bash-visible-dir/nested.txt",
+    });
+    assert.equal(bashListResult.exitCode, 0);
+    assert.match(bashListResult.stdout, /bash-visible-dir/);
+    assert.match(bashListResult.stdout, /nested\.txt/);
+    assert.match(bashListResult.stdout, /bash nested file/);
 
     const localRead = await runtime.tools.readFile.execute({ path: localTextPath });
     assert.equal(localRead.content, 'hello local file');
