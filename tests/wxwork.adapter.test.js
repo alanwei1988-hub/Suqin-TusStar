@@ -14,6 +14,7 @@ module.exports = async function runWxworkAdapterTest() {
     streamingResponse: true,
   }, {
     tempDir,
+    userRootDir: path.join(tempDir, 'users'),
   });
 
   const streamCalls = [];
@@ -105,6 +106,7 @@ trailer
 
     assert.equal(firstPrepared.text, '[Sent a file: contract.pdf, pages=1]');
     assert.equal(firstPrepared.attachments.length, 1);
+    assert.equal(firstPrepared.attachments[0].path.startsWith('attachment://'), true);
     assert.equal(path.extname(firstPrepared.attachments[0].path), '.pdf');
     assert.equal(firstPrepared.attachments[0].extension, '.pdf');
     assert.equal(firstPrepared.attachments[0].mimeType, 'application/pdf');
@@ -197,10 +199,11 @@ trailer
       }], events[3].context),
       error => {
         assert.equal(error.code, 'ATTACHMENT_SEND_FAILED');
-        assert.equal(error.absolutePath, path.resolve(fourthPrepared.attachments[0].path));
+        assert.equal(path.isAbsolute(error.absolutePath), true);
+        assert.equal(path.basename(error.absolutePath).endsWith('monthly_report.csv'), true);
         assert.equal(error.userMessage.includes('文件太大，当前无法直接发送。'), true);
         assert.equal(error.userMessage.includes('[点击打开文件](file:///'), true);
-        assert.equal(error.userMessage.includes(path.resolve(fourthPrepared.attachments[0].path)), true);
+        assert.equal(error.userMessage.includes('绝对路径：'), false);
         return true;
       },
     );

@@ -8,6 +8,14 @@
     "openai": {
       "baseURL": "https://api.zetatechs.com/v1"
     },
+    "imageModel": {
+      "enabled": true,
+      "model": "gpt-5.4",
+      "baseURL": "https://api.zetatechs.com/v1",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "timeoutMs": 60000,
+      "prompt": "Inspect this image. Summarize the visible content, the main subject, the scene, and any clearly readable text. Keep the response concise and factual."
+    },
     "toolChoice": "auto",
     "maxSteps": 12,
     "maxContinuationAttempts": 1,

@@ -138,7 +138,7 @@ function createImageGenerationTool({
     inputSchema: z.object({
       prompt: z.string().min(1).describe('The image prompt or editing instruction.'),
       outputPath: z.string().optional().describe('Optional workspace path for the output PNG file.'),
-      inputImagePath: z.string().optional().describe('Optional workspace/shared image path for editing an existing image.'),
+      inputImagePath: z.string().optional().describe('Optional workspace, attachment, or shared image path for editing an existing image.'),
       resolution: z.enum(SUPPORTED_RESOLUTIONS).optional().describe('Target image resolution. Defaults to the configured default resolution.'),
       profile: z.string().optional().describe('Optional configured image backend profile name.'),
       sendToUser: z.boolean().optional().describe('Whether to queue the generated image for delivery to the user.'),

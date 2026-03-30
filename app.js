@@ -14,6 +14,7 @@ const {
   getWorkspacePythonRequirementsPath,
 } = require('./workspace-runtime/runtime');
 const { normalizeThinkingConfig } = require('./llm-thinking');
+const { normalizeImageModelConfig } = require('./agent/tools/image-inspector');
 
 function loadRawConfig(rootDir = __dirname) {
   const configPath = path.resolve(rootDir, 'config.json');
@@ -331,6 +332,10 @@ function normalizeImageGenerationConfig(rootDir, config = {}) {
   };
 }
 
+function normalizeAgentImageModelConfig(config = {}) {
+  return normalizeImageModelConfig(config);
+}
+
 function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {}) {
   const channelType = rawConfig.channel.type;
   const channelConfig = rawConfig.channel[channelType] || {};
@@ -339,6 +344,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
   const toolTimeouts = normalizeToolTimeouts(rawConfig.agent.toolTimeouts || {});
   const workspacePythonConfig = normalizeWorkspacePythonConfig(rootDir, rawConfig.agent.workspacePython || {});
   const imageGenerationConfig = normalizeImageGenerationConfig(rootDir, rawConfig.agent.imageGeneration || {});
+  const imageModelConfig = normalizeAgentImageModelConfig(rawConfig.agent.imageModel || {});
   const memoryConfig = normalizeMemoryConfig(rawConfig.agent.memory || {});
   const userRootDir = resolveRelativePath(rootDir, rawConfig.storage.userRootDir || './storage/users');
   const normalizedChannelConfig = {
@@ -385,10 +391,18 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       toolTimeouts,
       workspacePython: workspacePythonConfig,
       imageGeneration: imageGenerationConfig,
+      imageModel: imageModelConfig,
       sharedReadRoots: contractMcpConfig?.libraryRoot ? [contractMcpConfig.libraryRoot] : [],
       mcpServers: (rawConfig.agent.mcpServers || []).map(server => normalizeMcpServer(rootDir, server)),
       attachmentExtraction: {
         markitdown: markitdownConfig,
+        imageModel: imageModelConfig,
+        agentModelFallback: {
+          model: env.MODEL_NAME || rawConfig.agent.model,
+          baseURL: env.OPENAI_BASE_URL || rawConfig.agent.openai.baseURL,
+          apiKey: env.OPENAI_API_KEY || '',
+          thinking: normalizeAgentThinkingConfig(rawConfig.agent.thinking),
+        },
       },
     },
     channel: {
@@ -592,10 +606,10 @@ function formatAttachmentLink(attachment) {
 
 function formatAttachmentPaths(attachments = []) {
   if (attachments.length === 1) {
-    return `${formatAttachmentLink(attachments[0])}\n绝对路径：\`${attachments[0].path}\``;
+    return formatAttachmentLink(attachments[0]);
   }
 
-  return attachments.map((attachment, index) => `${index + 1}. ${formatAttachmentLink(attachment)}\n绝对路径：\`${attachment.path}\``).join('\n');
+  return attachments.map((attachment, index) => `${index + 1}. ${formatAttachmentLink(attachment)}`).join('\n');
 }
 
 function buildAttachmentFailureReply(attachments = [], error) {

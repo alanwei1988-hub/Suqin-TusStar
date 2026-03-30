@@ -254,7 +254,9 @@ npm test
 - Agent 的 `bash` 工具运行在沙箱里，沙箱根目录就是当前用户 `workspace/` 的镜像，不是宿主机真实 shell
 - `bash` 在沙箱里新建或修改的文件默认只对当前这次运行可见，不会直接持久写回宿主机
 - 如果要把结果真正保存到用户目录，并且后续可被 `readFile` / `sendFile` 看到，Agent 应该使用 `writeFile`
-- `readFile` / `writeFile` / `sendFile` 只允许访问当前用户 `workspace/` 内的路径，不能越界到项目其他目录
+- `writeFile` 只允许写入当前用户 `workspace/` 内的路径
+- `readFile` 只读取 `workspace/` 和配置过的只读共享目录，不直接读取用户附件
+- `sendFile` 可以发送 `workspace/` 内文件，也可以直接发送当前会话附件和配置过的只读共享目录文件
 
 ## 附件处理
 
@@ -267,6 +269,7 @@ npm test
 
 - `attachments/` 保存用户原始上传件
 - `workspace/` 保存 Agent 需要长期保留、编辑或回传给用户的工作产物
+- 如果用户只是要求“把原图/原文件发回去”，Agent 可以直接对 `attachment://...` 调用 `sendFile`，不需要先 stage 到 `workspace/`
 
 支持通过 MarkItDown 提取文本的格式由 `config.json` 中的 `supportedExtensions` 控制，当前默认包括：
 

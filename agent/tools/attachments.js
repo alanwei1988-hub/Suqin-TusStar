@@ -2,9 +2,11 @@ const fs = require('fs/promises');
 const path = require('path');
 const { tool } = require('ai');
 const { z } = require('zod');
+const { buildAttachmentLogicalPath } = require('../../user-space');
 const { createMarkItDownExtractor } = require('../../markitdown/extractor');
 const { getPdfInfo } = require('../../markitdown/pdf-info');
 const { createToolDisplayInfo } = require('./display');
+const { createImageInspector } = require('./image-inspector');
 
 const MAX_LOCAL_TEXT_FILE_BYTES = 256 * 1024;
 const MAX_LOCAL_TEXT_CHARS = 20000;
@@ -111,17 +113,28 @@ function isTextLike(extension, mimeType, sampleBuffer) {
   return looksLikeUtf8Text(sampleBuffer);
 }
 
-function normalizeAttachments(attachments = [], workspaceDir, resolveRequestedPath) {
+function isPathInside(baseDir, candidatePath) {
+  const relativePath = path.relative(path.resolve(baseDir), path.resolve(candidatePath));
+  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+}
+
+function normalizeAttachments(attachments = [], workspaceDir, resolveRequestedPath, attachmentRootDir = '') {
   return attachments.map((attachment, index) => {
     const inputPath = typeof attachment?.path === 'string' ? attachment.path : '';
     const resolvedPath = inputPath ? resolveRequestedPath(workspaceDir, inputPath) : '';
     const extension = String(attachment?.extension || path.extname(resolvedPath || attachment?.name || '')).toLowerCase();
     const mimeType = attachment?.mimeType || attachment?.mime || inferMime(extension);
+    const logicalPath = typeof attachment?.logicalPath === 'string' && attachment.logicalPath.trim().length > 0
+      ? attachment.logicalPath.trim()
+      : (attachmentRootDir && resolvedPath && isPathInside(attachmentRootDir, resolvedPath)
+        ? buildAttachmentLogicalPath(attachmentRootDir, resolvedPath)
+        : inputPath);
     return {
       ...attachment,
       id: attachment?.id || `attachment-${index + 1}`,
       name: attachment?.name || path.basename(resolvedPath || `attachment-${index + 1}`),
-      path: inputPath,
+      path: logicalPath,
+      logicalPath,
       resolvedPath,
       extension,
       mimeType,
@@ -130,8 +143,8 @@ function normalizeAttachments(attachments = [], workspaceDir, resolveRequestedPa
   });
 }
 
-async function enrichAttachmentMetadata(attachments = [], workspaceDir, resolveRequestedPath) {
-  const normalized = normalizeAttachments(attachments, workspaceDir, resolveRequestedPath);
+async function enrichAttachmentMetadata(attachments = [], workspaceDir, resolveRequestedPath, attachmentRootDir = '') {
+  const normalized = normalizeAttachments(attachments, workspaceDir, resolveRequestedPath, attachmentRootDir);
   const enriched = [];
 
   for (const attachment of normalized) {
@@ -190,16 +203,17 @@ function resolveAttachment(index, workspaceDir, resolveRequestedPath, reference)
   throw new Error(`Attachment "${key}" was not found.`);
 }
 
-async function inspectAttachmentFile(attachment, previewChars = DEFAULT_ATTACHMENT_PREVIEW_CHARS, extractor = null) {
+async function inspectAttachmentFile(attachment, previewChars = DEFAULT_ATTACHMENT_PREVIEW_CHARS, extractor = null, imageInspector = null) {
   const stat = await fs.stat(attachment.resolvedPath);
   const sampleBuffer = await readBufferChunk(attachment.resolvedPath, 0, SAMPLE_BYTES);
   const mimeType = attachment.mimeType || inferMime(attachment.extension) || (looksLikeUtf8Text(sampleBuffer) ? 'text/plain' : 'application/octet-stream');
   const textLike = isTextLike(attachment.extension, mimeType, sampleBuffer);
   const markitdownCapable = extractor && extractor.canExtract(attachment);
+  const imageInspectable = imageInspector && imageInspector.canInspect(attachment);
   const result = {
     id: attachment.id,
     name: attachment.name,
-    path: attachment.resolvedPath,
+    path: attachment.logicalPath || attachment.path || attachment.resolvedPath,
     extension: attachment.extension,
     mimeType,
     kind: attachment.kind || inferKind(attachment.extension, mimeType),
@@ -207,9 +221,11 @@ async function inspectAttachmentFile(attachment, previewChars = DEFAULT_ATTACHME
     textLike,
     extraction: textLike
       ? { available: true, method: 'direct-text' }
-      : (markitdownCapable
+      : (imageInspectable
+        ? { available: true, method: 'image-model' }
+        : (markitdownCapable
         ? { available: true, method: 'markitdown' }
-        : { available: false, method: 'none' }),
+        : { available: false, method: 'none' })),
   };
   if (attachment.extension === '.pdf') {
     const pdfInfo = await getPdfInfo(attachment.resolvedPath);
@@ -220,6 +236,19 @@ async function inspectAttachmentFile(attachment, previewChars = DEFAULT_ATTACHME
   }
   if (previewChars > 0 && textLike) {
     result.preview = await readAttachmentText(attachment.resolvedPath, stat.size, 0, previewChars);
+  } else if (previewChars > 0 && imageInspectable) {
+    const inspected = await imageInspector.inspect(attachment);
+    result.preview = {
+      ...truncateText(inspected.text, previewChars),
+      cursorType: 'char',
+      method: 'image-model',
+      model: inspected.model,
+      offset: 0,
+      nextOffset: inspected.text.length,
+      totalChars: inspected.text.length,
+      truncated: inspected.text.length > previewChars,
+    };
+    result.extraction.model = inspected.model;
   } else if (previewChars > 0 && markitdownCapable) {
     const extracted = await extractor.extract(attachment, {
       pageStart: 1,
@@ -449,6 +478,10 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
       : path.join(workspaceDir, 'data', 'attachment-extraction-cache.db'),
   };
   const extractor = createMarkItDownExtractor(markitdownConfig);
+  const imageInspector = createImageInspector(
+    attachmentExtraction.imageModel || {},
+    attachmentExtraction.agentModelFallback || {},
+  );
   extractor.previewPageCount = markitdownConfig.previewPageCount || 1;
   extractor.readPageCount = markitdownConfig.readPageCount || 2;
   if (attachments.length === 0) {
@@ -500,12 +533,12 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
                 pageStart: options.pageStart || 1,
                 pageCount: options.pageCount || 0,
               }),
-            });
+            }, imageInspector);
           } catch (error) {
             inspection = await inspectAttachmentFile(target, 0, null);
             inspection.extraction = {
               available: false,
-              method: 'markitdown',
+              method: target.kind === 'image' ? 'image-model' : 'markitdown',
               error: error.message,
             };
           }
@@ -527,8 +560,41 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
         }),
         execute: async ({ attachment, offset, maxChars, pageStart, pageCount }) => {
           const target = resolveAttachment(index, workspaceDir, resolveRequestedPath, attachment);
-          const inspection = await inspectAttachmentFile(target, 0, null);
+          const inspection = await inspectAttachmentFile(target, 0, null, imageInspector);
           if (!inspection.textLike) {
+            if (imageInspector.canInspect(target)) {
+              try {
+                const inspected = await imageInspector.inspect(target);
+                const content = truncateText(inspected.text, Math.min(MAX_ATTACHMENT_TEXT_CHARS, maxChars ?? DEFAULT_ATTACHMENT_TEXT_CHARS));
+                return {
+                  success: true,
+                  attachment: {
+                    ...inspection,
+                    extraction: {
+                      available: true,
+                      method: 'image-model',
+                      model: inspected.model,
+                    },
+                  },
+                  content: content.text,
+                  contentTruncated: content.contentTruncated,
+                  truncated: content.contentTruncated,
+                  offset: 0,
+                  nextOffset: inspected.text.length,
+                  totalChars: inspected.text.length,
+                  cursorType: 'char',
+                };
+              } catch (error) {
+                return buildAttachmentExtractionFailurePayload({
+                  ...inspection,
+                  extraction: {
+                    available: false,
+                    method: 'image-model',
+                  },
+                }, error);
+              }
+            }
+
             if (!extractor.canExtract(target)) {
               return { success: false, error: `Attachment "${inspection.name}" is not a plain text-like file.`, attachment: inspection };
             }
@@ -592,7 +658,7 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
               return buildAttachmentExtractionFailurePayload(inspection, error);
             }
           }
-          const chunk = await readAttachmentText(inspection.path, inspection.sizeBytes, offset ?? 0, maxChars ?? DEFAULT_ATTACHMENT_TEXT_CHARS);
+          const chunk = await readAttachmentText(target.resolvedPath, inspection.sizeBytes, offset ?? 0, maxChars ?? DEFAULT_ATTACHMENT_TEXT_CHARS);
           return {
             success: true,
             attachment: {
@@ -618,7 +684,7 @@ function createAttachmentTools(attachments, workspaceDir, resolveRequestedPath, 
 
 function buildAttachmentsPrompt(attachments) {
   if (!attachments || attachments.length === 0) return '';
-  const lines = attachments.map(attachment => `- id=${attachment.id}, name=${attachment.name}, path=${attachment.resolvedPath}, kind=${attachment.kind}${attachment.mimeType ? `, mime=${attachment.mimeType}` : ''}`);
+  const lines = attachments.map(attachment => `- id=${attachment.id}, name=${attachment.name}, path=${attachment.logicalPath || attachment.path || attachment.resolvedPath}, kind=${attachment.kind}${attachment.mimeType ? `, mime=${attachment.mimeType}` : ''}`);
   return [
     'Attachments',
     'These user-provided attachments are currently available in the conversation, including files from earlier turns that may still be relevant.',
@@ -627,6 +693,7 @@ function buildAttachmentsPrompt(attachments) {
     'If the task is ambiguous, ask a clarifying question before touching the attachment.',
     'Use `inspectAttachment` or `readAttachmentText` only after the task is clear and attachment access is actually needed.',
     'For supported document formats, `readAttachmentText` may convert the attachment to Markdown before returning a bounded chunk.',
+    'For image attachments, `inspectAttachment` may call a multimodal model to summarize visible content and readable text.',
     'Prefer `inspectAttachment` before `readAttachmentText` when you only need file type, page range, metadata, or a small preview.',
     'Once file access is justified, prefer fewer, larger reads and continue searching instead of stopping after the first chunk.',
     'For contracts and similar business documents, extract likely key fields yourself only after file access is justified.',

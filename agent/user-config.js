@@ -166,6 +166,12 @@ function normalizeAgentOverrides(agentOverrides, rootDir) {
     }
   }
 
+  if (isPlainObject(normalized.imageModel)) {
+    if (typeof normalized.imageModel.handlerModule === 'string' && normalized.imageModel.handlerModule.trim().length > 0) {
+      normalized.imageModel.handlerModule = resolveRelativePath(rootDir, normalized.imageModel.handlerModule.trim());
+    }
+  }
+
   if (Array.isArray(normalized.mcpServers)) {
     normalized.mcpServers = normalized.mcpServers.map(server => normalizeMcpServer(rootDir, server));
   }

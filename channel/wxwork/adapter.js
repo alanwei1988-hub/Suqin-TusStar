@@ -3,7 +3,12 @@ const WeComAIBot = require('./src/wecom-bot');
 const fs = require('fs');
 const path = require('path');
 const { getPdfInfo } = require('../../markitdown/pdf-info');
-const { buildUserPaths, ensureUserPaths } = require('../../user-space');
+const {
+  buildAttachmentLogicalPath,
+  buildUserPaths,
+  ensureUserPaths,
+  resolveAttachmentLogicalPath,
+} = require('../../user-space');
 
 const FALLBACK_MEDIA_EXTENSIONS = {
   image: '.jpg',
@@ -230,7 +235,7 @@ function toFileUri(filePath = '') {
 
 function formatAbsolutePathLink(fileName, resolvedPath) {
   const label = fileName || '点击打开文件';
-  return `${label}： [点击打开文件](${toFileUri(resolvedPath)})\n绝对路径：\`${resolvedPath}\``;
+  return `${label}： [点击打开文件](${toFileUri(resolvedPath)})`;
 }
 
 function buildAttachmentSendError(fileName, resolvedPath, cause) {
@@ -323,8 +328,8 @@ class WxWorkAdapter extends EventEmitter {
               const mimeType = inferMimeType(extension, body.msgtype);
 
               const attachment = {
-                path: path.relative(process.cwd(), filePath),
-                storedPath: path.relative(process.cwd(), filePath),
+                path: buildAttachmentLogicalPath(attachmentDir, filePath),
+                storedPath: buildAttachmentLogicalPath(attachmentDir, filePath),
                 name: originalName,
                 extension,
                 mimeType,
@@ -443,9 +448,12 @@ class WxWorkAdapter extends EventEmitter {
         throw new Error('Attachment path is required.');
       }
 
+      const attachmentRootDir = this.userRootDir
+        ? buildUserPaths(this.userRootDir, userId).attachmentsDir
+        : '';
       const resolvedPath = path.isAbsolute(attachmentPath)
         ? attachmentPath
-        : path.resolve(process.cwd(), attachmentPath);
+        : (resolveAttachmentLogicalPath(attachmentRootDir, attachmentPath) || path.resolve(process.cwd(), attachmentPath));
       const fileName = attachment?.name || path.basename(resolvedPath);
       
       try {

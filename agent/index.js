@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { ToolLoopAgent, stepCountIs } = require('ai');
 const path = require('path');
 const { createOpenAICompatible } = require('@ai-sdk/openai-compatible');
+const { resolveAttachmentLogicalPath } = require('../user-space');
 const { enrichAttachmentMetadata } = require('./tools/attachments');
 const {
   appendFinalAssistantMessageIfNeeded,
@@ -91,7 +92,7 @@ function buildUserContent(userMessage, attachments = []) {
       const parts = [
         `ID: ${a.id}`,
         `Name: ${a.name}`,
-        `Path: ${a.path}`,
+        `Path: ${a.logicalPath || a.path}`,
       ];
 
       if (a.kind) {
@@ -486,9 +487,21 @@ class AgentCore {
     const normalizedAttachments = await enrichAttachmentMetadata(
       normalizeConversationAttachments(attachments),
       effectiveConfig.projectRootDir || effectiveConfig.workspaceDir,
-      (_workspaceDir, requestedPath) => path.isAbsolute(requestedPath)
-        ? path.normalize(requestedPath)
-        : path.resolve(effectiveConfig.projectRootDir || effectiveConfig.workspaceDir, requestedPath),
+      (_workspaceDir, requestedPath) => {
+        const attachmentResolvedPath = resolveAttachmentLogicalPath(
+          effectiveConfig.userPaths?.attachmentsDir || '',
+          requestedPath,
+        );
+
+        if (attachmentResolvedPath) {
+          return attachmentResolvedPath;
+        }
+
+        return path.isAbsolute(requestedPath)
+          ? path.normalize(requestedPath)
+          : path.resolve(effectiveConfig.projectRootDir || effectiveConfig.workspaceDir, requestedPath);
+      },
+      effectiveConfig.userPaths?.attachmentsDir || '',
     );
     const content = buildUserContent(userMessage, normalizedAttachments);
 
@@ -533,6 +546,7 @@ class AgentCore {
     const runtime = await createRuntimeTools({
       workspaceDir: effectiveConfig.workspaceDir,
       projectRootDir: effectiveConfig.projectRootDir || effectiveConfig.workspaceDir,
+      attachmentRootDir: effectiveConfig.userPaths?.attachmentsDir || '',
       sharedReadRoots: effectiveConfig.sharedReadRoots || [],
       skillsDir: effectiveConfig.skillsDirs || effectiveConfig.skillsDir,
       mcpServers: effectiveConfig.mcpServers || [],

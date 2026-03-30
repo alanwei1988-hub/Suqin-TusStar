@@ -58,6 +58,17 @@ module.exports = async function runAppConfigTest() {
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.activeLlmProfile, '');
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.fallbackLlmProfile, '');
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.llmProfiles, {});
+  assert.deepEqual(processedDefault.agent.imageModel, {
+    enabled: true,
+    model: '',
+    baseURL: '',
+    apiKeyEnv: '',
+    apiKey: '',
+    timeoutMs: 30000,
+    prompt: 'Inspect this image attachment. Summarize the visible content, the main subject, the scene, and any clearly readable text. Keep the response concise and factual.',
+    handlerModule: '',
+    thinking: null,
+  });
   assert.deepEqual(processedDefault.agent.attachmentExtraction.markitdown.llm, {
     client: '',
     model: '',
@@ -67,6 +78,12 @@ module.exports = async function runAppConfigTest() {
     thinking: null,
   });
   assert.equal(processedDefault.agent.attachmentExtraction.markitdown.fallbackLlm, null);
+  assert.deepEqual(processedDefault.agent.attachmentExtraction.agentModelFallback, {
+    model: 'test-model',
+    baseURL: 'http://example.invalid/v1',
+    apiKey: '',
+    thinking: null,
+  });
   assert.equal(processedDefault.agent.thinking, null);
   assert.equal(processedDefault.agent.maxContinuationAttempts, 2);
   assert.deepEqual(processedDefault.agent.toolTimeouts, {
@@ -114,6 +131,39 @@ module.exports = async function runAppConfigTest() {
     env: {},
   });
   assert.equal(processedDisabled.channel.wxwork.streamingResponse, false);
+
+  const processedImageModel = processConfig({
+    ...baseConfig,
+    agent: {
+      ...baseConfig.agent,
+      imageModel: {
+        model: 'qwen3-vl-flash',
+        baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        apiKeyEnv: 'DASHSCOPE_API_KEY',
+        timeoutMs: 4567,
+        prompt: 'Describe the image.',
+        thinking: {
+          enabled: false,
+        },
+      },
+    },
+  }, {
+    rootDir: __dirname,
+    env: {},
+  });
+  assert.deepEqual(processedImageModel.agent.imageModel, {
+    enabled: true,
+    model: 'qwen3-vl-flash',
+    baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    apiKeyEnv: 'DASHSCOPE_API_KEY',
+    apiKey: '',
+    timeoutMs: 4567,
+    prompt: 'Describe the image.',
+    handlerModule: '',
+    thinking: {
+      enabled: false,
+    },
+  });
 
   const processedToolTimeouts = processConfig({
     ...baseConfig,

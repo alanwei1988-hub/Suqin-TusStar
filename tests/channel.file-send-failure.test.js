@@ -73,7 +73,7 @@ module.exports = async function runChannelFileSendFailureTest() {
     assert.equal(sendAttempts, 1);
     assert.equal(channel.replies[0].content.includes('文件太大，当前无法直接发送。'), true);
     assert.equal(channel.replies[0].content.includes(`[oversized-report.txt](file:///`), true);
-    assert.equal(channel.replies[0].content.includes(reportPath), true);
+    assert.equal(channel.replies[0].content.includes(reportPath), false);
     assert.equal(channel.replies[0].content.includes('报告已生成，文件已发送。'), false);
   } finally {
     agent.close();

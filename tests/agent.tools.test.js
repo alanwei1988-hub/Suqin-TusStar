@@ -9,6 +9,11 @@ const {
   getBlockedCommandReason,
   wrapWindowsPowerShellCommand,
 } = require('../agent/tools');
+const {
+  createImageInspector,
+  DEFAULT_IMAGE_INSPECTION_TIMEOUT_MS,
+} = require('../agent/tools/image-inspector');
+const { buildAttachmentLogicalPath } = require('../user-space');
 const { makeTempDir, repoRoot } = require('./helpers/test-helpers');
 const { getWorkspacePythonBinary } = require('../workspace-runtime/runtime');
 
@@ -143,11 +148,13 @@ module.exports = async function runAgentToolsTest() {
   const sharedLibraryRoot = path.join(projectRootDir, 'storage', '已签署协议电子档');
   const externalSharedLibraryRoot = path.join(rootDir, 'nas-share', '已签署协议电子档');
   const mockMarkItDownHandler = path.join(repoRoot, 'tests', 'helpers', 'mock-markitdown-handler.js');
+  const mockImageInspectorHandler = path.join(repoRoot, 'tests', 'helpers', 'mock-image-inspector-handler.js');
   const localTextPath = path.join(workspaceDir, 'notes.md');
   const localPdfPath = path.join(workspaceDir, 'local.pdf');
   const attachmentTextPath = path.join(workspaceDir, 'user-upload.txt');
   const attachmentPdfPath = path.join(workspaceDir, 'scan.pdf');
   const attachmentPagedPdfPath = path.join(workspaceDir, 'paged.pdf');
+  const attachmentImagePath = path.join(workspaceDir, 'avatar.png');
   const largeTextPath = path.join(workspaceDir, 'large.txt');
   const failingHandlerPath = path.join(workspaceDir, 'failing-markitdown-handler.js');
   const pagedHandlerPath = path.join(workspaceDir, 'paged-markitdown-handler.js');
@@ -164,6 +171,7 @@ module.exports = async function runAgentToolsTest() {
   fs.writeFileSync(localTextPath, 'hello local file');
   fs.writeFileSync(localPdfPath, '%PDF-1.7\nlocal pdf body');
   fs.writeFileSync(attachmentTextPath, 'alpha beta gamma delta');
+  fs.writeFileSync(attachmentImagePath, 'fake image bytes for vision extraction');
   fs.writeFileSync(attachmentPdfPath, `%PDF-1.7
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -250,6 +258,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
   const runtime = await createRuntimeTools({
     workspaceDir,
     projectRootDir,
+    attachmentRootDir: workspaceDir,
     sharedReadRoots: [externalSharedLibraryRoot],
     skillsDir: path.join(repoRoot, 'skills'),
     mcpServers: [],
@@ -259,6 +268,11 @@ module.exports = async function failingHandler({ llm, profileName }) {
         handlerModule: mockMarkItDownHandler,
         supportedExtensions: ['.pdf'],
         maxOutputChars: 24000,
+      },
+      imageModel: {
+        enabled: true,
+        handlerModule: mockImageInspectorHandler,
+        model: 'mock-image-model',
       },
     },
     workspacePython: {
@@ -271,9 +285,10 @@ module.exports = async function failingHandler({ llm, profileName }) {
     },
     workspacePythonRuntime: createFakeWorkspacePythonRuntime(),
     attachments: [
-      { id: 'attachment-1', name: 'user-upload.txt', path: attachmentTextPath, kind: 'text' },
-      { id: 'attachment-2', name: 'scan.pdf', path: attachmentPdfPath },
-      { id: 'attachment-3', name: 'paged.pdf', path: attachmentPagedPdfPath },
+      { id: 'attachment-1', name: 'user-upload.txt', path: buildAttachmentLogicalPath(workspaceDir, attachmentTextPath), kind: 'text' },
+      { id: 'attachment-2', name: 'scan.pdf', path: buildAttachmentLogicalPath(workspaceDir, attachmentPdfPath) },
+      { id: 'attachment-3', name: 'paged.pdf', path: buildAttachmentLogicalPath(workspaceDir, attachmentPagedPdfPath) },
+      { id: 'attachment-4', name: 'avatar.png', path: buildAttachmentLogicalPath(workspaceDir, attachmentImagePath), kind: 'image' },
     ],
   });
   try {
@@ -306,6 +321,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.match(prompt, /stageHostPath/i);
     assert.match(prompt, /workspace:\/\//i);
     assert.match(prompt, /runPython/i);
+    assert.match(runtime.promptSections.join('\n'), /attachment:\/\//i);
 
     const localRead = await runtime.tools.readFile.execute({ path: localTextPath });
     assert.equal(localRead.content, 'hello local file');
@@ -438,6 +454,18 @@ module.exports = async function failingHandler({ llm, profileName }) {
     });
     assert.equal(attachmentText.success, true);
     assert.equal(attachmentText.content, 'alpha');
+
+    const imageInspection = await runtime.tools.inspectAttachment.execute({
+      attachment: 'attachment-4',
+      maxChars: 80,
+    });
+    assert.equal(imageInspection.success, true);
+    assert.equal(imageInspection.attachment.kind, 'image');
+    assert.equal(imageInspection.attachment.textLike, false);
+    assert.equal(imageInspection.attachment.path, 'attachment://avatar.png');
+    assert.equal(imageInspection.attachment.extraction.method, 'image-model');
+    assert.equal(imageInspection.preview.model, 'mock-image-model');
+    assert.match(imageInspection.preview.text, /Image summary for avatar\.png/i);
 
     const pdfInspection = await runtime.tools.inspectAttachment.execute({
       attachment: 'attachment-2',
@@ -635,6 +663,14 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(externalSharedOutbound.success, true);
     assert.equal(externalSharedOutbound.attachment.name, '赞存信息-4090采购.pdf');
 
+    const attachmentOutbound = await runtime.tools.sendFile.execute({
+      path: 'attachment://avatar.png',
+      name: 'avatar.png',
+    });
+    assert.equal(attachmentOutbound.success, true);
+    assert.equal(attachmentOutbound.attachment.name, 'avatar.png');
+    assert.equal(attachmentOutbound.attachment.path, attachmentImagePath);
+
     await assert.rejects(
       () => runtime.tools.readFile.execute({ path: path.join('..', 'outside.txt') }),
       /outside the readable roots/i,
@@ -656,9 +692,96 @@ module.exports = async function failingHandler({ llm, profileName }) {
       path: externalSharedPdfPath,
       name: '赞存信息-4090采购.pdf',
       sizeBytes: fs.statSync(externalSharedPdfPath).size,
+    }, {
+      path: attachmentImagePath,
+      name: 'avatar.png',
+      sizeBytes: fs.statSync(attachmentImagePath).size,
     }]);
   } finally {
     await runtime.close();
     fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+
+  const originalFetch = global.fetch;
+  const imageInspectorRootDir = makeTempDir('image-inspector-http-');
+  const imageInspectorPath = path.join(imageInspectorRootDir, 'vision.png');
+  try {
+    fs.writeFileSync(imageInspectorPath, 'http image bytes');
+    let requestBody = null;
+    global.fetch = async (_url, options = {}) => {
+      requestBody = JSON.parse(String(options.body || '{}'));
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [{
+              message: {
+                content: 'Vision summary',
+              },
+            }],
+          };
+        },
+      };
+    };
+
+    const httpImageInspector = createImageInspector({
+      enabled: true,
+      model: 'vision-test-model',
+      baseURL: 'http://example.invalid/v1',
+      apiKey: 'test-key',
+      thinking: {
+        enabled: true,
+        reasoningEffort: 'medium',
+      },
+    });
+
+    const inspected = await httpImageInspector.inspect({
+      resolvedPath: imageInspectorPath,
+      mimeType: 'image/png',
+    });
+
+    assert.equal(inspected.model, 'vision-test-model');
+    assert.equal(inspected.text, 'Vision summary');
+    assert.equal(requestBody.model, 'vision-test-model');
+    assert.equal(requestBody.reasoning_effort, 'medium');
+    assert.equal(requestBody.messages[0].content[0].text.length > 0, true);
+    assert.equal('enable_thinking' in requestBody, false);
+  } finally {
+    global.fetch = originalFetch;
+    fs.rmSync(imageInspectorRootDir, { recursive: true, force: true });
+  }
+
+  const timeoutRootDir = makeTempDir('image-inspector-timeout-');
+  const timeoutImagePath = path.join(timeoutRootDir, 'slow.png');
+  try {
+    fs.writeFileSync(timeoutImagePath, 'slow image bytes');
+    global.fetch = async (_url, options = {}) => new Promise((_, reject) => {
+      options.signal?.addEventListener('abort', () => {
+        const abortError = new Error('aborted');
+        abortError.name = 'AbortError';
+        reject(abortError);
+      }, { once: true });
+    });
+
+    const timeoutImageInspector = createImageInspector({
+      enabled: true,
+      model: 'vision-timeout-model',
+      baseURL: 'http://example.invalid/v1',
+      apiKey: 'test-key',
+      timeoutMs: 10,
+    });
+
+    await assert.rejects(
+      () => timeoutImageInspector.inspect({
+        resolvedPath: timeoutImagePath,
+        mimeType: 'image/png',
+      }),
+      /Image inspection timed out after 10ms\./i,
+    );
+
+    assert.equal(DEFAULT_IMAGE_INSPECTION_TIMEOUT_MS, 30000);
+  } finally {
+    global.fetch = originalFetch;
+    fs.rmSync(timeoutRootDir, { recursive: true, force: true });
   }
 };

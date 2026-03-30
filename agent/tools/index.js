@@ -6,6 +6,7 @@ const { execFile } = require('child_process');
 const { TextDecoder } = require('util');
 const { tool } = require('ai');
 const { z } = require('zod');
+const { LOGICAL_ATTACHMENT_PREFIX } = require('../../user-space');
 const {
   getWorkspacePythonBinary,
 } = require('../../workspace-runtime/runtime');
@@ -104,6 +105,13 @@ function parseLogicalPath(requestedPath) {
     };
   }
 
+  if (requestedPath.startsWith(LOGICAL_ATTACHMENT_PREFIX)) {
+    return {
+      scope: 'attachment',
+      subpath: normalizeLogicalSubpath(requestedPath.slice(LOGICAL_ATTACHMENT_PREFIX.length)),
+    };
+  }
+
   return null;
 }
 
@@ -169,18 +177,26 @@ function resolveWorkspacePath(baseDir, requestedPath) {
   return resolvedPath;
 }
 
-function resolveReadablePath(workspaceDir, sharedReadRoots, primarySharedRoot, requestedPath) {
+function resolveReadablePath(workspaceDir, sharedReadRoots, primarySharedRoot, attachmentRootDir, requestedPath) {
   const logicalPath = parseLogicalPath(requestedPath);
   if (logicalPath) {
     if (logicalPath.scope === 'workspace') {
       return resolvePathInsideRoot(workspaceDir, logicalPath.subpath, 'Workspace');
     }
 
-    if (!primarySharedRoot) {
-      throw new Error(`No shared read root is configured for path: ${requestedPath}`);
+    if (logicalPath.scope === 'shared') {
+      if (!primarySharedRoot) {
+        throw new Error(`No shared read root is configured for path: ${requestedPath}`);
+      }
+
+      return resolvePathInsideRoot(primarySharedRoot, logicalPath.subpath, 'Shared');
     }
 
-    return resolvePathInsideRoot(primarySharedRoot, logicalPath.subpath, 'Shared');
+    if (!attachmentRootDir) {
+      throw new Error(`No attachment root is configured for path: ${requestedPath}`);
+    }
+
+    return resolvePathInsideRoot(attachmentRootDir, logicalPath.subpath, 'Attachment');
   }
 
   const resolvedPath = resolveRequestedPath(workspaceDir, requestedPath);
@@ -193,6 +209,10 @@ function resolveReadablePath(workspaceDir, sharedReadRoots, primarySharedRoot, r
     if (isPathInside(rootDir, resolvedPath)) {
       return resolvedPath;
     }
+  }
+
+  if (attachmentRootDir && isPathInside(attachmentRootDir, resolvedPath)) {
+    return resolvedPath;
   }
 
   throw new Error(`Path is outside the readable roots: ${requestedPath}`);
@@ -323,11 +343,20 @@ class LocalWorkspaceBackend {
     this.primarySharedRoot = typeof options.primarySharedRoot === 'string' && options.primarySharedRoot.trim().length > 0
       ? path.resolve(options.primarySharedRoot)
       : '';
+    this.attachmentRootDir = typeof options.attachmentRootDir === 'string' && options.attachmentRootDir.trim().length > 0
+      ? path.resolve(options.attachmentRootDir)
+      : '';
     this.outboundAttachments = [];
   }
 
   async readFile(filePath) {
-    const resolvedPath = resolveReadablePath(this.workingDir, this.sharedReadRoots, this.primarySharedRoot, filePath);
+    const resolvedPath = resolveReadablePath(
+      this.workingDir,
+      this.sharedReadRoots,
+      this.primarySharedRoot,
+      this.attachmentRootDir,
+      filePath,
+    );
     return fs.readFile(resolvedPath, 'utf8');
   }
 
@@ -339,7 +368,13 @@ class LocalWorkspaceBackend {
   }
 
   async registerOutboundAttachment(filePath, displayName) {
-    const resolvedPath = resolveReadablePath(this.workingDir, this.sharedReadRoots, this.primarySharedRoot, filePath);
+    const resolvedPath = resolveReadablePath(
+      this.workingDir,
+      this.sharedReadRoots,
+      this.primarySharedRoot,
+      this.attachmentRootDir,
+      filePath,
+    );
     const stat = await fs.stat(resolvedPath);
 
     if (!stat.isFile()) {
@@ -939,17 +974,23 @@ function createStageHostPathTool(machine, workspaceDir) {
     description: [
       'Copy a readable host file or directory into the current user workspace.',
       'Use this when a needed host file lives outside the workspace and must be staged before processing.',
-      'Supports shared://... for shared read-only files and workspace://... for workspace destinations.',
+      'Supports attachment://... and shared://... for readable sources, plus workspace://... for workspace destinations.',
       `Destination paths must stay inside ${toPosixPath(path.resolve(workspaceDir))}.`,
     ].join(' '),
     inputSchema: z.object({
-      sourcePath: z.string().describe('Readable host file or directory path. Accepts shared://..., workspace://..., relative workspace paths, or readable host absolute paths.'),
+      sourcePath: z.string().describe('Readable host file or directory path. Accepts attachment://..., shared://..., workspace://..., relative workspace paths, or readable host absolute paths.'),
       destinationDir: z.string().describe('Workspace directory where the staged copy should be placed. Accepts workspace://... or a relative workspace path.'),
       newName: z.string().optional().describe('Optional replacement name for the copied file or directory.'),
       overwrite: z.boolean().optional().describe('Whether to overwrite the destination if it already exists. Defaults to false.'),
     }),
     execute: async ({ sourcePath, destinationDir, newName, overwrite }) => {
-      const resolvedSourcePath = resolveReadablePath(workspaceDir, machine.sharedReadRoots, machine.primarySharedRoot, sourcePath);
+      const resolvedSourcePath = resolveReadablePath(
+        workspaceDir,
+        machine.sharedReadRoots,
+        machine.primarySharedRoot,
+        machine.attachmentRootDir,
+        sourcePath,
+      );
       const resolvedDestinationDir = resolveWorkspacePath(workspaceDir, destinationDir);
       const destinationPath = path.join(
         resolvedDestinationDir,
@@ -1190,7 +1231,13 @@ function createReadFileTool(machine, workspaceDir, attachmentIndex) {
       path: z.string().describe('The path to the local text file to read'),
     }),
     execute: async ({ path: filePath }) => {
-      const resolvedPath = resolveReadablePath(workspaceDir, machine.sharedReadRoots, machine.primarySharedRoot, filePath);
+      const resolvedPath = resolveReadablePath(
+        workspaceDir,
+        machine.sharedReadRoots,
+        machine.primarySharedRoot,
+        machine.attachmentRootDir,
+        filePath,
+      );
       const fileInfo = await assertReadableLocalTextFile(resolvedPath, attachmentIndex);
       const content = await machine.readFile(filePath);
 
@@ -1230,11 +1277,11 @@ function createWriteFileTool(machine, workspaceDir) {
 function createSendFileTool(machine, workspaceDir) {
   return tool({
     description: [
-      'Queue a local file from the current user workspace to be sent back through the current channel before your final reply is delivered.',
+      'Queue a local file from the current user workspace or current conversation attachments to be sent back through the current channel before your final reply is delivered.',
       `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
-      'Accepts workspace://... and shared://... paths.',
+      'Accepts workspace://..., attachment://..., and shared://... paths.',
       'Relative paths must stay inside this workspace.',
-      'Absolute paths may also point to configured shared read-only roots.',
+      'Absolute paths may also point to configured attachment or shared read-only roots.',
       'Use this after creating or locating a real file the user should receive.',
       'If channel delivery fails, the user will be told the file could not be sent and will receive the absolute path instead.',
     ].join(' '),
@@ -1282,6 +1329,7 @@ function createUpdateMemoryTool(memoryRuntime) {
 async function createRuntimeTools({
   workspaceDir,
   projectRootDir = workspaceDir,
+  attachmentRootDir = '',
   sharedReadRoots = [],
   skillsDir,
   mcpServers,
@@ -1315,12 +1363,33 @@ async function createRuntimeTools({
   const machine = new LocalWorkspaceBackend(workingDir, {
     sharedReadRoots: effectiveSharedReadRoots,
     primarySharedRoot,
+    attachmentRootDir,
   });
-  const normalizedAttachments = normalizeAttachments(attachments, path.resolve(projectRootDir), resolveRequestedPath);
+  const attachmentPathResolver = (_baseDir, requestedPath) => {
+    const logicalPath = parseLogicalPath(requestedPath);
+
+    if (logicalPath?.scope === 'attachment') {
+      if (!machine.attachmentRootDir) {
+        throw new Error(`No attachment root is configured for path: ${requestedPath}`);
+      }
+
+      return resolvePathInsideRoot(machine.attachmentRootDir, logicalPath.subpath, 'Attachment');
+    }
+
+    return path.isAbsolute(requestedPath)
+      ? path.normalize(requestedPath)
+      : path.resolve(path.resolve(projectRootDir), requestedPath);
+  };
+  const normalizedAttachments = normalizeAttachments(
+    attachments,
+    path.resolve(projectRootDir),
+    attachmentPathResolver,
+    attachmentRootDir,
+  );
   const attachmentToolkit = createAttachmentTools(
     normalizedAttachments,
     path.resolve(projectRootDir),
-    resolveRequestedPath,
+    attachmentPathResolver,
     attachmentExtraction,
   );
   const bashToolkitPromise = createSandboxedBashTool(workingDir);
@@ -1357,6 +1426,7 @@ async function createRuntimeTools({
           workingDir,
           machine.sharedReadRoots,
           machine.primarySharedRoot,
+          machine.attachmentRootDir,
           requestedPath,
         ),
         buildWorkspacePathMetadata,
@@ -1436,9 +1506,9 @@ async function createRuntimeTools({
       attachmentToolNames: attachmentToolkit.toolNames,
       memoryToolNames: memoryRuntime ? ['updateMemory'] : [],
       promptSections: [
-        `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. Prefer \`workspace://...\` for workspace files and \`shared://...\` for files under the primary shared read-only root. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`, \`archiveWorkspacePath\`) operate on real host paths inside this workspace, and host read/send access is also allowed for these shared read-only roots: ${effectiveSharedReadRoots.map(rootDir => `\`${toPosixPath(rootDir)}\``).join(', ')}.`,
+        `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. Prefer \`workspace://...\` for workspace files, \`attachment://...\` for current-user uploaded attachments, and \`shared://...\` for files under the primary shared read-only root. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`, \`archiveWorkspacePath\`) operate on real host paths inside this workspace, and host read/send access is also allowed for the current user's attachment root plus these shared read-only roots: ${effectiveSharedReadRoots.map(rootDir => `\`${toPosixPath(rootDir)}\``).join(', ')}.`,
         'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly. When the user asks for a zip or package, prefer `archiveWorkspacePath` instead of improvising archive commands in bash.',
-        'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
+        'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. `sendFile` can send files from the workspace, the current user attachment root, or shared read-only roots without staging. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
         buildImageGenerationPrompt(imageGeneration),
         memoryRuntime
           ? 'Memory\nUse `updateMemory` when the current turn reveals durable identity, a preferred real name, or a lasting collaboration preference/correction that should influence future turns. When you call it, provide the memory patch directly from your own understanding of the conversation. Do not store one-off task details.'
