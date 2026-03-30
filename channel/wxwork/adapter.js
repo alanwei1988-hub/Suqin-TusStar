@@ -38,6 +38,8 @@ const MIME_BY_EXTENSION = {
   '.mp4': 'video/mp4',
 };
 
+const WXWORK_IMAGE_SIZE_LIMIT_BYTES = 2 * 1024 * 1024;
+
 let fileTypeModulePromise;
 
 function containsAsciiOrUtf16(buffer, value) {
@@ -257,6 +259,52 @@ function buildAttachmentSendError(fileName, resolvedPath, cause) {
   return error;
 }
 
+function isImageAttachment(attachment = {}, resolvedPath = '') {
+  const kind = typeof attachment?.kind === 'string' ? attachment.kind.toLowerCase() : '';
+  const mimeType = typeof attachment?.mimeType === 'string' ? attachment.mimeType.toLowerCase() : '';
+  const extension = (attachment?.extension || path.extname(resolvedPath)).toLowerCase();
+
+  return kind === 'image'
+    || mimeType.startsWith('image/')
+    || ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(extension);
+}
+
+function sendMediaMessage(bot, target, msgType, mediaId) {
+  return bot.sendMsg(target.chatId, target.chatType, msgType, {
+    [msgType]: {
+      media_id: mediaId,
+    },
+  });
+}
+
+async function sendAttachmentWithFallback(bot, target, attachment, resolvedPath, fileName) {
+  const buffer = fs.readFileSync(resolvedPath);
+  const shouldTryImage = isImageAttachment(attachment, resolvedPath)
+    && buffer.length <= WXWORK_IMAGE_SIZE_LIMIT_BYTES;
+
+  if (shouldTryImage) {
+    try {
+      const imageMediaId = await bot.uploadMedia('image', fileName, buffer);
+      const imageSent = sendMediaMessage(bot, target, 'image', imageMediaId);
+
+      if (!imageSent) {
+        throw new Error('企微图片消息发送失败');
+      }
+
+      return;
+    } catch (imageError) {
+      console.warn(`[WxWorkAdapter] Image send failed for ${fileName}, falling back to file send:`, imageError);
+    }
+  }
+
+  const fileMediaId = await bot.uploadMedia('file', fileName, buffer);
+  const fileSent = sendMediaMessage(bot, target, 'file', fileMediaId);
+
+  if (!fileSent) {
+    throw new Error('企微文件消息发送失败');
+  }
+}
+
 /**
  * WxWorkAdapter - 将企业微信长连接协议适配为通用 Channel 接口
  */
@@ -457,17 +505,7 @@ class WxWorkAdapter extends EventEmitter {
       const fileName = attachment?.name || path.basename(resolvedPath);
       
       try {
-        const buffer = fs.readFileSync(resolvedPath);
-        const mediaId = await this.bot.uploadMedia('file', fileName, buffer);
-        const sent = this.bot.sendMsg(target.chatId, target.chatType, 'file', {
-          file: {
-            media_id: mediaId,
-          },
-        });
-
-        if (!sent) {
-          throw new Error('通道返回发送失败');
-        }
+        await sendAttachmentWithFallback(this.bot, target, attachment, resolvedPath, fileName);
       } catch (error) {
         throw buildAttachmentSendError(fileName, resolvedPath, error);
       }
