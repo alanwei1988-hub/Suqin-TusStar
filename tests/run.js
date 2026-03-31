@@ -5,6 +5,7 @@ const tests = [
   ['contract-mcp.service', require('./contract-mcp.service.test')],
   ['agent.roles', require('./agent.roles.test')],
   ['agent.streaming', require('./agent.streaming.test')],
+  ['agent.abort', require('./agent.abort.test')],
   ['agent.user-config', require('./agent.user-config.test')],
   ['agent.session', require('./agent.session.test')],
   ['agent.request-context', require('./agent.request-context.test')],
@@ -24,6 +25,8 @@ const tests = [
   ['channel.queue', require('./channel.queue.test')],
   ['channel.preprocess-queue', require('./channel.preprocess-queue.test')],
   ['channel.user-queue-isolation', require('./channel.user-queue-isolation.test')],
+  ['channel.stop', require('./channel.stop.test')],
+  ['channel.stop-isolation', require('./channel.stop-isolation.test')],
   ['channel.streaming-status', require('./channel.streaming-status.test')],
 ];
 

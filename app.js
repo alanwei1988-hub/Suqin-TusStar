@@ -456,6 +456,34 @@ function getConversationQueueKey(userId, context = {}) {
   return String(userId || 'default');
 }
 
+function isStopCommand(text = '') {
+  return typeof text === 'string' && text.trim().toLowerCase() === '/stop';
+}
+
+function createAbortError(reason = 'The operation was aborted.') {
+  if (reason instanceof Error) {
+    if (!reason.name || reason.name === 'Error') {
+      reason.name = 'AbortError';
+    }
+
+    return reason;
+  }
+
+  const error = new Error(typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : 'The operation was aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) {
+    return;
+  }
+
+  throw createAbortError(signal.reason);
+}
+
 function createConversationQueue() {
   const states = new Map();
 
@@ -661,8 +689,64 @@ async function sendOutboundAttachments({ channel, userId, attachments, context, 
   }
 }
 
+async function finishRequestWithMessage({ channel, requestState, message }) {
+  if (!requestState || requestState.stopNotified) {
+    return;
+  }
+
+  requestState.stopNotified = true;
+
+  if (requestState.streamReply) {
+    await requestState.streamReply.finish(message);
+    return;
+  }
+
+  await channel.reply(requestState.userId, message, requestState.context);
+}
+
+function formatStopSummary({ activeCount, queuedCount }) {
+  if (activeCount > 0 && queuedCount > 0) {
+    return `已停止 ${activeCount} 条正在处理的请求，并取消 ${queuedCount} 条排队请求。`;
+  }
+
+  if (activeCount > 0) {
+    return activeCount === 1
+      ? '已停止当前正在处理的请求。'
+      : `已停止 ${activeCount} 条正在处理的请求。`;
+  }
+
+  if (queuedCount > 0) {
+    return queuedCount === 1
+      ? '已取消 1 条排队请求。'
+      : `已取消 ${queuedCount} 条排队请求。`;
+  }
+
+  return '当前没有可停止的处理中任务。';
+}
+
 function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
   const messageQueue = createConversationQueue();
+  const requestsByQueueKey = new Map();
+
+  function addRequestState(requestState) {
+    const existing = requestsByQueueKey.get(requestState.queueKey) || new Set();
+    existing.add(requestState);
+    requestsByQueueKey.set(requestState.queueKey, existing);
+  }
+
+  function removeRequestState(requestState) {
+    const existing = requestsByQueueKey.get(requestState.queueKey);
+
+    if (!existing) {
+      return;
+    }
+
+    existing.delete(requestState);
+
+    if (existing.size === 0) {
+      requestsByQueueKey.delete(requestState.queueKey);
+    }
+  }
 
   channel.on('message', async ({ userId, text, attachments, context, prepareMessage }) => {
     const initialText = typeof text === 'string' ? text : '';
@@ -671,20 +755,82 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
     const announcedAttachmentCount = initialAttachments.length > 0
       ? initialAttachments.length
       : (hasDeferredPreparation ? 1 : 0);
+    const queueKey = getConversationQueueKey(userId, context);
 
     console.log(`[Main] Message from ${userId}: ${initialText || '[pending preparation]'} (${announcedAttachmentCount} files)`);
+    if (isStopCommand(initialText) && initialAttachments.length === 0 && !hasDeferredPreparation) {
+      const requestStates = Array.from(requestsByQueueKey.get(queueKey) || []);
+      let activeCount = 0;
+      let queuedCount = 0;
+
+      for (const requestState of requestStates) {
+        if (requestState.completed) {
+          continue;
+        }
+
+        requestState.cancelled = true;
+
+        if (requestState.active) {
+          activeCount += 1;
+        } else {
+          queuedCount += 1;
+        }
+
+        if (!requestState.abortController.signal.aborted) {
+          requestState.abortController.abort(createAbortError('Stopped by /stop.'));
+        }
+
+        await finishRequestWithMessage({
+          channel,
+          requestState,
+          message: requestState.active
+            ? '已按 /stop 停止当前响应。'
+            : '已按 /stop 取消排队中的请求。',
+        });
+      }
+
+      await channel.reply(userId, formatStopSummary({ activeCount, queuedCount }), context);
+      return;
+    }
+
     const streamReply = typeof channel.createStreamingReply === 'function'
       ? channel.createStreamingReply(userId, context)
       : null;
-    const queueKey = getConversationQueueKey(userId, context);
+    const requestState = {
+      queueKey,
+      userId,
+      context,
+      streamReply,
+      abortController: new AbortController(),
+      cancelled: false,
+      completed: false,
+      active: false,
+      stopNotified: false,
+    };
+    addRequestState(requestState);
     const { queuedAhead, promise } = messageQueue.enqueue(queueKey, async () => {
       try {
+        if (requestState.cancelled) {
+          if (!requestState.stopNotified) {
+            await finishRequestWithMessage({
+              channel,
+              requestState,
+              message: '已按 /stop 取消当前请求。',
+            });
+          }
+
+          return;
+        }
+
+        requestState.active = true;
+        const abortSignal = requestState.abortController.signal;
         const draftBridge = createLiveDraftBridge(streamReply);
         let resolvedText = initialText;
         let resolvedAttachments = initialAttachments;
 
         if (hasDeferredPreparation) {
           const preparedMessage = await prepareMessage();
+          throwIfAborted(abortSignal);
 
           if (preparedMessage && typeof preparedMessage === 'object') {
             if (typeof preparedMessage.text === 'string') {
@@ -698,6 +844,7 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
         }
 
         if (streamReply) {
+          throwIfAborted(abortSignal);
           if (context.initialStatusSent && resolvedAttachments.length > 0) {
             await streamReply.updateStatus('文件已下载，正在处理...');
           } else if (!context.initialStatusSent) {
@@ -706,18 +853,21 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
         }
 
         const agentResponse = normalizeAgentResponse(await agent.chat(userId, resolvedText, resolvedAttachments, {
+          abortSignal,
           includeArtifacts: true,
           requestContext: {
             userId,
             context,
           },
           onToolCallStart: async event => {
+            throwIfAborted(abortSignal);
             console.log(`[Main] Agent tool start: step ${Number.isFinite(event.stepNumber) ? event.stepNumber + 1 : '?'} -> ${event.toolCall.toolName}`);
             if (streamReply) {
               await streamReply.updateStatus(formatToolCallStatus(event));
             }
           },
           onStepFinish: async step => {
+            throwIfAborted(abortSignal);
             if (step.toolCalls && step.toolCalls.length > 0) {
               console.log('[Main] Agent tools:', step.toolCalls.map(toolCall => toolCall.toolName).join(', '));
             }
@@ -727,9 +877,11 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
             }
           },
           onTextDelta: async ({ textDelta }) => {
+            throwIfAborted(abortSignal);
             draftBridge.push(textDelta);
           },
         }));
+        throwIfAborted(abortSignal);
 
         const attachmentResult = await sendOutboundAttachments({
           channel,
@@ -738,6 +890,7 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
           context,
           streamReply,
         });
+        throwIfAborted(abortSignal);
 
         if (!attachmentResult.ok) {
           // Attachment failure becomes the final reply.
@@ -750,26 +903,37 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
         }
 
         if (streamReply) {
+          throwIfAborted(abortSignal);
           if (draftBridge.hasStreamedDraft) {
             await draftBridge.finish(finalText);
+            throwIfAborted(abortSignal);
             await streamReply.finish(finalText);
           } else {
             await streamFinalReply(streamReply, finalText);
           }
         } else {
+          throwIfAborted(abortSignal);
           await channel.reply(userId, finalText, context);
         }
       } catch (error) {
+        if (requestState.cancelled || requestState.abortController.signal.aborted) {
+          return;
+        }
+
         console.error('[Main] Chat error:', error);
         if (streamReply) {
           await streamReply.finish('抱歉，我现在处理消息时遇到了点问题。');
         } else {
           await channel.reply(userId, '抱歉，我现在处理消息时遇到了点问题。', context);
         }
+      } finally {
+        requestState.active = false;
+        requestState.completed = true;
+        removeRequestState(requestState);
       }
     });
 
-    if (streamReply && queuedAhead > 0) {
+    if (streamReply && queuedAhead > 0 && !requestState.cancelled && !requestState.abortController.signal.aborted) {
       await streamReply.updateStatus(`前方还有 ${queuedAhead} 条消息，排队处理中...`);
     }
 

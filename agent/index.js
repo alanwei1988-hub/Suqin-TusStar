@@ -23,6 +23,22 @@ const SessionManager = require('./session');
 const { resolveUserAgentConfig } = require('./user-config');
 const { buildOpenAICompatibleProviderOptions } = require('../llm-thinking');
 
+function throwIfAborted(signal) {
+  if (!signal?.aborted) {
+    return;
+  }
+
+  if (signal.reason instanceof Error) {
+    throw signal.reason;
+  }
+
+  const error = new Error(typeof signal.reason === 'string' && signal.reason.trim().length > 0
+    ? signal.reason.trim()
+    : 'The operation was aborted.');
+  error.name = 'AbortError';
+  throw error;
+}
+
 function normalizeConversationAttachments(attachments = []) {
   return attachments.map((attachment, index) => {
     const filePath = attachment?.path || '';
@@ -470,6 +486,7 @@ class AgentCore {
       ? { onStepFinish: options }
       : (options || {});
     const {
+      abortSignal,
       includeArtifacts = false,
       requestContext = {},
       ...callbacks
@@ -602,6 +619,7 @@ class AgentCore {
     });
 
     try {
+      throwIfAborted(abortSignal);
       const responseMessages = [];
       let finalResponse = '已处理完成。';
       let messagesForRun = context.messages;
@@ -613,6 +631,7 @@ class AgentCore {
       for (let continuationAttempt = 0; continuationAttempt < maxContinuationAttempts; continuationAttempt += 1) {
         if (!preferStreaming) {
           const result = await agent.generate({
+            abortSignal,
             messages: messagesForRun,
             experimental_onStepStart: async step => {
               if (callbacks.onStepStart) {
@@ -666,6 +685,7 @@ class AgentCore {
 
         try {
           streamResult = await agent.stream({
+            abortSignal,
             messages: messagesForRun,
             experimental_onStepStart: async step => {
               if (callbacks.onStepStart) {
@@ -697,6 +717,7 @@ class AgentCore {
           }
 
           const result = await agent.generate({
+            abortSignal,
             messages: messagesForRun,
             experimental_onStepStart: async step => {
               if (callbacks.onStepStart) {
@@ -748,6 +769,7 @@ class AgentCore {
 
         let streamedText = '';
         for await (const delta of streamResult.textStream) {
+          throwIfAborted(abortSignal);
           streamedText += delta;
 
           if (callbacks.onTextDelta && delta) {
@@ -763,6 +785,7 @@ class AgentCore {
           streamResult.response,
           streamResult.text,
         ]);
+        throwIfAborted(abortSignal);
         const newResponseMessages = Array.isArray(streamResponse?.messages)
           ? streamResponse.messages
           : [];
