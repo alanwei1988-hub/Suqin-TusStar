@@ -115,15 +115,14 @@ The user has provided the following attachment(s) for reference:
 ${attachmentInfo}
 
 Important attachment handling rule:
-- Attachments are not ordinary local text files. Do not use readFile on attachment paths.
 - Do not inspect or read an attachment just because it appeared in the latest message.
 - First decide what the user is trying to get done from the message and prior conversation.
 - If the task is still ambiguous, ask a clarifying question before touching the attachment.
 - Only inspect or read an attachment after both conditions are true:
   1. the task is clear enough;
   2. file access is actually needed to complete that task.
-- Use inspectAttachment only for metadata, page count, file type, or a small preview.
-- Use readAttachmentText only when bounded text extraction is needed for the current task.
+- Prefer inspectFile for metadata, page count, file type, or a small preview.
+- Use readFile when bounded text extraction is needed from current-conversation attachment ids or names, attachment://..., workspace://..., or absolute host paths.
 - Once file access is justified, prefer fewer, larger reads and continue searching before asking the user to restate details.
 - For contracts or business documents, extract likely key fields yourself only after file access is justified.
 - Only pass an attachment path to another tool when that tool explicitly requires a file path.`;

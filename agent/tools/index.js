@@ -12,7 +12,6 @@ const {
 } = require('../../workspace-runtime/runtime');
 const {
   MAX_LOCAL_TEXT_CHARS,
-  assertReadableLocalTextFile,
   buildAttachmentsPrompt,
   createAttachmentTools,
   normalizeAttachments,
@@ -217,6 +216,41 @@ function resolveReadablePath(workspaceDir, sharedReadRoots, primarySharedRoot, a
   }
 
   throw new Error(`Path is outside the readable roots: ${requestedPath}`);
+}
+
+function resolveInspectablePath(workspaceDir, sharedReadRoots, primarySharedRoot, attachmentRootDir, requestedPath) {
+  const logicalPath = parseLogicalPath(requestedPath);
+  if (logicalPath) {
+    if (logicalPath.scope === 'workspace') {
+      return resolvePathInsideRoot(workspaceDir, logicalPath.subpath, 'Workspace');
+    }
+
+    if (logicalPath.scope === 'shared') {
+      if (!primarySharedRoot) {
+        throw new Error(`No shared read root is configured for path: ${requestedPath}`);
+      }
+
+      return resolvePathInsideRoot(primarySharedRoot, logicalPath.subpath, 'Shared');
+    }
+
+    if (!attachmentRootDir) {
+      throw new Error(`No attachment root is configured for path: ${requestedPath}`);
+    }
+
+    return resolvePathInsideRoot(attachmentRootDir, logicalPath.subpath, 'Attachment');
+  }
+
+  if (path.isAbsolute(requestedPath)) {
+    return path.normalize(requestedPath);
+  }
+
+  const resolvedPath = resolveRequestedPath(workspaceDir, requestedPath);
+
+  if (!isPathInside(workspaceDir, resolvedPath)) {
+    throw new Error(`Path escapes the user workspace: ${requestedPath}`);
+  }
+
+  return resolvedPath;
 }
 
 async function loadBashToolModule() {
@@ -1238,36 +1272,45 @@ function createRunJavaScriptTool(workspaceDir) {
   });
 }
 
-function createReadFileTool(machine, workspaceDir, attachmentIndex) {
+function createInspectFileTool(fileAccessToolkit, workspaceDir) {
   return tool({
     description: [
-      'Read a UTF-8 text file from the current user workspace on the host.',
+      'Inspect a host file and return metadata plus a bounded preview.',
       `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
-      'Accepts workspace://... for workspace files and shared://... for files under the primary shared read-only root.',
-      'Relative paths must stay inside this workspace.',
-      'Absolute paths may also point to configured shared read-only roots.',
-      'Do not use this for user-provided attachments; use the attachment tools instead.',
+      'Accepts current-conversation attachment ids or names, plus workspace://..., attachment://..., shared://..., and absolute paths.',
+      'Use this when you need file type, page count, MIME, size, or a small preview before reading more text.',
     ].join(' '),
     inputSchema: z.object({
-      path: z.string().describe('The path to the local text file to read'),
+      path: z.string().optional().describe('The file path, or a current-conversation attachment id/name when applicable'),
+      maxChars: z.number().int().min(0).max(4000).optional(),
     }),
-    execute: async ({ path: filePath }) => {
-      const resolvedPath = resolveReadablePath(
-        workspaceDir,
-        machine.sharedReadRoots,
-        machine.primarySharedRoot,
-        machine.attachmentRootDir,
-        filePath,
-      );
-      const fileInfo = await assertReadableLocalTextFile(resolvedPath, attachmentIndex);
-      const content = await machine.readFile(filePath);
+    execute: async ({ path: filePath, maxChars }) => fileAccessToolkit.inspectFileByPath(filePath, maxChars),
+  });
+}
 
-      return {
-        path: resolvedPath,
-        sizeBytes: fileInfo.sizeBytes,
-        content: truncateText(content, MAX_LOCAL_TEXT_CHARS, 'file content'),
-      };
-    },
+function createReadFileTool(fileAccessToolkit, workspaceDir) {
+  return tool({
+    description: [
+      'Read a bounded chunk of text from a host file.',
+      `Relative paths resolve from ${toPosixPath(path.resolve(workspaceDir))}.`,
+      'Accepts current-conversation attachment ids or names, plus workspace://..., attachment://..., shared://..., and absolute paths.',
+      'Relative paths must stay inside this workspace. Absolute paths are read directly from the host.',
+      'Plain text files are read directly. Supported documents or PDFs may be converted to Markdown first, and images may be summarized through the configured multimodal inspector.',
+      'Use pageStart and pageCount for PDF page windows, or offset for bounded follow-up reads.',
+    ].join(' '),
+    inputSchema: z.object({
+      path: z.string().optional().describe('The file path, or a current-conversation attachment id/name when applicable'),
+      offset: z.number().int().min(0).optional(),
+      maxChars: z.number().int().min(1).max(MAX_LOCAL_TEXT_CHARS).optional(),
+      pageStart: z.number().int().min(1).optional(),
+      pageCount: z.number().int().min(1).max(50).optional(),
+    }),
+    execute: async ({ path: filePath, offset, maxChars, pageStart, pageCount }) => fileAccessToolkit.readFileByPath(filePath, {
+      offset,
+      maxChars,
+      pageStart,
+      pageCount,
+    }),
   });
 }
 
@@ -1409,9 +1452,20 @@ async function createRuntimeTools({
   );
   const attachmentToolkit = createAttachmentTools(
     normalizedAttachments,
-    path.resolve(projectRootDir),
+    workingDir,
     attachmentPathResolver,
     attachmentExtraction,
+    {
+      attachmentRootDir,
+      primarySharedRoot,
+      resolveHostFilePath: requestedPath => resolveInspectablePath(
+        workingDir,
+        machine.sharedReadRoots,
+        machine.primarySharedRoot,
+        machine.attachmentRootDir,
+        requestedPath,
+      ),
+    },
   );
   const bashToolkitPromise = createSandboxedBashTool(workingDir);
 
@@ -1426,7 +1480,8 @@ async function createRuntimeTools({
 
     const runtimeTools = {
       bash: bashToolkit.tool,
-      readFile: createReadFileTool(machine, workingDir, attachmentToolkit.attachmentIndex),
+      inspectFile: createInspectFileTool(attachmentToolkit, workingDir),
+      readFile: createReadFileTool(attachmentToolkit, workingDir),
       writeFile: createWriteFileTool(machine, workingDir),
       stageHostPath: createStageHostPathTool(machine, workingDir),
       archiveWorkspacePath: createArchiveWorkspacePathTool(
@@ -1474,6 +1529,10 @@ async function createRuntimeTools({
     bash: createToolDisplayInfo('bash', {
       displayName: '命令执行',
       statusText: '执行命令',
+    }),
+    inspectFile: createToolDisplayInfo('inspectFile', {
+      displayName: '文件分析',
+      statusText: '分析文件内容',
     }),
     readFile: createToolDisplayInfo('readFile', {
       displayName: '文件读取',
@@ -1527,7 +1586,7 @@ async function createRuntimeTools({
       attachmentToolNames: attachmentToolkit.toolNames,
       memoryToolNames: memoryRuntime ? ['updateMemory'] : [],
       promptSections: [
-        `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. Prefer \`workspace://...\` for workspace files, \`attachment://...\` for current-user uploaded attachments, and \`shared://...\` for files under the primary shared read-only root. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`readFile\`, \`writeFile\`, \`sendFile\`, \`archiveWorkspacePath\`) operate on real host paths inside this workspace, and host read/send access is also allowed for the current user's attachment root plus these shared read-only roots: ${effectiveSharedReadRoots.map(rootDir => `\`${toPosixPath(rootDir)}\``).join(', ')}.`,
+        `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. Prefer \`workspace://...\` for workspace files, \`attachment://...\` for current-user uploaded attachments, and \`shared://...\` for files under the primary shared read-only root. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`inspectFile\`, \`readFile\`, \`writeFile\`, \`sendFile\`, \`archiveWorkspacePath\`) operate on real host paths. \`writeFile\` still writes only inside the workspace. \`inspectFile\` and \`readFile\` also accept the current user's attachment root, the shared read-only roots ${effectiveSharedReadRoots.map(rootDir => `\`${toPosixPath(rootDir)}\``).join(', ')}, and explicit absolute host paths when needed.`,
         'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly. When the user asks for a zip or package, prefer `archiveWorkspacePath` instead of improvising archive commands in bash.',
         'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. `sendFile` can send files from the workspace, the current user attachment root, or shared read-only roots without staging. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
         buildImageGenerationPrompt(imageGeneration),

@@ -3,12 +3,15 @@ const fs = require('fs');
 const path = require('path');
 const { ContractService } = require('../contract-mcp/nas-service');
 const { makeTempDir } = require('./helpers/test-helpers');
+const { buildUserPaths } = require('../user-space');
 
 module.exports = async function runContractServiceTest() {
   const rootDir = makeTempDir('contract-service-');
   const libraryRoot = path.join(rootDir, '已签署协议电子档');
+  const userStorageRoot = path.join(rootDir, 'users');
   const serviceConfig = {
     libraryRoot,
+    userStorageRoot,
     dbPath: path.join(libraryRoot, '合同归档.db'),
     archiveIdPrefix: 'A',
     ourCompanyAliases: ['上海启迪创业孵化器有限公司', '上海启迪'],
@@ -24,9 +27,16 @@ module.exports = async function runContractServiceTest() {
     const scanPath = path.join(rootDir, 'scan.pdf');
     const wordPath = path.join(rootDir, 'contract.docx');
     const appendixPath = path.join(rootDir, 'appendix.pdf');
+    const userPaths = buildUserPaths(userStorageRoot, 'tester');
+    const attachmentLogicalPath = 'attachment://uploaded-contract.pdf';
+    const workspaceLogicalPath = 'workspace://jobs/staged-contract.docx';
     fs.writeFileSync(scanPath, 'scan-file');
     fs.writeFileSync(wordPath, 'word-file');
     fs.writeFileSync(appendixPath, 'appendix-file');
+    fs.mkdirSync(userPaths.attachmentsDir, { recursive: true });
+    fs.mkdirSync(path.join(userPaths.workspaceDir, 'jobs'), { recursive: true });
+    fs.writeFileSync(path.join(userPaths.attachmentsDir, 'uploaded-contract.pdf'), 'uploaded-scan-file');
+    fs.writeFileSync(path.join(userPaths.workspaceDir, 'jobs', 'staged-contract.docx'), 'workspace-word-file');
 
     const directoryTree = service.listDirectory({
       relativePath: '采购（启迪支出）',
@@ -70,6 +80,46 @@ module.exports = async function runContractServiceTest() {
     assert.equal(preview.importantFields.some(field => field.label === '合同名称' && field.filled), true);
     assert.equal(preview.mergedPreviewFields.some(field => field.label === '合同名称' && field.filled), true);
     assert.equal(preview.importantFields.some(field => field.label === '他方' && !field.filled), true);
+
+    const attachmentLogicalPreview = service.previewArchive({
+      contract: {
+        contractName: '逻辑路径附件预览测试协议',
+        agreementType: '采购',
+        partyAName: '上海启迪',
+        partyBName: '逻辑附件供应商',
+        signingDate: '2026-03-22',
+        uploadedBy: 'tester',
+      },
+      sourceFiles: [{ path: attachmentLogicalPath, name: 'uploaded-contract.pdf' }],
+      archiveRelativeDir: path.join('采购（启迪支出）', '算力'),
+      operator: 'tester',
+      uploaderUserId: 'tester',
+    });
+    assert.match(attachmentLogicalPreview.pendingId, /^PD_\d{8}_[0-9a-f]{8}$/);
+
+    const archivedFromLogicalAttachment = service.archiveContract({
+      pendingId: attachmentLogicalPreview.pendingId,
+      operator: 'tester',
+    });
+    assert.equal(archivedFromLogicalAttachment.files.length, 1);
+    assert.equal(fs.existsSync(archivedFromLogicalAttachment.files[0].absolutePath), true);
+
+    const archivedFromLogicalWorkspace = service.archiveContract({
+      contract: {
+        contractName: '逻辑路径工作区归档测试协议',
+        agreementType: '采购',
+        partyAName: '上海启迪',
+        partyBName: '逻辑工作区供应商',
+        signingDate: '2026-03-23',
+        uploadedBy: 'tester',
+      },
+      sourceFiles: [{ path: workspaceLogicalPath, name: 'staged-contract.docx' }],
+      archiveRelativeDir: path.join('采购（启迪支出）', '算力'),
+      operator: 'tester',
+      uploaderUserId: 'tester',
+    });
+    assert.equal(archivedFromLogicalWorkspace.files.length, 1);
+    assert.equal(fs.existsSync(archivedFromLogicalWorkspace.files[0].absolutePath), true);
 
     const archivedFromPending = service.archiveContract({
       pendingId: preview.pendingId,

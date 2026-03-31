@@ -3,9 +3,11 @@ const fs = require('fs');
 const path = require('path');
 const ContractRepository = require('./repository');
 const { normalizeDateText, normalizeTimestampText } = require('./date-normalize');
+const { buildUserPaths, LOGICAL_ATTACHMENT_PREFIX, normalizeLogicalSubpath } = require('../user-space');
 
 const DEFAULT_ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.xls', '.xlsx'];
 const DEFAULT_EXCLUDED_SEARCH_NAMES = new Set(['协议台账.xlsx', '电子协议归档规则.txt']);
+const LOGICAL_WORKSPACE_PREFIX = 'workspace://';
 const LEDGER_SHEET_TEMPLATES = {
   '有结算款项协议': {
     description: '适用于有明确结算金额的收入类或合作结算类协议。',
@@ -143,6 +145,80 @@ function normalizeRelativeLibraryPath(libraryRoot, requestedPath = '') {
 function resolveLibraryPath(libraryRoot, relativePath = '') {
   const normalizedRelativePath = normalizeRelativeLibraryPath(libraryRoot, relativePath);
   return path.resolve(libraryRoot, normalizedRelativePath);
+}
+
+function listUserScopes(userStorageRoot, uploaderUserId = '') {
+  const normalizedUploaderUserId = String(uploaderUserId || '').trim();
+
+  if (normalizedUploaderUserId) {
+    const userPaths = buildUserPaths(userStorageRoot, normalizedUploaderUserId);
+    return [{
+      userId: normalizedUploaderUserId,
+      workspaceDir: userPaths.workspaceDir,
+      attachmentsDir: userPaths.attachmentsDir,
+    }];
+  }
+
+  if (!fs.existsSync(userStorageRoot)) {
+    return [];
+  }
+
+  return fs.readdirSync(userStorageRoot, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => ({
+      userId: entry.name,
+      workspaceDir: path.join(userStorageRoot, entry.name, 'workspace'),
+      attachmentsDir: path.join(userStorageRoot, entry.name, 'attachments'),
+    }));
+}
+
+function resolveLogicalUserFilePath(userStorageRoot, requestedPath, uploaderUserId = '') {
+  const text = String(requestedPath || '').trim();
+  if (!text) {
+    return '';
+  }
+
+  let targetKind = '';
+  if (text.startsWith(LOGICAL_ATTACHMENT_PREFIX)) {
+    targetKind = 'attachmentsDir';
+  } else if (text.startsWith(LOGICAL_WORKSPACE_PREFIX)) {
+    targetKind = 'workspaceDir';
+  } else {
+    return '';
+  }
+
+  const logicalSubpath = normalizeLogicalSubpath(
+    text.slice(targetKind === 'attachmentsDir'
+      ? LOGICAL_ATTACHMENT_PREFIX.length
+      : LOGICAL_WORKSPACE_PREFIX.length),
+  );
+  const matches = [];
+
+  for (const scope of listUserScopes(userStorageRoot, uploaderUserId)) {
+    const baseDir = scope[targetKind];
+    const resolvedPath = path.resolve(baseDir, logicalSubpath);
+
+    if (!isPathInside(baseDir, resolvedPath)) {
+      throw new Error(`Source file path escapes user ${targetKind === 'attachmentsDir' ? 'attachments' : 'workspace'} root: ${requestedPath}`);
+    }
+
+    if (fs.existsSync(resolvedPath)) {
+      matches.push({
+        userId: scope.userId,
+        resolvedPath,
+      });
+    }
+  }
+
+  if (matches.length === 1) {
+    return matches[0].resolvedPath;
+  }
+
+  if (matches.length > 1) {
+    throw new Error(`Source file path is ambiguous across users: ${requestedPath}`);
+  }
+
+  return '';
 }
 
 function computeFileSha256(filePath) {
@@ -563,6 +639,9 @@ class ContractService {
   constructor(config) {
     this.config = {
       libraryRoot: path.resolve(config.libraryRoot),
+      userStorageRoot: config.userStorageRoot
+        ? path.resolve(config.userStorageRoot)
+        : path.resolve(path.dirname(config.libraryRoot), 'users'),
       dbPath: config.dbPath
         ? path.resolve(config.dbPath)
         : path.resolve(config.libraryRoot, '合同归档.db'),
@@ -951,13 +1030,33 @@ class ContractService {
     return contract.partyBName || contract.partyAName || '';
   }
 
-  validateSourceFiles(sourceFiles = []) {
+  resolveSourceFilePath(sourcePath, uploaderUserId = '') {
+    const requestedPath = String(sourcePath || '').trim();
+
+    if (!requestedPath) {
+      return '';
+    }
+
+    const logicalUserPath = resolveLogicalUserFilePath(
+      this.config.userStorageRoot,
+      requestedPath,
+      uploaderUserId,
+    );
+
+    if (logicalUserPath) {
+      return logicalUserPath;
+    }
+
+    return path.resolve(requestedPath);
+  }
+
+  validateSourceFiles(sourceFiles = [], { uploaderUserId = '' } = {}) {
     if (!Array.isArray(sourceFiles) || sourceFiles.length === 0) {
       throw new Error('At least one source file is required.');
     }
 
     return sourceFiles.map((sourceFile, index) => {
-      const sourcePath = path.resolve(String(sourceFile?.path || ''));
+      const sourcePath = this.resolveSourceFilePath(sourceFile?.path, uploaderUserId);
 
       if (!sourcePath || !fs.existsSync(sourcePath)) {
         throw new Error(`Source file does not exist: ${sourceFile?.path || `#${index + 1}`}`);
@@ -1201,7 +1300,10 @@ class ContractService {
     }
 
     const contract = this.normalizeContract(input.contract || {});
-    const sourceFiles = this.validateSourceFiles(input.sourceFiles || input.files || []);
+    const uploaderUserId = String(input.uploaderUserId || '').trim();
+    const sourceFiles = this.validateSourceFiles(input.sourceFiles || input.files || [], {
+      uploaderUserId,
+    });
     const archiveRelativeDir = normalizeRelativeLibraryPath(this.config.libraryRoot, input.archiveRelativeDir || input.relativeDir || '');
 
     if (!archiveRelativeDir) {
@@ -1238,7 +1340,7 @@ class ContractService {
       ledgerFields,
       uncertainFields,
       searchKeywords,
-      uploaderUserId: String(input.uploaderUserId || '').trim(),
+      uploaderUserId,
       uploadedBy: contract.uploadedBy || '',
       sourceChannel: String(input.sourceChannel || '').trim(),
       sourceMessageId: String(input.sourceMessageId || '').trim(),

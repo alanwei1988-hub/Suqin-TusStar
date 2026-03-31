@@ -46,8 +46,8 @@ trailer
 
       if (docxCallIndex === 1) {
         return generateResult([
-          toolCall('attachment-read-1', 'readAttachmentText', {
-            attachment: 'meeting-notes.docx',
+          toolCall('file-read-1', 'readFile', {
+            path: attachmentPath,
             maxChars: 2000,
           }),
         ]);
@@ -65,8 +65,8 @@ trailer
 
       if (docxCallIndex === 3) {
         return generateResult([
-          toolCall('attachment-read-2', 'readAttachmentText', {
-            attachment: 'meeting-notes.docx',
+          toolCall('file-read-2', 'readFile', {
+            path: 'meeting-notes.docx',
             maxChars: 2000,
           }),
         ]);

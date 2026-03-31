@@ -141,8 +141,8 @@
     "sessionDb": "./data/sessions.db"
   },
   "contractMcp": {
-    "_libraryRoot": "\\\\192.168.20.100\\启迪之星\\已签署协议电子档",
-    "libraryRoot": "storage/已签署协议电子档",
+    "libraryRoot": "\\\\192.168.20.100\\启迪之星\\已签署协议电子档",
+    "_libraryRoot": "storage/已签署协议电子档",
     "dbPath": "协议台账_agent.db",
     "archiveIdPrefix": "Agent_",
     "ourCompanyAliases": ["上海启迪创业孵化器有限公司", "上海启迪创业孵化器", "上海启迪"],

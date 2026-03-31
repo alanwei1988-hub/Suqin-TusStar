@@ -62,6 +62,9 @@ function resolveContractMcpConfig(baseDir, contractMcp = {}) {
     contractMcp.libraryRoot || contractMcp.storageRoot,
     './storage/已签署协议电子档',
   );
+  const userStorageRoot = typeof contractMcp.userStorageRoot === 'string' && contractMcp.userStorageRoot.trim().length > 0
+    ? resolveRelative(baseDir, contractMcp.userStorageRoot.trim())
+    : path.resolve(path.dirname(libraryRoot), 'users');
   const ourCompanyAliases = Array.isArray(contractMcp.ourCompanyAliases)
     ? contractMcp.ourCompanyAliases
       .map(value => String(value || '').trim())
@@ -70,6 +73,7 @@ function resolveContractMcpConfig(baseDir, contractMcp = {}) {
 
   return {
     libraryRoot,
+    userStorageRoot,
     dbPath: resolvePathUnderLibraryRoot(libraryRoot, contractMcp.dbPath, '合同归档.db'),
     archiveIdPrefix: contractMcp.archiveIdPrefix || contractMcp.contractIdPrefix || 'A',
     allowedExtensions: Array.isArray(contractMcp.allowedExtensions) && contractMcp.allowedExtensions.length > 0

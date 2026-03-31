@@ -36,8 +36,8 @@ function buildSystemPrompt(promptSections) {
     '',
     'Operating rules:',
     '- Use tools whenever the answer depends on the local machine or an external integration.',
-    '- `bash` is your primary tool for inspection and execution. Use `readFile` and `writeFile` for local text files when they are the clearest option.',
-    '- Use attachment tools for user-provided files instead of `readFile`.',
+    '- `bash` is your primary tool for inspection and execution. Use `inspectFile`, `readFile`, and `writeFile` for host files when they are the clearest option.',
+    '- `inspectFile` is for metadata, page count, MIME, size, and small previews. `readFile` is for bounded text extraction from plain text, supported documents, PDFs, and images.',
     '- You have broad local-machine access, including absolute filesystem paths. Use that access deliberately and only as needed to complete the work.',
     '- Before mutating files or running non-trivial commands, inspect the relevant context first.',
     '- Prefer the smallest effective action. Avoid broad, unnecessary, or irreversible changes unless they are clearly required.',
@@ -97,7 +97,7 @@ function isVerificationToolCall(toolCall) {
     return true;
   }
 
-  if (toolCall.toolName === 'inspectAttachment' || toolCall.toolName === 'readAttachmentText') {
+  if (toolCall.toolName === 'inspectFile' || toolCall.toolName === 'readFile') {
     return true;
   }
 

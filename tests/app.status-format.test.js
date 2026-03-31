@@ -3,7 +3,7 @@ const { formatToolCallStatus } = require('../app');
 const { createToolDisplayInfo, fallbackStatusText, humanizeToolName } = require('../agent/tools/display');
 
 module.exports = async function runAppStatusFormatTest() {
-  assert.equal(humanizeToolName('readAttachmentText'), 'read attachment text');
+  assert.equal(humanizeToolName('inspectFile'), 'inspect file');
   assert.equal(fallbackStatusText('contract_create'), '处理合同信息');
   assert.equal(fallbackStatusText('contract_search'), '查询合同信息');
   assert.equal(fallbackStatusText('totallyUnknownTool'), '调用系统工具处理');

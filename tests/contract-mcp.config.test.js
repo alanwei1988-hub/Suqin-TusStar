@@ -18,6 +18,7 @@ module.exports = async function runContractMcpConfigTest() {
 
     const loaded = loadContractMcpConfig({ configPath });
     assert.equal(loaded.libraryRoot, path.join(rootDir, 'contract-library'));
+    assert.equal(loaded.userStorageRoot, path.join(rootDir, 'users'));
     assert.equal(loaded.dbPath, path.join(rootDir, 'contract-library', '合同归档.db'));
     assert.deepEqual(loaded.ourCompanyAliases, ['上海启迪创业孵化器有限公司', '上海启迪']);
 
@@ -26,6 +27,7 @@ module.exports = async function runContractMcpConfigTest() {
       ourCompanyAliases: ['上海启迪创业孵化器有限公司'],
     });
     assert.equal(resolved.libraryRoot, '\\\\192.168.20.100\\启迪之星\\技术商业化事业部\\板块-产业化\\合同管理');
+    assert.equal(resolved.userStorageRoot, '\\\\192.168.20.100\\启迪之星\\技术商业化事业部\\板块-产业化\\users');
     assert.equal(resolved.dbPath, '\\\\192.168.20.100\\启迪之星\\技术商业化事业部\\板块-产业化\\合同管理\\合同归档.db');
     assert.deepEqual(resolved.ourCompanyAliases, ['上海启迪创业孵化器有限公司']);
 
@@ -34,6 +36,12 @@ module.exports = async function runContractMcpConfigTest() {
       dbPath: 'custom-archive.db',
     });
     assert.equal(resolvedCustomDbName.dbPath, path.join(rootDir, 'contract-library', 'custom-archive.db'));
+
+    const resolvedCustomUserStorage = resolveContractMcpConfig(rootDir, {
+      libraryRoot: './contract-library',
+      userStorageRoot: './storage/users',
+    });
+    assert.equal(resolvedCustomUserStorage.userStorageRoot, path.join(rootDir, 'storage', 'users'));
   } finally {
     fs.rmSync(rootDir, { recursive: true, force: true });
   }

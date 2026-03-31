@@ -7,6 +7,7 @@ const { buildThinkingExtraBody } = require('../llm-thinking');
 
 const EXTRACTOR_CACHE_SCHEMA_VERSION = 2;
 const PAGE_HEADING_PATTERN = /^\s*##\s+Page\s+\d+\s*$/gim;
+const PAGE_HEADING_LINE_PATTERN = /(^\s*##\s+Page\s+)(\d+)(\s*$)/gim;
 
 function replaceArgPlaceholders(value, replacements) {
   let output = String(value);
@@ -133,6 +134,37 @@ function getExistingPathVersion(candidate) {
 
 function stripSyntheticPageHeadings(markdown) {
   return String(markdown || '').replace(PAGE_HEADING_PATTERN, '').trim();
+}
+
+function normalizePdfPageHeadings(markdown, pageStart = 1, pageCount = 0) {
+  const source = String(markdown || '');
+
+  if (!source.trim()) {
+    return source;
+  }
+
+  const headings = [...source.matchAll(PAGE_HEADING_LINE_PATTERN)];
+  if (headings.length === 0) {
+    return source;
+  }
+
+  const normalizedPageStart = Number.isFinite(pageStart) ? Math.max(1, Math.trunc(pageStart)) : 1;
+  const normalizedPageCount = Number.isFinite(pageCount) ? Math.max(0, Math.trunc(pageCount)) : 0;
+  const rewriteLimit = normalizedPageCount > 0
+    ? Math.min(headings.length, normalizedPageCount)
+    : headings.length;
+  let headingIndex = 0;
+
+  return source.replace(PAGE_HEADING_LINE_PATTERN, (_match, prefix, _pageNo, suffix) => {
+    if (headingIndex >= rewriteLimit) {
+      headingIndex += 1;
+      return `${prefix}${_pageNo}${suffix}`;
+    }
+
+    const absolutePageNumber = normalizedPageStart + headingIndex;
+    headingIndex += 1;
+    return `${prefix}${absolutePageNumber}${suffix}`;
+  });
 }
 
 function hasMeaningfulExtractedMarkdown(markdown) {
@@ -331,11 +363,14 @@ function createMarkItDownExtractor(config = {}) {
             : String(converted?.markdown || '');
 
           ensureMeaningfulMarkdown(markdown, attachment.name, profileName);
+          const normalizedMarkdown = attachment.extension === '.pdf'
+            ? normalizePdfPageHeadings(markdown, pageStart, pageCount)
+            : markdown;
 
           return {
             method: 'markitdown',
-            markdown: markdown.slice(0, config.maxOutputChars || 24000),
-            truncated: markdown.length > (config.maxOutputChars || 24000),
+            markdown: normalizedMarkdown.slice(0, config.maxOutputChars || 24000),
+            truncated: normalizedMarkdown.length > (config.maxOutputChars || 24000),
             pageStart,
             pageCount,
             profileName,
@@ -370,11 +405,14 @@ function createMarkItDownExtractor(config = {}) {
         const markdown = String(result.stdout || '').trim();
 
         ensureMeaningfulMarkdown(markdown, attachment.name, profileName);
+        const normalizedMarkdown = attachment.extension === '.pdf'
+          ? normalizePdfPageHeadings(markdown, pageStart, pageCount)
+          : markdown;
 
         return {
           method: 'markitdown',
-          markdown: markdown.slice(0, config.maxOutputChars || 24000),
-          truncated: markdown.length > (config.maxOutputChars || 24000),
+          markdown: normalizedMarkdown.slice(0, config.maxOutputChars || 24000),
+          truncated: normalizedMarkdown.length > (config.maxOutputChars || 24000),
           pageStart,
           pageCount,
           profileName,
@@ -472,6 +510,7 @@ module.exports = {
   createCommandEnv,
   createMarkItDownExtractor,
   hasMeaningfulExtractedMarkdown,
+  normalizePdfPageHeadings,
   replaceArgPlaceholders,
   stripSyntheticPageHeadings,
 };

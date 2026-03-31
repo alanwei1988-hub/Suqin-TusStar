@@ -46,7 +46,7 @@
 storage/
 └─ users/
    └─ <encodeURIComponent(userId)>/
-      ├─ workspace/       # 当前用户的持久工作区；readFile/writeFile/sendFile 只允许访问这里
+      ├─ workspace/       # 当前用户的持久工作区；writeFile 只允许写这里，inspectFile/readFile/sendFile 可按规则读宿主文件
       ├─ attachments/     # 当前用户从通道下载下来的原始附件
       ├─ data/            # 当前用户专属数据，如附件提取缓存库
       ├─ config.json      # 当前用户配置覆盖文件；不存在则完全使用全局配置
@@ -255,15 +255,15 @@ npm test
 - `bash` 在沙箱里新建或修改的文件默认只对当前这次运行可见，不会直接持久写回宿主机
 - 如果要把结果真正保存到用户目录，并且后续可被 `readFile` / `sendFile` 看到，Agent 应该使用 `writeFile`
 - `writeFile` 只允许写入当前用户 `workspace/` 内的路径
-- `readFile` 只读取 `workspace/` 和配置过的只读共享目录，不直接读取用户附件
+- `inspectFile` / `readFile` 可以读取 `workspace/`、用户 `attachments/`、配置过的只读共享目录，以及显式给出的绝对路径
 - `sendFile` 可以发送 `workspace/` 内文件，也可以直接发送当前会话附件和配置过的只读共享目录文件
 
 ## 附件处理
 
-收到用户附件后，Agent 不会把它们当普通本地文本文件直接读取，而是通过附件工具做安全处理：
+收到用户附件后，Agent 现在统一通过文件工具处理，但仍保留附件别名工具做兼容：
 
-- `inspectAttachment`：查看附件元数据和预览
-- `readAttachmentText`：按需提取有限长度文本
+- `inspectFile`：查看任意指定文件的元数据和预览，支持 `workspace://`、`attachment://`、共享目录和绝对路径
+- `readFile`：按需提取有限长度文本，支持直接读取文本文件，也支持通过 MarkItDown / 图像模型处理 PDF、Office 文档和图片；同时也支持当前会话附件 id / 名称 / 路径
 
 附件在本地的默认落点是当前用户目录下的 `storage/users/<userId编码>/attachments/`。这些附件和 `workspace/` 是分开的：
 

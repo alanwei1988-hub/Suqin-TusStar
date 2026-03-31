@@ -158,11 +158,13 @@ module.exports = async function runAgentToolsTest() {
   const largeTextPath = path.join(workspaceDir, 'large.txt');
   const failingHandlerPath = path.join(workspaceDir, 'failing-markitdown-handler.js');
   const pagedHandlerPath = path.join(workspaceDir, 'paged-markitdown-handler.js');
+  const scrambledHeadingHandlerPath = path.join(workspaceDir, 'scrambled-heading-markitdown-handler.js');
   const headingOnlyHandlerPath = path.join(workspaceDir, 'heading-only-markitdown-handler.js');
   const localPythonPackageDir = path.join(workspaceDir, 'local-py-package');
   const sharedTextPath = path.join(sharedLibraryRoot, 'shared-note.md');
   const sharedPdfPath = path.join(sharedLibraryRoot, 'shared-contract.pdf');
   const externalSharedPdfPath = path.join(externalSharedLibraryRoot, '赞存信息-4090采购.pdf');
+  const absoluteHostTextPath = path.join(rootDir, 'absolute-host-note.txt');
 
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.mkdirSync(sharedLibraryRoot, { recursive: true });
@@ -214,6 +216,7 @@ trailer
   fs.writeFileSync(sharedTextPath, 'shared contract note');
   fs.writeFileSync(sharedPdfPath, '%PDF-1.7\nshared pdf body');
   fs.writeFileSync(externalSharedPdfPath, '%PDF-1.7\nexternal shared pdf body');
+  fs.writeFileSync(absoluteHostTextPath, 'absolute host note');
   fs.mkdirSync(path.join(workspaceDir, 'bash-visible-dir'), { recursive: true });
   fs.writeFileSync(path.join(workspaceDir, 'bash-visible-dir', 'nested.txt'), 'bash nested file');
   fs.mkdirSync(path.join(localPythonPackageDir, 'demo_pkg'), { recursive: true });
@@ -248,6 +251,15 @@ module.exports = async function failingHandler({ llm, profileName }) {
   return Array.from({ length: renderedPageCount }, (_, index) => {
     const pageNumber = pageStart + index;
     return 'PAGE ' + pageNumber + ' :: ' + 'content '.repeat(60);
+  }).join('\\n\\n');
+};`, 'utf8');
+  fs.writeFileSync(scrambledHeadingHandlerPath, `module.exports = async function scrambledHeadingHandler({ options = {} }) {
+  const pageStart = Number.isFinite(options.pageStart) ? options.pageStart : 1;
+  const pageCount = Number.isFinite(options.pageCount) ? options.pageCount : 0;
+  const renderedPageCount = pageCount || 4;
+  return Array.from({ length: renderedPageCount }, (_, index) => {
+    const wrongHeading = index === 1 ? 1 : (pageStart + index + 5);
+    return '## Page ' + wrongHeading + '\\n\\nPAGE ' + (pageStart + index) + ' :: ' + 'content '.repeat(30);
   }).join('\\n\\n');
 };`, 'utf8');
   fs.writeFileSync(headingOnlyHandlerPath, `module.exports = async function headingOnlyHandler({ options = {} }) {
@@ -295,13 +307,12 @@ module.exports = async function failingHandler({ llm, profileName }) {
   });
   try {
     assert.equal(runtime.toolDisplayByName.bash.statusText, '执行命令');
+    assert.equal(runtime.toolDisplayByName.inspectFile.statusText, '分析文件内容');
     assert.equal(runtime.toolDisplayByName.readFile.statusText, '读取文件内容');
     assert.equal(runtime.toolDisplayByName.stageHostPath.statusText, '复制文件到工作区');
     assert.equal(runtime.toolDisplayByName.archiveWorkspacePath.statusText, '打包工作区文件');
     assert.equal(runtime.toolDisplayByName.runPython.statusText, '运行 Python 代码');
     assert.equal(runtime.toolDisplayByName.runJavaScript.statusText, '运行 JavaScript 代码');
-    assert.equal(runtime.toolDisplayByName.inspectAttachment.statusText, '分析附件内容');
-    assert.equal(runtime.toolDisplayByName.readAttachmentText.statusText, '提取附件文本');
     assert.equal(runtime.toolDisplayByName.sendFile.statusText, '准备发送文件');
 
     if (process.platform === 'win32') {
@@ -323,6 +334,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.match(prompt, /stageHostPath/i);
     assert.match(prompt, /workspace:\/\//i);
     assert.match(prompt, /runPython/i);
+    assert.match(runtime.promptSections.join('\n'), /inspectFile/i);
     assert.match(runtime.promptSections.join('\n'), /attachment:\/\//i);
 
     const bashListResult = await runtime.tools.bash.execute({
@@ -334,13 +346,29 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.match(bashListResult.stdout, /bash nested file/);
 
     const localRead = await runtime.tools.readFile.execute({ path: localTextPath });
+    assert.equal(localRead.success, true);
     assert.equal(localRead.content, 'hello local file');
+    assert.equal(localRead.file.path, 'workspace://notes.md');
+
+    const workspaceInspection = await runtime.tools.inspectFile.execute({
+      path: 'workspace://notes.md',
+      maxChars: 5,
+    });
+    assert.equal(workspaceInspection.success, true);
+    assert.equal(workspaceInspection.file.path, 'workspace://notes.md');
+    assert.equal(workspaceInspection.file.textLike, true);
+    assert.equal(workspaceInspection.preview.text, 'hello');
 
     const sharedLogicalRead = await runtime.tools.readFile.execute({ path: 'shared://shared-note.md' });
     assert.equal(sharedLogicalRead.content, 'shared contract note');
 
     const sharedRead = await runtime.tools.readFile.execute({ path: sharedTextPath });
     assert.equal(sharedRead.content, 'shared contract note');
+
+    const absoluteHostRead = await runtime.tools.readFile.execute({ path: absoluteHostTextPath });
+    assert.equal(absoluteHostRead.success, true);
+    assert.equal(absoluteHostRead.content, 'absolute host note');
+    assert.equal(absoluteHostRead.file.path, absoluteHostTextPath);
 
     const stagedShared = await runtime.tools.stageHostPath.execute({
       sourcePath: 'shared://shared-note.md',
@@ -434,91 +462,96 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(timedOutBash.exitCode, 124);
     assert.match(timedOutBash.stderr, /timed out/i);
 
-    await assert.rejects(
-      () => runtime.tools.readFile.execute({ path: attachmentTextPath }),
-      /user-provided attachment/i,
-    );
+    const attachmentPathRead = await runtime.tools.readFile.execute({
+      path: 'attachment://user-upload.txt',
+      maxChars: 5,
+    });
+    assert.equal(attachmentPathRead.success, true);
+    assert.equal(attachmentPathRead.content, 'alpha');
+    assert.equal(attachmentPathRead.file.path, 'attachment://user-upload.txt');
 
-    await assert.rejects(
-      () => runtime.tools.readFile.execute({ path: localPdfPath }),
-      /not a plain text file/i,
-    );
+    const absoluteAttachmentPdfInspection = await runtime.tools.inspectFile.execute({
+      path: attachmentPdfPath,
+    });
+    assert.equal(absoluteAttachmentPdfInspection.success, true);
+    assert.equal(absoluteAttachmentPdfInspection.file.path, 'attachment://scan.pdf');
+    assert.equal(absoluteAttachmentPdfInspection.file.totalPageCount, 2);
 
-    await assert.rejects(
-      () => runtime.tools.readFile.execute({ path: largeTextPath }),
-      /too large/i,
-    );
+    const largeTextRead = await runtime.tools.readFile.execute({ path: largeTextPath });
+    assert.equal(largeTextRead.success, true);
+    assert.equal(largeTextRead.content.length > 0, true);
+    assert.equal(largeTextRead.contentTruncated, true);
 
-    const attachmentInspection = await runtime.tools.inspectAttachment.execute({
-      attachment: 'attachment-1',
+    const attachmentInspection = await runtime.tools.inspectFile.execute({
+      path: 'attachment-1',
       maxChars: 12,
     });
     assert.equal(attachmentInspection.success, true);
-    assert.equal(attachmentInspection.attachment.textLike, true);
-    assert.equal('preview' in attachmentInspection.attachment, false);
+    assert.equal(attachmentInspection.file.textLike, true);
+    assert.equal('preview' in attachmentInspection.file, false);
     assert.equal(attachmentInspection.preview.text, 'alpha beta g');
 
-    const attachmentText = await runtime.tools.readAttachmentText.execute({
-      attachment: 'attachment-1',
+    const attachmentText = await runtime.tools.readFile.execute({
+      path: 'attachment-1',
       maxChars: 5,
     });
     assert.equal(attachmentText.success, true);
     assert.equal(attachmentText.content, 'alpha');
 
-    const imageInspection = await runtime.tools.inspectAttachment.execute({
-      attachment: 'attachment-4',
+    const imageInspection = await runtime.tools.inspectFile.execute({
+      path: 'attachment-4',
       maxChars: 80,
     });
     assert.equal(imageInspection.success, true);
-    assert.equal(imageInspection.attachment.kind, 'image');
-    assert.equal(imageInspection.attachment.textLike, false);
-    assert.equal(imageInspection.attachment.path, 'attachment://avatar.png');
-    assert.equal(imageInspection.attachment.extraction.method, 'image-model');
+    assert.equal(imageInspection.file.kind, 'image');
+    assert.equal(imageInspection.file.textLike, false);
+    assert.equal(imageInspection.file.path, 'attachment://avatar.png');
+    assert.equal(imageInspection.file.extraction.method, 'image-model');
     assert.equal(imageInspection.preview.model, 'mock-image-model');
     assert.match(imageInspection.preview.text, /Image summary for avatar\.png/i);
 
-    const pdfInspection = await runtime.tools.inspectAttachment.execute({
-      attachment: 'attachment-2',
+    const pdfInspection = await runtime.tools.inspectFile.execute({
+      path: 'attachment-2',
     });
     assert.equal(pdfInspection.success, true);
-    assert.equal(pdfInspection.attachment.textLike, false);
-    assert.equal(pdfInspection.attachment.kind, 'pdf');
-    assert.equal(pdfInspection.attachment.totalPageCount, 2);
-    assert.equal(pdfInspection.attachment.pageRangeSupported, true);
-    assert.equal('preview' in pdfInspection.attachment, false);
-    assert.equal(pdfInspection.attachment.extraction.method, 'markitdown');
-    assert.equal(pdfInspection.attachment.extraction.extractionTruncated, false);
+    assert.equal(pdfInspection.file.textLike, false);
+    assert.equal(pdfInspection.file.kind, 'pdf');
+    assert.equal(pdfInspection.file.totalPageCount, 2);
+    assert.equal(pdfInspection.file.pageRangeSupported, true);
+    assert.equal('preview' in pdfInspection.file, false);
+    assert.equal(pdfInspection.file.extraction.method, 'markitdown');
+    assert.equal(pdfInspection.file.extraction.extractionTruncated, false);
     assert.equal(pdfInspection.preview.totalPageCount, 2);
     assert.equal(pdfInspection.preview.extractionTruncated, false);
     assert.equal(typeof pdfInspection.preview.contentTruncated, 'boolean');
     assert.match(pdfInspection.preview.text, /Converted scan\.pdf/i);
     assert.match(pdfInspection.preview.text, /Page count: 1/i);
 
-    const pdfRead = await runtime.tools.readAttachmentText.execute({
-      attachment: 'attachment-2',
+    const pdfRead = await runtime.tools.readFile.execute({
+      path: 'attachment-2',
     });
     assert.equal(pdfRead.success, true);
     assert.match(pdfRead.content, /%PDF-1\.7/i);
     assert.equal(pdfRead.cursorType, 'document-char');
-    assert.equal(pdfRead.attachment.totalPageCount, 2);
-    assert.equal('pageCount' in pdfRead.attachment, false);
+    assert.equal(pdfRead.file.totalPageCount, 2);
+    assert.equal('pageCount' in pdfRead.file, false);
     assert.equal(pdfRead.pageStart, 1);
     assert.equal(pdfRead.pageCount, 2);
     assert.equal(pdfRead.totalPageCount, 2);
     assert.equal(pdfRead.pageRangeSupported, true);
-    assert.equal(pdfRead.attachment.extraction.extractionTruncated, false);
+    assert.equal(pdfRead.file.extraction.extractionTruncated, false);
     assert.equal(typeof pdfRead.contentTruncated, 'boolean');
 
-    const pdfSmallInspection = await runtime.tools.inspectAttachment.execute({
-      attachment: 'attachment-2',
+    const pdfSmallInspection = await runtime.tools.inspectFile.execute({
+      path: 'attachment-2',
       maxChars: 200,
     });
     assert.equal(pdfSmallInspection.success, true);
     assert.equal(pdfSmallInspection.preview.previewPageStart, 1);
     assert.equal(pdfSmallInspection.preview.previewPageCount, 1);
 
-    const pdfSinglePageRead = await runtime.tools.readAttachmentText.execute({
-      attachment: 'attachment-2',
+    const pdfSinglePageRead = await runtime.tools.readFile.execute({
+      path: 'attachment-2',
       pageStart: 2,
       pageCount: 1,
     });
@@ -547,8 +580,8 @@ module.exports = async function failingHandler({ llm, profileName }) {
     });
 
     try {
-      const firstPagedRead = await pagedRuntime.tools.readAttachmentText.execute({
-        attachment: 'attachment-3',
+      const firstPagedRead = await pagedRuntime.tools.readFile.execute({
+        path: 'attachment-3',
         maxChars: 12000,
       });
       assert.equal(firstPagedRead.success, true);
@@ -559,8 +592,8 @@ module.exports = async function failingHandler({ llm, profileName }) {
       assert.match(firstPagedRead.content, /PAGE 1/);
       assert.match(firstPagedRead.content, /PAGE 2/);
 
-      const secondPagedRead = await pagedRuntime.tools.readAttachmentText.execute({
-        attachment: 'attachment-3',
+      const secondPagedRead = await pagedRuntime.tools.readFile.execute({
+        path: 'attachment-3',
         offset: firstPagedRead.nextOffset,
         maxChars: 12000,
       });
@@ -575,6 +608,41 @@ module.exports = async function failingHandler({ llm, profileName }) {
       assert.ok(!/PAGE 1/.test(secondPagedRead.content));
     } finally {
       await pagedRuntime.close();
+    }
+
+    const scrambledHeadingRuntime = await createRuntimeTools({
+      workspaceDir: rootDir,
+      skillsDir: path.join(repoRoot, 'skills'),
+      mcpServers: [],
+      attachmentExtraction: {
+        markitdown: {
+          enabled: true,
+          supportedExtensions: ['.pdf'],
+          handlerModule: scrambledHeadingHandlerPath,
+          readPageCount: 2,
+          previewPageCount: 1,
+        },
+      },
+      attachments: [
+        { id: 'attachment-3', name: 'paged.pdf', path: attachmentPagedPdfPath },
+      ],
+    });
+
+    try {
+      const scrambledRead = await scrambledHeadingRuntime.tools.readFile.execute({
+        path: 'attachment-3',
+        pageStart: 3,
+        pageCount: 2,
+        maxChars: 12000,
+      });
+      assert.equal(scrambledRead.success, true);
+      assert.match(scrambledRead.content, /^## Page 3\b/m);
+      assert.match(scrambledRead.content, /^## Page 4\b/m);
+      assert.doesNotMatch(scrambledRead.content, /^## Page 1\b/m);
+      assert.doesNotMatch(scrambledRead.content, /^## Page 8\b/m);
+      assert.doesNotMatch(scrambledRead.content, /^## Page 9\b/m);
+    } finally {
+      await scrambledHeadingRuntime.close();
     }
 
     const failingRuntime = await createRuntimeTools({
@@ -604,8 +672,8 @@ module.exports = async function failingHandler({ llm, profileName }) {
     });
 
     try {
-      const failedPdfRead = await failingRuntime.tools.readAttachmentText.execute({
-        attachment: 'attachment-2',
+      const failedPdfRead = await failingRuntime.tools.readFile.execute({
+        path: 'attachment-2',
       });
       assert.equal(failedPdfRead.success, false);
       assert.equal(failedPdfRead.errorCode, 'ocr_safety_review_blocked');
@@ -634,8 +702,8 @@ module.exports = async function failingHandler({ llm, profileName }) {
     });
 
     try {
-      const headingOnlyRead = await headingOnlyRuntime.tools.readAttachmentText.execute({
-        attachment: 'attachment-2',
+      const headingOnlyRead = await headingOnlyRuntime.tools.readFile.execute({
+        path: 'attachment-2',
       });
       assert.equal(headingOnlyRead.success, false);
       assert.equal(headingOnlyRead.errorCode, 'ocr_empty_result');
@@ -683,7 +751,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
 
     await assert.rejects(
       () => runtime.tools.readFile.execute({ path: path.join('..', 'outside.txt') }),
-      /outside the readable roots/i,
+      /escapes the user workspace/i,
     );
 
     assert.deepEqual(runtime.getOutboundAttachments(), [{

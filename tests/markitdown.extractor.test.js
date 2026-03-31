@@ -5,6 +5,7 @@ const {
   createCommandEnv,
   createMarkItDownExtractor,
   hasMeaningfulExtractedMarkdown,
+  normalizePdfPageHeadings,
   replaceArgPlaceholders,
 } = require('../markitdown/extractor');
 const {
@@ -107,6 +108,10 @@ module.exports = async function runMarkItDownExtractorTest() {
     ]);
     assert.equal(hasMeaningfulExtractedMarkdown('## Page 1\n\n## Page 2'), false);
     assert.equal(hasMeaningfulExtractedMarkdown('## Page 1\n\n合同编号 A-1'), true);
+    assert.equal(
+      normalizePdfPageHeadings('## Page 1\n\n第一页\n\n## Page 1\n\n第二页\n\n## Page 4\n\n第三页', 3, 3),
+      '## Page 3\n\n第一页\n\n## Page 4\n\n第二页\n\n## Page 5\n\n第三页',
+    );
 
     const handlerModulePath = path.join(rootDir, 'counting-handler.js');
     const fallbackHandlerPath = path.join(rootDir, 'fallback-handler.js');
