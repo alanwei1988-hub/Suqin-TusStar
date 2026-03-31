@@ -75,6 +75,7 @@ function isMutatingToolCall(toolCall, runtime) {
   if (
     toolCall.toolName === 'stageHostPath'
     || toolCall.toolName === 'archiveWorkspacePath'
+    || toolCall.toolName === 'generateImage'
     || toolCall.toolName === 'runPython'
     || toolCall.toolName === 'runJavaScript'
   ) {
@@ -138,13 +139,23 @@ function computeLoopState(steps, runtime) {
 
 function getActiveTools(stepNumber, loopState, runtime) {
   const memoryToolNames = runtime.memoryToolNames || [];
+  const readOnlyMcpToolNames = runtime.mcpReadOnlyToolNames || [];
 
   if (loopState.pendingVerification) {
-    return ['readFile', 'bash', ...runtime.attachmentToolNames, ...memoryToolNames];
+    return ['inspectFile', 'readFile', 'bash', ...runtime.attachmentToolNames, ...memoryToolNames];
   }
 
   if (stepNumber === 0) {
-    return ['skill', 'readFile', 'bash', ...runtime.attachmentToolNames, ...memoryToolNames];
+    return [
+      'skill',
+      'inspectFile',
+      'readFile',
+      'bash',
+      'generateImage',
+      ...readOnlyMcpToolNames,
+      ...runtime.attachmentToolNames,
+      ...memoryToolNames,
+    ];
   }
 
   return runtime.toolNames;
