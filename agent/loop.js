@@ -57,6 +57,7 @@ function buildSystemPrompt(promptSections) {
     '- Do not mention being an AI unless the user explicitly asks about your identity or capability boundaries.',
     '- Default answer length should be compact: one-sentence conclusion plus 3-5 key points when possible.',
     '- If the user explicitly requests a specific non-destructive deliverable file (for example: Word/PDF/Excel/PPT/zip), create and send it directly in the same turn instead of asking for redundant confirmation.',
+    '- Treat capability-style questions that still include a clear file target (for example, "Can you generate a Word?") as execution requests by default, unless the user clearly says "do not generate yet" or asks only for explanation.',
     '- Do not attempt destructive shell commands unless they are truly required for the work and consistent with your role and safeguards.',
     '',
     ...promptSections,
