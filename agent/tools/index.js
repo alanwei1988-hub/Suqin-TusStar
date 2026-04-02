@@ -20,6 +20,7 @@ const { createToolDisplayInfo } = require('./display');
 const { buildImageGenerationPrompt, createImageGenerationTool } = require('./image-generation');
 const { buildMcpPrompt, createMcpToolkit } = require('./mcp');
 const { buildSkillsPrompt, createSkillsToolkit } = require('./skills');
+const { buildWebSearchPrompt, createWebSearchTool } = require('./web-search');
 
 const MAX_BASH_OUTPUT_LENGTH = 20000;
 const DEFAULT_BASH_TIMEOUT_MS = 30000;
@@ -1403,6 +1404,7 @@ async function createRuntimeTools({
   workspacePython = {},
   workspacePythonRuntime = {},
   imageGeneration = {},
+  webSearch = {},
   requestContext = {},
   memoryRuntime = null,
 }) {
@@ -1478,6 +1480,8 @@ async function createRuntimeTools({
     }),
   ]);
 
+    const webSearchTool = createWebSearchTool(webSearch);
+
     const runtimeTools = {
       bash: bashToolkit.tool,
       inspectFile: createInspectFileTool(attachmentToolkit, workingDir),
@@ -1516,6 +1520,7 @@ async function createRuntimeTools({
       ),
       runJavaScript: createRunJavaScriptTool(workingDir),
       sendFile: createSendFileTool(machine, workingDir),
+      ...(webSearchTool ? { webSearch: webSearchTool } : {}),
       ...(memoryRuntime ? { updateMemory: createUpdateMemoryTool(memoryRuntime) } : {}),
       ...attachmentToolkit.tools,
     };
@@ -1562,6 +1567,12 @@ async function createRuntimeTools({
       displayName: 'JavaScript 执行',
       statusText: '运行 JavaScript 代码',
     }),
+      ...(webSearchTool ? {
+        webSearch: createToolDisplayInfo('webSearch', {
+          displayName: '外部检索',
+          statusText: '检索外部公开信息',
+        }),
+      } : {}),
       sendFile: createToolDisplayInfo('sendFile', {
         displayName: '文件发送',
         statusText: '准备发送文件',
@@ -1590,6 +1601,7 @@ async function createRuntimeTools({
         'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly. When the user asks for a zip or package, prefer `archiveWorkspacePath` instead of improvising archive commands in bash.',
         'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. `sendFile` can send files from the workspace, the current user attachment root, or shared read-only roots without staging. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
         buildImageGenerationPrompt(imageGeneration),
+        buildWebSearchPrompt(webSearch),
         memoryRuntime
           ? 'Memory\nUse `updateMemory` when the current turn reveals durable identity, a preferred real name, or a lasting collaboration preference/correction that should influence future turns. When you call it, provide the memory patch directly from your own understanding of the conversation. Do not store one-off task details.'
           : '',

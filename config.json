@@ -3,7 +3,9 @@
     "model": "gpt-5.4",
     "provider": "openai",
     "thinking": {
-      "enabled": true
+      "enabled": true,
+      "reasoningEffort": "medium",
+      "textVerbosity": "low"
     },
     "openai": {
       "baseURL": "https://api.zetatechs.com/v1"
@@ -48,6 +50,12 @@
           "_model": "nano banana pro"
         }
       }
+    },
+    "webSearch": {
+      "enabled": true,
+      "provider": "duckduckgo",
+      "maxResults": 5,
+      "timeoutMs": 12000
     },
     "toolTimeouts": {
       "bashTimeoutMs": 30000,

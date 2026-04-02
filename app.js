@@ -336,6 +336,28 @@ function normalizeAgentImageModelConfig(config = {}) {
   return normalizeImageModelConfig(config);
 }
 
+function normalizeWebSearchConfig(config = {}, env = process.env) {
+  const normalizedConfig = config && typeof config === 'object' && !Array.isArray(config)
+    ? config
+    : {};
+  const provider = typeof normalizedConfig.provider === 'string'
+    ? normalizedConfig.provider.trim().toLowerCase()
+    : 'duckduckgo';
+  const allowedProviders = new Set(['duckduckgo', 'tavily']);
+
+  return {
+    enabled: normalizedConfig.enabled !== false,
+    provider: allowedProviders.has(provider) ? provider : 'duckduckgo',
+    timeoutMs: Number.isFinite(normalizedConfig.timeoutMs)
+      ? Math.max(1000, Math.trunc(normalizedConfig.timeoutMs))
+      : 12000,
+    maxResults: Number.isFinite(normalizedConfig.maxResults)
+      ? Math.max(1, Math.min(10, Math.trunc(normalizedConfig.maxResults)))
+      : 5,
+    tavilyApiKey: env.TAVILY_API_KEY || '',
+  };
+}
+
 function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {}) {
   const channelType = rawConfig.channel.type;
   const channelConfig = rawConfig.channel[channelType] || {};
@@ -345,6 +367,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
   const workspacePythonConfig = normalizeWorkspacePythonConfig(rootDir, rawConfig.agent.workspacePython || {});
   const imageGenerationConfig = normalizeImageGenerationConfig(rootDir, rawConfig.agent.imageGeneration || {});
   const imageModelConfig = normalizeAgentImageModelConfig(rawConfig.agent.imageModel || {});
+  const webSearchConfig = normalizeWebSearchConfig(rawConfig.agent.webSearch || {}, env);
   const memoryConfig = normalizeMemoryConfig(rawConfig.agent.memory || {});
   const userRootDir = resolveRelativePath(rootDir, rawConfig.storage.userRootDir || './storage/users');
   const normalizedChannelConfig = {
@@ -392,6 +415,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       workspacePython: workspacePythonConfig,
       imageGeneration: imageGenerationConfig,
       imageModel: imageModelConfig,
+      webSearch: webSearchConfig,
       sharedReadRoots: contractMcpConfig?.libraryRoot ? [contractMcpConfig.libraryRoot] : [],
       mcpServers: (rawConfig.agent.mcpServers || []).map(server => normalizeMcpServer(rootDir, server)),
       attachmentExtraction: {

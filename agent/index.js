@@ -571,6 +571,7 @@ class AgentCore {
       toolTimeouts: effectiveConfig.toolTimeouts || {},
       workspacePython: effectiveConfig.workspacePython || {},
       imageGeneration: effectiveConfig.imageGeneration || {},
+      webSearch: effectiveConfig.webSearch || {},
       requestContext: liveRequestContext,
       memoryRuntime: {
         applyPatch({ reason = '', patch = {} } = {}) {
