@@ -364,6 +364,48 @@ function buildArchiveIdentityPrompt({
   ].join('\n');
 }
 
+function getPreferredDisplayName(memory = {}) {
+  const preferredAddress = typeof memory.profile?.preferredAddress === 'string'
+    ? memory.profile.preferredAddress.trim()
+    : '';
+
+  if (preferredAddress) {
+    return preferredAddress;
+  }
+
+  return typeof memory.profile?.realName === 'string'
+    ? memory.profile.realName.trim()
+    : '';
+}
+
+function buildPreferredAddressPrompt({ memory, userMessage } = {}) {
+  const normalizedMemory = memory && typeof memory === 'object' ? memory : {};
+  const preferredAddress = typeof normalizedMemory.profile?.preferredAddress === 'string'
+    ? normalizedMemory.profile.preferredAddress.trim()
+    : '';
+
+  if (preferredAddress) {
+    return '';
+  }
+
+  const awaitingReply = normalizedMemory.profile?.awaitingPreferredAddressReply === true;
+
+  if (!awaitingReply) {
+    return '';
+  }
+
+  return [
+    'Address preference onboarding',
+    '- You are waiting for how this user prefers to be addressed.',
+    '- If the current user message is a short name/title/call-sign reply, treat it as the preferred address and call `updateMemory` now with:',
+    '  `memoryPatch.profile.preferredAddress` = that address,',
+    '  `memoryPatch.profile.preferredAddressSource` = "user_onboarding_reply",',
+    '  `memoryPatch.profile.awaitingPreferredAddressReply` = false.',
+    '- After saving memory, reply with a short acknowledgment and continue their requested work.',
+    '- If the current message is clearly not a naming reply, do not force-save; continue normal task handling.',
+  ].join('\n');
+}
+
 function enrichToolCallWithDisplay(toolCall, runtime) {
   if (!toolCall || typeof toolCall !== 'object') {
     return toolCall;
@@ -481,6 +523,24 @@ class AgentCore {
     }
   }
 
+  markAwaitingPreferredAddress(userId) {
+    const { config: effectiveConfig } = resolveUserAgentConfig(this.config, userId);
+    const memoryPath = path.join(effectiveConfig.userPaths.dataDir, 'memory.json');
+    const memoryManager = this.getMemoryManager(memoryPath, {
+      reflectionIntervalTurns: effectiveConfig.memory?.reflectionIntervalTurns,
+    });
+
+    return memoryManager.applyPatch({
+      reason: 'Onboarding greeting asked how to address the user.',
+      patch: {
+        profile: {
+          awaitingPreferredAddressReply: true,
+        },
+      },
+      trigger: 'system_onboarding',
+    });
+  }
+
   async chat(userId, userMessage, attachments = [], options = {}) {
     const normalizedOptions = typeof options === 'function'
       ? { onStepFinish: options }
@@ -524,9 +584,7 @@ class AgentCore {
     fullMessages.push({ role: 'user', content, attachments: normalizedAttachments });
     const turnMemory = memoryManager.prepareForTurn({ userMessage });
     const memory = turnMemory.memory;
-    const userDisplayName = typeof memory.profile?.realName === 'string'
-      ? memory.profile.realName.trim()
-      : '';
+    const userDisplayName = getPreferredDisplayName(memory);
     const conversationAttachments = collectConversationAttachments(fullMessages);
     const pendingArchiveDraftPrompt = buildPendingArchiveDraftPrompt(fullMessages);
     const archiveIdentityPrompt = buildArchiveIdentityPrompt({
@@ -535,6 +593,10 @@ class AgentCore {
       userMessage,
       attachments: normalizedAttachments,
       fullMessages,
+    });
+    const preferredAddressPrompt = buildPreferredAddressPrompt({
+      memory,
+      userMessage,
     });
     const context = sessionManager.buildModelContext(fullMessages, {
       recentMessagesCount: contextSettings.recentMessagesCount,
@@ -582,9 +644,7 @@ class AgentCore {
           });
 
           liveRequestContext.memory = result.memory;
-          liveRequestContext.userDisplayName = typeof result.memory?.profile?.realName === 'string'
-            ? result.memory.profile.realName.trim()
-            : '';
+          liveRequestContext.userDisplayName = getPreferredDisplayName(result.memory || {});
 
           return result;
         },
@@ -599,6 +659,7 @@ class AgentCore {
       }),
       buildMemoryPrompt(memory, { userId }),
       archiveIdentityPrompt,
+      preferredAddressPrompt,
       ...runtime.promptSections,
       pendingArchiveDraftPrompt,
       context.summary,

@@ -19,6 +19,10 @@ function createEmptyMemory() {
       realNameSource: '',
       realNameUpdatedAt: '',
       awaitingRealNameReply: false,
+      preferredAddress: '',
+      preferredAddressSource: '',
+      preferredAddressUpdatedAt: '',
+      awaitingPreferredAddressReply: false,
     },
     notes: [],
     stats: {
@@ -28,6 +32,8 @@ function createEmptyMemory() {
       lastAssistantMessageAt: '',
       realNameAskedCount: 0,
       lastAskedRealNameAt: '',
+      preferredAddressAskedCount: 0,
+      lastAskedPreferredAddressAt: '',
     },
   };
 }
@@ -72,6 +78,10 @@ function normalizeMemory(rawMemory) {
       realNameSource: normalizeString(profile.realNameSource).slice(0, 80),
       realNameUpdatedAt: normalizeString(profile.realNameUpdatedAt),
       awaitingRealNameReply: profile.awaitingRealNameReply === true,
+      preferredAddress: normalizeString(profile.preferredAddress).slice(0, 40),
+      preferredAddressSource: normalizeString(profile.preferredAddressSource).slice(0, 80),
+      preferredAddressUpdatedAt: normalizeString(profile.preferredAddressUpdatedAt),
+      awaitingPreferredAddressReply: profile.awaitingPreferredAddressReply === true,
     },
     notes,
     stats: {
@@ -83,6 +93,10 @@ function normalizeMemory(rawMemory) {
       lastAssistantMessageAt: normalizeString(stats.lastAssistantMessageAt),
       realNameAskedCount: Number.isFinite(stats.realNameAskedCount) ? Math.max(0, Math.trunc(stats.realNameAskedCount)) : 0,
       lastAskedRealNameAt: normalizeString(stats.lastAskedRealNameAt),
+      preferredAddressAskedCount: Number.isFinite(stats.preferredAddressAskedCount)
+        ? Math.max(0, Math.trunc(stats.preferredAddressAskedCount))
+        : 0,
+      lastAskedPreferredAddressAt: normalizeString(stats.lastAskedPreferredAddressAt),
     },
   };
 }
@@ -140,6 +154,11 @@ function buildMemoryPrompt(memory, options = {}) {
   const lines = ['User Memory'];
   const userId = normalizeString(options.userId);
   const realName = normalized.profile.realName;
+  const preferredAddress = normalized.profile.preferredAddress;
+
+  if (preferredAddress) {
+    lines.push(`- Preferred address for this user: ${preferredAddress}`);
+  }
 
   if (userId) {
     lines.push(`- Stable channel user id: ${userId}`);
@@ -152,6 +171,10 @@ function buildMemoryPrompt(memory, options = {}) {
     lines.push('- The assistant has already asked the user how they should be addressed and is waiting for the answer. Avoid asking again until the user responds.');
   } else {
     lines.push('- The user real name is currently unknown. If it becomes useful and natural, you may ask once and then call `updateMemory` with a direct patch.');
+  }
+
+  if (normalized.profile.awaitingPreferredAddressReply) {
+    lines.push('- You are waiting for the user preferred address (how to call them). If the user just replied with a short name/title, store it via `updateMemory` and stop asking repeatedly.');
   }
 
   if (normalized.notes.length > 0) {
@@ -191,6 +214,7 @@ function mergeMemoryWithPatch(currentMemory, patchMemory) {
     ? patch.profile
     : {};
   const nextRealName = normalizeString(profilePatch.realName);
+  const nextPreferredAddress = normalizeString(profilePatch.preferredAddress);
 
   if (hasOwn(profilePatch, 'realName') && nextRealName) {
     const currentRealName = normalizeString(current.profile.realName);
@@ -205,6 +229,21 @@ function mergeMemoryWithPatch(currentMemory, patchMemory) {
     }
   } else if (hasOwn(profilePatch, 'awaitingRealNameReply')) {
     next.profile.awaitingRealNameReply = profilePatch.awaitingRealNameReply === true;
+  }
+
+  if (hasOwn(profilePatch, 'preferredAddress') && nextPreferredAddress) {
+    const currentPreferredAddress = normalizeString(current.profile.preferredAddress);
+    next.profile.preferredAddress = nextPreferredAddress;
+    next.profile.preferredAddressSource = normalizeString(profilePatch.preferredAddressSource) || 'memory_patch';
+    next.profile.awaitingPreferredAddressReply = false;
+
+    if (nextPreferredAddress !== currentPreferredAddress) {
+      next.profile.preferredAddressUpdatedAt = nowIsoString();
+    } else {
+      next.profile.preferredAddressUpdatedAt = current.profile.preferredAddressUpdatedAt || nowIsoString();
+    }
+  } else if (hasOwn(profilePatch, 'awaitingPreferredAddressReply')) {
+    next.profile.awaitingPreferredAddressReply = profilePatch.awaitingPreferredAddressReply === true;
   }
 
   if (Array.isArray(patch.notes)) {
@@ -241,9 +280,10 @@ function buildMemoryUpdateSystemPrompt() {
     'If evidence is weak, preserve the old memory instead of guessing.',
     'Set `awaitingRealNameReply` to true only when the assistant has explicitly asked how to address the user and the user has not answered yet.',
     'If the user has clearly provided their real name, set `realName`, set a useful `realNameSource`, and set `awaitingRealNameReply` to false.',
+    'If the user has clearly provided a preferred address (how to call them), set `preferredAddress`, set a useful `preferredAddressSource`, and set `awaitingPreferredAddressReply` to false.',
     'Keep notes short, concrete, and reusable in future turns.',
     'Output schema:',
-    '{"shouldUpdate":boolean,"memory":{"profile":{"realName":"","realNameSource":"","awaitingRealNameReply":false},"notes":[{"text":"","kind":"","trigger":""}]},"changeSummary":""}',
+    '{"shouldUpdate":boolean,"memory":{"profile":{"realName":"","realNameSource":"","awaitingRealNameReply":false,"preferredAddress":"","preferredAddressSource":"","awaitingPreferredAddressReply":false},"notes":[{"text":"","kind":"","trigger":""}]},"changeSummary":""}',
   ].join('\n');
 }
 

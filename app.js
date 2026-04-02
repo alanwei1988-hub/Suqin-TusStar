@@ -965,8 +965,15 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
   });
 
   channel.on('user_enter', async ({ userId, context }) => {
-    const welcomeMsg = '您好！我是您的智能 AI 员工。我可以为您处理消息和文件。';
+    const welcomeMsg = [
+      '您好，我是苏秦。',
+      '我擅长做这几类工作：资料整理、方案撰写、外部信息检索、以及直接生成可交付文件（Word/PDF等）。',
+      '为了后续沟通更自然，想先请教一下：我该怎么称呼您？',
+    ].join('\n');
     await channel.sendWelcome(userId, welcomeMsg, context);
+    if (typeof agent.markAwaitingPreferredAddress === 'function') {
+      agent.markAwaitingPreferredAddress(userId);
+    }
   });
 }
 

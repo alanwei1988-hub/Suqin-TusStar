@@ -1466,6 +1466,9 @@ function createUpdateMemoryTool(memoryRuntime) {
           realName: z.string().optional(),
           realNameSource: z.string().optional(),
           awaitingRealNameReply: z.boolean().optional(),
+          preferredAddress: z.string().optional(),
+          preferredAddressSource: z.string().optional(),
+          awaitingPreferredAddressReply: z.boolean().optional(),
         }).optional(),
         notes: z.array(z.object({
           text: z.string(),
