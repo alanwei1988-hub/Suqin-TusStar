@@ -2,11 +2,7 @@
   "agent": {
     "model": "gpt-5.4",
     "provider": "openai",
-    "thinking": {
-      "enabled": true,
-      "reasoningEffort": "medium",
-      "textVerbosity": "low"
-    },
+    "thinking": false,
     "openai": {
       "baseURL": "https://api.zetatechs.com/v1"
     },
