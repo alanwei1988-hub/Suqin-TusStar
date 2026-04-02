@@ -149,6 +149,9 @@ function computeLoopState(steps, runtime) {
 function getActiveTools(stepNumber, loopState, runtime) {
   const memoryToolNames = runtime.memoryToolNames || [];
   const readOnlyMcpToolNames = runtime.mcpReadOnlyToolNames || [];
+  const discoveryToolNames = [
+    'webSearch',
+  ].filter(toolName => runtime.toolNames.includes(toolName));
 
   if (loopState.pendingVerification) {
     return ['inspectFile', 'readFile', 'bash', ...runtime.attachmentToolNames, ...memoryToolNames];
@@ -160,6 +163,7 @@ function getActiveTools(stepNumber, loopState, runtime) {
       'inspectFile',
       'readFile',
       'bash',
+      ...discoveryToolNames,
       'generateImage',
       ...readOnlyMcpToolNames,
       ...runtime.attachmentToolNames,
@@ -176,7 +180,7 @@ function getPhaseInstructions(stepNumber, loopState) {
   }
 
   if (stepNumber === 0) {
-    return 'Inspection phase: inspect the relevant machine state, files, and possible conflicts first. When attachments are present, decide the task before touching them. On the first step, do not inspect or read an attachment unless the task is already clear and file access is genuinely needed. If the task is still ambiguous, ask a clarifying question instead. Once file access is justified, prefer fewer, larger reads and keep searching before asking the user to restate details. Load skills when useful before making changes unless the task can be finished immediately.';
+    return 'Inspection phase: inspect the relevant machine state, files, and possible conflicts first. When the user asks for recent public information, company background, news, or source links, use `webSearch` before answering. When attachments are present, decide the task before touching them. On the first step, do not inspect or read an attachment unless the task is already clear and file access is genuinely needed. If the task is still ambiguous, ask a clarifying question instead. Once file access is justified, prefer fewer, larger reads and keep searching before asking the user to restate details. Load skills when useful before making changes unless the task can be finished immediately.';
   }
 
   if (loopState.hasMutatingAction) {
