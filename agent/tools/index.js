@@ -1239,6 +1239,93 @@ function createArchiveWorkspacePathTool(workspaceDir, projectRootDir, workspaceP
   });
 }
 
+function createWordDocumentTool(workspaceDir, projectRootDir, workspacePythonConfig = {}, workspacePythonRuntime = {}) {
+  const runCommandImpl = workspacePythonRuntime.runCommand || runCommand;
+  const pathExistsImpl = workspacePythonRuntime.pathExists || pathExists;
+
+  return tool({
+    description: [
+      'Create a real .docx Word document in the current user workspace from markdown/text content.',
+      'Use this when the user explicitly asks for a Word file so you can deliver .docx directly instead of .md.',
+      'Accepts either inline content or a source workspace text/markdown file.',
+    ].join(' '),
+    inputSchema: z.object({
+      outputPath: z.string().describe('Target .docx path in workspace (workspace://... or relative path).'),
+      content: z.string().optional().describe('Inline markdown/text content to write into the document.'),
+      sourcePath: z.string().optional().describe('Optional source text/markdown file path in workspace.'),
+      title: z.string().optional().describe('Optional document title.'),
+      overwrite: z.boolean().optional().describe('Whether to overwrite existing target file. Defaults to false.'),
+    }),
+    execute: async ({ outputPath, content, sourcePath, title, overwrite }) => {
+      if (workspacePythonConfig.enabled === false) {
+        throw new Error('createWordDocument is disabled because workspace Python runtime is disabled.');
+      }
+
+      const hasInlineContent = typeof content === 'string' && content.trim().length > 0;
+      const hasSourcePath = typeof sourcePath === 'string' && sourcePath.trim().length > 0;
+      if (!hasInlineContent && !hasSourcePath) {
+        throw new Error('Either content or sourcePath must be provided.');
+      }
+
+      let resolvedOutputPath = resolveWorkspacePath(workspaceDir, outputPath);
+      if (!resolvedOutputPath.toLowerCase().endsWith('.docx')) {
+        resolvedOutputPath += '.docx';
+      }
+
+      if (!overwrite && await pathExistsImpl(resolvedOutputPath)) {
+        throw new Error(`Destination already exists: ${resolvedOutputPath}`);
+      }
+
+      const pythonCommand = await resolveAvailablePythonCommand(workspacePythonConfig.command, {
+        runCommandImpl,
+        pathExistsImpl,
+      });
+      const createDocxScriptPath = path.join(projectRootDir, 'workspace-runtime', 'create_docx.py');
+      const args = [
+        createDocxScriptPath,
+        '--output',
+        resolvedOutputPath,
+      ];
+
+      if (hasInlineContent) {
+        args.push('--content-base64', Buffer.from(content, 'utf8').toString('base64'));
+      } else if (hasSourcePath) {
+        const resolvedSourcePath = resolveWorkspacePath(workspaceDir, sourcePath);
+        args.push('--source', resolvedSourcePath);
+      }
+
+      if (typeof title === 'string' && title.trim().length > 0) {
+        args.push('--title', title.trim());
+      }
+
+      const result = await runCommandImpl(
+        pythonCommand,
+        args,
+        {
+          cwd: workspaceDir,
+          timeoutMs: Math.min(
+            workspacePythonConfig.timeoutMs || DEFAULT_BASH_TIMEOUT_MS,
+            workspacePythonConfig.maxTimeoutMs || DEFAULT_MAX_BASH_TIMEOUT_MS,
+          ),
+        },
+      );
+
+      if (result.exitCode !== 0) {
+        throw new Error(result.stderr || 'Failed to generate Word document.');
+      }
+
+      const stat = await fs.stat(resolvedOutputPath);
+
+      return {
+        success: true,
+        outputPath: resolvedOutputPath,
+        ...buildWorkspacePathMetadata(workspaceDir, resolvedOutputPath),
+        sizeBytes: stat.size,
+      };
+    },
+  });
+}
+
 function createRunJavaScriptTool(workspaceDir) {
   return tool({
     description: [
@@ -1494,6 +1581,12 @@ async function createRuntimeTools({
         workspacePython,
         workspacePythonRuntime,
       ),
+      createWordDocument: createWordDocumentTool(
+        workingDir,
+        path.resolve(projectRootDir),
+        workspacePython,
+        workspacePythonRuntime,
+      ),
       generateImage: createImageGenerationTool({
         workspaceDir: workingDir,
         workspacePythonConfig: workspacePython,
@@ -1555,6 +1648,10 @@ async function createRuntimeTools({
       displayName: '文件打包',
       statusText: '打包工作区文件',
     }),
+    createWordDocument: createToolDisplayInfo('createWordDocument', {
+      displayName: 'Word生成',
+      statusText: '生成Word文档',
+    }),
     generateImage: createToolDisplayInfo('generateImage', {
       displayName: '图片生成',
       statusText: '生成或编辑图片',
@@ -1600,6 +1697,7 @@ async function createRuntimeTools({
         `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. Prefer \`workspace://...\` for workspace files, \`attachment://...\` for current-user uploaded attachments, and \`shared://...\` for files under the primary shared read-only root. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`inspectFile\`, \`readFile\`, \`writeFile\`, \`sendFile\`, \`archiveWorkspacePath\`) operate on real host paths. \`writeFile\` still writes only inside the workspace. \`inspectFile\` and \`readFile\` also accept the current user's attachment root, the shared read-only roots ${effectiveSharedReadRoots.map(rootDir => `\`${toPosixPath(rootDir)}\``).join(', ')}, and explicit absolute host paths when needed.`,
         'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly. When the user asks for a zip or package, prefer `archiveWorkspacePath` instead of improvising archive commands in bash.',
         'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. `sendFile` can send files from the workspace, the current user attachment root, or shared read-only roots without staging. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
+        'Direct delivery rule\nIf the user explicitly asks for a concrete deliverable file format (such as Word .docx, Excel .xlsx, PPT, PDF, zip), execute directly and deliver the file in the same turn when the action is non-destructive. Do not ask an extra confirmation question for this kind of explicit file-generation request.',
         buildImageGenerationPrompt(imageGeneration),
         buildWebSearchPrompt(webSearch),
         memoryRuntime
