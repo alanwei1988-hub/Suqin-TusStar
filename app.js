@@ -13,6 +13,7 @@ const {
   getProjectWorkspacePython,
   getWorkspacePythonRequirementsPath,
 } = require('./workspace-runtime/runtime');
+const SchedulerEngine = require('./scheduler/engine');
 const { normalizeThinkingConfig } = require('./llm-thinking');
 const { normalizeImageModelConfig } = require('./agent/tools/image-inspector');
 
@@ -358,6 +359,28 @@ function normalizeWebSearchConfig(config = {}, env = process.env) {
   };
 }
 
+function normalizeSchedulerConfig(rootDir, config = {}) {
+  const normalizedConfig = config && typeof config === 'object' && !Array.isArray(config)
+    ? config
+    : {};
+
+  return {
+    enabled: normalizedConfig.enabled !== false,
+    dbPath: typeof normalizedConfig.dbPath === 'string' && normalizedConfig.dbPath.trim().length > 0
+      ? resolveRelativePath(rootDir, normalizedConfig.dbPath.trim())
+      : path.resolve(rootDir, 'data', 'scheduled-tasks.db'),
+    heartbeatMs: Number.isFinite(normalizedConfig.heartbeatMs)
+      ? Math.max(60 * 1000, Math.trunc(normalizedConfig.heartbeatMs))
+      : 10 * 60 * 1000,
+    dueTaskLimit: Number.isFinite(normalizedConfig.dueTaskLimit)
+      ? Math.max(1, Math.trunc(normalizedConfig.dueTaskLimit))
+      : 10,
+    defaultTimezone: typeof normalizedConfig.defaultTimezone === 'string' && normalizedConfig.defaultTimezone.trim().length > 0
+      ? normalizedConfig.defaultTimezone.trim()
+      : 'Asia/Shanghai',
+  };
+}
+
 function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {}) {
   const channelType = rawConfig.channel.type;
   const channelConfig = rawConfig.channel[channelType] || {};
@@ -368,6 +391,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
   const imageGenerationConfig = normalizeImageGenerationConfig(rootDir, rawConfig.agent.imageGeneration || {});
   const imageModelConfig = normalizeAgentImageModelConfig(rawConfig.agent.imageModel || {});
   const webSearchConfig = normalizeWebSearchConfig(rawConfig.agent.webSearch || {}, env);
+  const schedulerConfig = normalizeSchedulerConfig(rootDir, rawConfig.agent.scheduler || {});
   const memoryConfig = normalizeMemoryConfig(rawConfig.agent.memory || {});
   const userRootDir = resolveRelativePath(rootDir, rawConfig.storage.userRootDir || './storage/users');
   const normalizedChannelConfig = {
@@ -388,6 +412,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
   ensureParentDirExists(sessionDbPath);
   ensureParentDirExists(markitdownConfig.cache.dbPath);
   ensureDirExists(path.dirname(workspacePythonConfig.userVenvDir));
+  ensureParentDirExists(schedulerConfig.dbPath);
   ensureParentDirExists(contractMcpConfig?.dbPath);
   ensureDirExists(userRootDir);
 
@@ -416,6 +441,7 @@ function processConfig(rawConfig, { rootDir = __dirname, env = process.env } = {
       imageGeneration: imageGenerationConfig,
       imageModel: imageModelConfig,
       webSearch: webSearchConfig,
+      scheduler: schedulerConfig,
       sharedReadRoots: contractMcpConfig?.libraryRoot ? [contractMcpConfig.libraryRoot] : [],
       mcpServers: (rawConfig.agent.mcpServers || []).map(server => normalizeMcpServer(rootDir, server)),
       attachmentExtraction: {
@@ -454,7 +480,7 @@ function formatToolCallStatus(event) {
   const stepNumber = Number.isFinite(event.stepNumber) ? event.stepNumber + 1 : '?';
   const statusText = typeof event?.toolCall?.statusText === 'string' && event.toolCall.statusText.trim().length > 0
     ? event.toolCall.statusText.trim()
-    : '调用系统工具处理';
+    : '调用系统工具处理中';
   return `正在处理（第 ${stepNumber} 步）：${statusText}`;
 }
 
@@ -693,12 +719,12 @@ async function sendOutboundAttachments({ channel, userId, attachments, context, 
   if (typeof channel.sendAttachments !== 'function') {
     return {
       ok: false,
-      message: buildAttachmentFailureReply(attachments, new Error('当前通道不支持发送文件')),
+      message: buildAttachmentFailureReply(attachments, new Error('\u5f53\u524d\u901a\u9053\u4e0d\u652f\u6301\u53d1\u9001\u6587\u4ef6')),
     };
   }
 
   if (streamReply) {
-    await streamReply.updateStatus('正在发送文件...');
+    await streamReply.updateStatus('\u6b63\u5728\u53d1\u9001\u6587\u4ef6...');
   }
 
   try {
@@ -713,39 +739,53 @@ async function sendOutboundAttachments({ channel, userId, attachments, context, 
   }
 }
 
+async function sendTextResponse({ channel, userId, message, context = {}, streamReply = null }) {
+  if (streamReply) {
+    await streamReply.finish(message);
+    return;
+  }
+
+  if (!context.reqId && typeof channel.sendText === 'function') {
+    await channel.sendText(userId, message, context);
+    return;
+  }
+
+  await channel.reply(userId, message, context);
+}
+
 async function finishRequestWithMessage({ channel, requestState, message }) {
   if (!requestState || requestState.stopNotified) {
     return;
   }
 
   requestState.stopNotified = true;
-
-  if (requestState.streamReply) {
-    await requestState.streamReply.finish(message);
-    return;
-  }
-
-  await channel.reply(requestState.userId, message, requestState.context);
+  await sendTextResponse({
+    channel,
+    userId: requestState.userId,
+    message,
+    context: requestState.context,
+    streamReply: requestState.streamReply,
+  });
 }
 
 function formatStopSummary({ activeCount, queuedCount }) {
   if (activeCount > 0 && queuedCount > 0) {
-    return `已停止 ${activeCount} 条正在处理的请求，并取消 ${queuedCount} 条排队请求。`;
+    return `\u5df2\u505c\u6b62 ${activeCount} \u6761\u6b63\u5728\u5904\u7406\u7684\u8bf7\u6c42\uff0c\u5e76\u53d6\u6d88 ${queuedCount} \u6761\u6392\u961f\u8bf7\u6c42\u3002`;
   }
 
   if (activeCount > 0) {
     return activeCount === 1
-      ? '已停止当前正在处理的请求。'
-      : `已停止 ${activeCount} 条正在处理的请求。`;
+      ? '\u5df2\u505c\u6b62\u5f53\u524d\u6b63\u5728\u5904\u7406\u7684\u8bf7\u6c42\u3002'
+      : `\u5df2\u505c\u6b62 ${activeCount} \u6761\u6b63\u5728\u5904\u7406\u7684\u8bf7\u6c42\u3002`;
   }
 
   if (queuedCount > 0) {
     return queuedCount === 1
-      ? '已取消 1 条排队请求。'
-      : `已取消 ${queuedCount} 条排队请求。`;
+      ? '\u5df2\u53d6\u6d88 1 \u6761\u6392\u961f\u8bf7\u6c42\u3002'
+      : `\u5df2\u53d6\u6d88 ${queuedCount} \u6761\u6392\u961f\u8bf7\u6c42\u3002`;
   }
 
-  return '当前没有可停止的处理中任务。';
+  return '\u5f53\u524d\u6ca1\u6709\u53ef\u505c\u6b62\u7684\u5904\u7406\u4e2d\u4efb\u52a1\u3002';
 }
 
 function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
@@ -772,7 +812,15 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
     }
   }
 
-  channel.on('message', async ({ userId, text, attachments, context, prepareMessage }) => {
+  async function enqueueAgentRequest({
+    userId,
+    text = '',
+    attachments = [],
+    context = {},
+    prepareMessage,
+    streamingEnabled = true,
+    logLabel = 'Message',
+  }) {
     const initialText = typeof text === 'string' ? text : '';
     const initialAttachments = Array.isArray(attachments) ? attachments : [];
     const hasDeferredPreparation = typeof prepareMessage === 'function';
@@ -781,43 +829,9 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
       : (hasDeferredPreparation ? 1 : 0);
     const queueKey = getConversationQueueKey(userId, context);
 
-    console.log(`[Main] Message from ${userId}: ${initialText || '[pending preparation]'} (${announcedAttachmentCount} files)`);
-    if (isStopCommand(initialText) && initialAttachments.length === 0 && !hasDeferredPreparation) {
-      const requestStates = Array.from(requestsByQueueKey.get(queueKey) || []);
-      let activeCount = 0;
-      let queuedCount = 0;
+    console.log(`[Main] ${logLabel} from ${userId}: ${initialText || '[pending preparation]'} (${announcedAttachmentCount} files)`);
 
-      for (const requestState of requestStates) {
-        if (requestState.completed) {
-          continue;
-        }
-
-        requestState.cancelled = true;
-
-        if (requestState.active) {
-          activeCount += 1;
-        } else {
-          queuedCount += 1;
-        }
-
-        if (!requestState.abortController.signal.aborted) {
-          requestState.abortController.abort(createAbortError('Stopped by /stop.'));
-        }
-
-        await finishRequestWithMessage({
-          channel,
-          requestState,
-          message: requestState.active
-            ? '已按 /stop 停止当前响应。'
-            : '已按 /stop 取消排队中的请求。',
-        });
-      }
-
-      await channel.reply(userId, formatStopSummary({ activeCount, queuedCount }), context);
-      return;
-    }
-
-    const streamReply = typeof channel.createStreamingReply === 'function'
+    const streamReply = streamingEnabled && context.reqId && typeof channel.createStreamingReply === 'function'
       ? channel.createStreamingReply(userId, context)
       : null;
     const requestState = {
@@ -839,11 +853,11 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
             await finishRequestWithMessage({
               channel,
               requestState,
-              message: '已按 /stop 取消当前请求。',
+              message: '\u5df2\u6309 /stop \u53d6\u6d88\u5f53\u524d\u8bf7\u6c42\u3002',
             });
           }
 
-          return;
+          return null;
         }
 
         requestState.active = true;
@@ -870,11 +884,15 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
         if (streamReply) {
           throwIfAborted(abortSignal);
           if (context.initialStatusSent && resolvedAttachments.length > 0) {
-            await streamReply.updateStatus('文件已下载，正在处理...');
+            await streamReply.updateStatus('\u6587\u4ef6\u5df2\u4e0b\u8f7d\uff0c\u6b63\u5728\u5904\u7406...');
           } else if (!context.initialStatusSent) {
-            await streamReply.updateStatus('已收到，正在处理...');
+            await streamReply.updateStatus('\u5df2\u6536\u5230\uff0c\u6b63\u5728\u5904\u7406...');
           }
         }
+
+        const scheduledTask = context.scheduledTask && typeof context.scheduledTask === 'object'
+          ? context.scheduledTask
+          : undefined;
 
         const agentResponse = normalizeAgentResponse(await agent.chat(userId, resolvedText, resolvedAttachments, {
           abortSignal,
@@ -882,6 +900,7 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
           requestContext: {
             userId,
             context,
+            ...(scheduledTask ? { scheduledTask } : {}),
           },
           onToolCallStart: async event => {
             throwIfAborted(abortSignal);
@@ -916,10 +935,6 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
         });
         throwIfAborted(abortSignal);
 
-        if (!attachmentResult.ok) {
-          // Attachment failure becomes the final reply.
-        }
-
         let finalText = agentResponse.text;
 
         if (!attachmentResult.ok) {
@@ -937,19 +952,37 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
           }
         } else {
           throwIfAborted(abortSignal);
-          await channel.reply(userId, finalText, context);
+          await sendTextResponse({
+            channel,
+            userId,
+            message: finalText,
+            context,
+          });
         }
+
+        return {
+          text: finalText,
+          outboundAttachments: agentResponse.outboundAttachments,
+        };
       } catch (error) {
         if (requestState.cancelled || requestState.abortController.signal.aborted) {
-          return;
+          return null;
         }
 
         console.error('[Main] Chat error:', error);
-        if (streamReply) {
-          await streamReply.finish('抱歉，我现在处理消息时遇到了点问题。');
-        } else {
-          await channel.reply(userId, '抱歉，我现在处理消息时遇到了点问题。', context);
-        }
+        const fallbackMessage = '\u62b1\u6b49\uff0c\u6211\u73b0\u5728\u5904\u7406\u6d88\u606f\u65f6\u9047\u5230\u4e86\u4e00\u70b9\u95ee\u9898\u3002';
+        await sendTextResponse({
+          channel,
+          userId,
+          message: fallbackMessage,
+          context,
+          streamReply,
+        });
+
+        return {
+          text: fallbackMessage,
+          outboundAttachments: [],
+        };
       } finally {
         requestState.active = false;
         requestState.completed = true;
@@ -958,17 +991,104 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
     });
 
     if (streamReply && queuedAhead > 0 && !requestState.cancelled && !requestState.abortController.signal.aborted) {
-      await streamReply.updateStatus(`前方还有 ${queuedAhead} 条消息，排队处理中...`);
+      await streamReply.updateStatus(`\u524d\u65b9\u8fd8\u6709 ${queuedAhead} \u6761\u6d88\u606f\uff0c\u6392\u961f\u5904\u7406\u4e2d...`);
     }
 
-    await promise;
+    return promise;
+  }
+
+  channel.on('message', async ({ userId, text, attachments, context, prepareMessage }) => {
+    const initialText = typeof text === 'string' ? text : '';
+    const initialAttachments = Array.isArray(attachments) ? attachments : [];
+    const hasDeferredPreparation = typeof prepareMessage === 'function';
+    const queueKey = getConversationQueueKey(userId, context);
+
+    if (isStopCommand(initialText) && initialAttachments.length === 0 && !hasDeferredPreparation) {
+      const requestStates = Array.from(requestsByQueueKey.get(queueKey) || []);
+      let activeCount = 0;
+      let queuedCount = 0;
+
+      for (const requestState of requestStates) {
+        if (requestState.completed) {
+          continue;
+        }
+
+        requestState.cancelled = true;
+
+        if (requestState.active) {
+          activeCount += 1;
+        } else {
+          queuedCount += 1;
+        }
+
+        if (!requestState.abortController.signal.aborted) {
+          requestState.abortController.abort(createAbortError('Stopped by /stop.'));
+        }
+
+        await finishRequestWithMessage({
+          channel,
+          requestState,
+          message: requestState.active
+            ? '\u5df2\u6309 /stop \u505c\u6b62\u5f53\u524d\u54cd\u5e94\u3002'
+            : '\u5df2\u6309 /stop \u53d6\u6d88\u6392\u961f\u4e2d\u7684\u8bf7\u6c42\u3002',
+        });
+      }
+
+      await channel.reply(userId, formatStopSummary({ activeCount, queuedCount }), context);
+      return;
+    }
+
+    await enqueueAgentRequest({
+      userId,
+      text: initialText,
+      attachments: initialAttachments,
+      context,
+      prepareMessage,
+      streamingEnabled: true,
+      logLabel: 'Message',
+    });
   });
+
+  const schedulerConfig = agent.config?.scheduler || {};
+  const schedulerEngine = agent.schedulerStore && schedulerConfig.enabled !== false
+    ? new SchedulerEngine({
+      store: agent.schedulerStore,
+      heartbeatMs: schedulerConfig.heartbeatMs,
+      dueTaskLimit: schedulerConfig.dueTaskLimit,
+      onExecuteTask: async ({ task, prompt, runAt }) => enqueueAgentRequest({
+        userId: task.userId,
+        text: prompt,
+        context: {
+          chatId: task.chatId,
+          chatType: task.chatType,
+          timezone: task.timeZone,
+          currentDateTime: runAt.toISOString(),
+          scheduledTask: {
+            id: task.id,
+            title: task.title,
+          },
+        },
+        streamingEnabled: false,
+        logLabel: 'Scheduled task',
+      }),
+    })
+    : null;
+
+  if (agent.schedulerEngine && typeof agent.schedulerEngine.stop === 'function') {
+    agent.schedulerEngine.stop();
+  }
+
+  agent.schedulerEngine = schedulerEngine;
+
+  if (schedulerEngine) {
+    schedulerEngine.start();
+  }
 
   channel.on('user_enter', async ({ userId, context }) => {
     const welcomeMsg = [
-      '您好，我是苏秦。',
-      '我擅长做这几类工作：资料整理、方案撰写、外部信息检索、以及直接生成可交付文件（Word/PDF等）。',
-      '为了后续沟通更自然，想先请教一下：我该怎么称呼您？',
+      '\u60a8\u597d\uff0c\u6211\u662f\u82cf\u79e6\u3002',
+      '\u6211\u64c5\u957f\u505a\u8fd9\u51e0\u7c7b\u5de5\u4f5c\uff1a\u8d44\u6599\u6574\u7406\u3001\u65b9\u6848\u64b0\u5199\u3001\u5916\u90e8\u4fe1\u606f\u68c0\u7d22\uff0c\u4ee5\u53ca\u76f4\u63a5\u751f\u6210\u53ef\u4ea4\u4ed8\u6587\u4ef6\uff08Word/PDF \u7b49\uff09\u3002',
+      '\u4e3a\u4e86\u540e\u7eed\u6c9f\u901a\u66f4\u81ea\u7136\uff0c\u60f3\u5148\u8bf7\u6559\u4e00\u4e0b\uff1a\u6211\u8be5\u600e\u4e48\u79f0\u547c\u60a8\uff1f',
     ].join('\n');
     await channel.sendWelcome(userId, welcomeMsg, context);
     if (typeof agent.markAwaitingPreferredAddress === 'function') {
@@ -976,7 +1096,6 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
     }
   });
 }
-
 async function loadChannelAdapter(channelType) {
   try {
     return require(`./channel/${channelType}/adapter`);
@@ -1002,3 +1121,4 @@ module.exports = {
   processConfig,
   registerChannelHandlers,
 };
+

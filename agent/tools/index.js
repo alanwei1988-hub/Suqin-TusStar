@@ -19,6 +19,7 @@ const {
 const { createToolDisplayInfo } = require('./display');
 const { buildImageGenerationPrompt, createImageGenerationTool } = require('./image-generation');
 const { buildMcpPrompt, createMcpToolkit } = require('./mcp');
+const { createSchedulerTools } = require('./scheduler');
 const { buildSkillsPrompt, createSkillsToolkit } = require('./skills');
 const { buildWebSearchPrompt, createWebSearchTool } = require('./web-search');
 
@@ -344,34 +345,43 @@ function runShellCommand(command, cwd, timeoutMs = DEFAULT_BASH_TIMEOUT_MS) {
 
 function runCommand(command, args = [], { cwd, env, timeoutMs = DEFAULT_BASH_TIMEOUT_MS, maxBuffer = 10 * 1024 * 1024 } = {}) {
   return new Promise(resolve => {
-    execFile(
-      command,
-      args,
-      {
-        cwd,
-        env,
-        encoding: 'buffer',
-        windowsHide: true,
-        maxBuffer,
-        timeout: timeoutMs,
-      },
-      (error, stdout, stderr) => {
-        const decodedStdout = decodeShellOutput(stdout);
-        const decodedStderr = decodeShellOutput(stderr);
-        const timedOut = Boolean(error && !Number.isFinite(error.code) && /timed out/i.test(String(error.message || '')));
+    try {
+      execFile(
+        command,
+        args,
+        {
+          cwd,
+          env,
+          encoding: 'buffer',
+          windowsHide: true,
+          maxBuffer,
+          timeout: timeoutMs,
+        },
+        (error, stdout, stderr) => {
+          const decodedStdout = decodeShellOutput(stdout);
+          const decodedStderr = decodeShellOutput(stderr);
+          const timedOut = Boolean(error && !Number.isFinite(error.code) && /timed out/i.test(String(error.message || '')));
 
-        resolve({
-          stdout: decodedStdout,
-          stderr: timedOut
-            ? `Command timed out after ${timeoutMs}ms.`
-            : (decodedStderr || error?.message || ''),
-          exitCode: typeof error?.code === 'number'
-            ? error.code
-            : (timedOut ? 124 : 0),
-          timedOut,
-        });
-      },
-    );
+          resolve({
+            stdout: decodedStdout,
+            stderr: timedOut
+              ? `Command timed out after ${timeoutMs}ms.`
+              : (decodedStderr || error?.message || ''),
+            exitCode: typeof error?.code === 'number'
+              ? error.code
+              : (timedOut ? 124 : (error ? 1 : 0)),
+            timedOut,
+          });
+        },
+      );
+    } catch (error) {
+      resolve({
+        stdout: '',
+        stderr: String(error?.message || error || ''),
+        exitCode: typeof error?.code === 'number' ? error.code : 1,
+        timedOut: false,
+      });
+    }
   });
 }
 
@@ -1495,6 +1505,7 @@ async function createRuntimeTools({
   workspacePythonRuntime = {},
   imageGeneration = {},
   webSearch = {},
+  schedulerRuntime = null,
   requestContext = {},
   memoryRuntime = null,
 }) {
@@ -1570,56 +1581,58 @@ async function createRuntimeTools({
     }),
   ]);
 
-    const webSearchTool = createWebSearchTool(webSearch);
+  const webSearchTool = createWebSearchTool(webSearch);
+  const schedulerToolkit = createSchedulerTools(schedulerRuntime);
 
-    const runtimeTools = {
-      bash: bashToolkit.tool,
-      inspectFile: createInspectFileTool(attachmentToolkit, workingDir),
-      readFile: createReadFileTool(attachmentToolkit, workingDir),
-      writeFile: createWriteFileTool(machine, workingDir),
-      stageHostPath: createStageHostPathTool(machine, workingDir),
-      archiveWorkspacePath: createArchiveWorkspacePathTool(
+  const runtimeTools = {
+    bash: bashToolkit.tool,
+    inspectFile: createInspectFileTool(attachmentToolkit, workingDir),
+    readFile: createReadFileTool(attachmentToolkit, workingDir),
+    writeFile: createWriteFileTool(machine, workingDir),
+    stageHostPath: createStageHostPathTool(machine, workingDir),
+    archiveWorkspacePath: createArchiveWorkspacePathTool(
+      workingDir,
+      path.resolve(projectRootDir),
+      workspacePython,
+      workspacePythonRuntime,
+    ),
+    createWordDocument: createWordDocumentTool(
+      workingDir,
+      path.resolve(projectRootDir),
+      workspacePython,
+      workspacePythonRuntime,
+    ),
+    generateImage: createImageGenerationTool({
+      workspaceDir: workingDir,
+      workspacePythonConfig: workspacePython,
+      imageGenerationConfig: imageGeneration,
+      ensureUserPythonEnvironment,
+      runCommand: runCommandImpl,
+      pathExists: pathExistsImpl,
+      resolveWorkspacePath: requestedPath => resolveWorkspacePath(workingDir, requestedPath),
+      resolveReadablePath: requestedPath => resolveReadablePath(
         workingDir,
-        path.resolve(projectRootDir),
-        workspacePython,
-        workspacePythonRuntime,
+        machine.sharedReadRoots,
+        machine.primarySharedRoot,
+        machine.attachmentRootDir,
+        requestedPath,
       ),
-      createWordDocument: createWordDocumentTool(
-        workingDir,
-        path.resolve(projectRootDir),
-        workspacePython,
-        workspacePythonRuntime,
-      ),
-      generateImage: createImageGenerationTool({
-        workspaceDir: workingDir,
-        workspacePythonConfig: workspacePython,
-        imageGenerationConfig: imageGeneration,
-        ensureUserPythonEnvironment,
-        runCommand: runCommandImpl,
-        pathExists: pathExistsImpl,
-        resolveWorkspacePath: requestedPath => resolveWorkspacePath(workingDir, requestedPath),
-        resolveReadablePath: requestedPath => resolveReadablePath(
-          workingDir,
-          machine.sharedReadRoots,
-          machine.primarySharedRoot,
-          machine.attachmentRootDir,
-          requestedPath,
-        ),
-        buildWorkspacePathMetadata,
-        registerOutboundAttachment: (filePath, displayName) => machine.registerOutboundAttachment(filePath, displayName),
-      }),
-      runPython: createRunPythonTool(
-        workingDir,
-        path.resolve(projectRootDir),
-        workspacePython,
-        workspacePythonRuntime,
-      ),
-      runJavaScript: createRunJavaScriptTool(workingDir),
-      sendFile: createSendFileTool(machine, workingDir),
-      ...(webSearchTool ? { webSearch: webSearchTool } : {}),
-      ...(memoryRuntime ? { updateMemory: createUpdateMemoryTool(memoryRuntime) } : {}),
-      ...attachmentToolkit.tools,
-    };
+      buildWorkspacePathMetadata,
+      registerOutboundAttachment: (filePath, displayName) => machine.registerOutboundAttachment(filePath, displayName),
+    }),
+    runPython: createRunPythonTool(
+      workingDir,
+      path.resolve(projectRootDir),
+      workspacePython,
+      workspacePythonRuntime,
+    ),
+    runJavaScript: createRunJavaScriptTool(workingDir),
+    sendFile: createSendFileTool(machine, workingDir),
+    ...(webSearchTool ? { webSearch: webSearchTool } : {}),
+    ...(memoryRuntime ? { updateMemory: createUpdateMemoryTool(memoryRuntime) } : {}),
+    ...schedulerToolkit.tools,
+    ...attachmentToolkit.tools,
+  };
 
   const tools = mergeToolSets([
     runtimeTools,
@@ -1683,6 +1696,7 @@ async function createRuntimeTools({
           statusText: '更新长期记忆',
         }),
       } : {}),
+      ...(schedulerToolkit.toolDisplayByName || {}),
       ...(attachmentToolkit.toolDisplayByName || {}),
       ...(skillsToolkit.toolDisplayByName || {}),
       ...(mcpToolkit.toolDisplayByName || {}),
@@ -1696,6 +1710,8 @@ async function createRuntimeTools({
       mcpReadOnlyToolNames: mcpToolkit.readOnlyToolNames || [],
       attachmentToolNames: attachmentToolkit.toolNames,
       memoryToolNames: memoryRuntime ? ['updateMemory'] : [],
+      scheduleToolNames: schedulerToolkit.toolNames || [],
+      scheduleReadOnlyToolNames: schedulerToolkit.readOnlyToolNames || [],
       promptSections: [
         `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. Prefer \`workspace://...\` for workspace files, \`attachment://...\` for current-user uploaded attachments, and \`shared://...\` for files under the primary shared read-only root. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`inspectFile\`, \`readFile\`, \`writeFile\`, \`sendFile\`, \`archiveWorkspacePath\`) operate on real host paths. \`writeFile\` still writes only inside the workspace. \`inspectFile\` and \`readFile\` also accept the current user's attachment root, the shared read-only roots ${effectiveSharedReadRoots.map(rootDir => `\`${toPosixPath(rootDir)}\``).join(', ')}, and explicit absolute host paths when needed.`,
         'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly. When the user asks for a zip or package, prefer `archiveWorkspacePath` instead of improvising archive commands in bash.',
@@ -1703,6 +1719,7 @@ async function createRuntimeTools({
         'Direct delivery rule\nIf the user explicitly asks for a concrete deliverable file format (such as Word .docx, Excel .xlsx, PPT, PDF, zip), execute directly and deliver the file in the same turn when the action is non-destructive. Do not ask an extra confirmation question for this kind of explicit file-generation request.',
         buildImageGenerationPrompt(imageGeneration),
         buildWebSearchPrompt(webSearch),
+        schedulerToolkit.prompt,
         memoryRuntime
           ? 'Memory\nUse `updateMemory` when the current turn reveals durable identity, a preferred real name, or a lasting collaboration preference/correction that should influence future turns. When you call it, provide the memory patch directly from your own understanding of the conversation. Do not store one-off task details.'
           : '',
@@ -1727,5 +1744,6 @@ module.exports = {
   createRuntimeTools,
   decodeShellOutput,
   getBlockedCommandReason,
+  runCommand,
   wrapWindowsPowerShellCommand,
 };

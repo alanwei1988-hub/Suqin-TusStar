@@ -105,6 +105,13 @@ module.exports = async function runAppConfigTest() {
     dialogueLimit: 8,
     asyncReflectionEnabled: true,
   });
+  assert.deepEqual(processedDefault.agent.scheduler, {
+    enabled: true,
+    dbPath: `${__dirname}\\data\\scheduled-tasks.db`,
+    heartbeatMs: 600000,
+    dueTaskLimit: 10,
+    defaultTimezone: 'Asia/Shanghai',
+  });
   assert.equal(processedDefault.contractMcp.libraryRoot, `${__dirname}\\contract-library`);
   assert.equal(processedDefault.contractMcp.dbPath, `${__dirname}\\contract-library\\合同归档.db`);
   assert.equal(processedDefault.storage.userRootDir, `${__dirname}\\storage\\users`);
@@ -241,6 +248,30 @@ module.exports = async function runAppConfigTest() {
     requirementsPath: `${__dirname}\\custom-workspace-python.txt`,
     allowUserPackageInstall: false,
     userVenvDir: `${__dirname}\\workspace-python-user`,
+  });
+
+  const processedScheduler = processConfig({
+    ...baseConfig,
+    agent: {
+      ...baseConfig.agent,
+      scheduler: {
+        enabled: true,
+        dbPath: './custom-scheduler.db',
+        heartbeatMs: 1200000,
+        dueTaskLimit: 3,
+        defaultTimezone: 'Asia/Tokyo',
+      },
+    },
+  }, {
+    rootDir: __dirname,
+    env: {},
+  });
+  assert.deepEqual(processedScheduler.agent.scheduler, {
+    enabled: true,
+    dbPath: `${__dirname}\\custom-scheduler.db`,
+    heartbeatMs: 1200000,
+    dueTaskLimit: 3,
+    defaultTimezone: 'Asia/Tokyo',
   });
 
   const processedMarkItDown = processConfig({

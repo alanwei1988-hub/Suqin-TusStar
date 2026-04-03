@@ -7,6 +7,7 @@ const {
   createRuntimeTools,
   decodeShellOutput,
   getBlockedCommandReason,
+  runCommand,
   wrapWindowsPowerShellCommand,
 } = require('../agent/tools');
 const {
@@ -438,6 +439,91 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(archiveResult.logicalPath, 'workspace://jobs/stage-test.zip');
     assert.ok(archiveResult.entryCount >= 3);
     assert.ok(fs.existsSync(path.join(workspaceDir, 'jobs', 'stage-test.zip')));
+
+    const missingCommandPath = path.join(rootDir, process.platform === 'win32' ? 'missing-python.exe' : 'missing-python');
+    const missingCommandResult = await runCommand(missingCommandPath, ['--version'], {
+      timeoutMs: 1000,
+    });
+    assert.equal(missingCommandResult.exitCode, 1);
+    assert.equal(missingCommandResult.timedOut, false);
+    assert.match(missingCommandResult.stderr, /not found|ENOENT|spawn/i);
+
+    const imageFailureRuntime = await createRuntimeTools({
+      workspaceDir,
+      projectRootDir,
+      skillsDir: path.join(repoRoot, 'skills'),
+      mcpServers: [],
+      workspacePython: {
+        enabled: true,
+        command: process.platform === 'win32' ? 'python' : 'python3',
+        timeoutMs: 120000,
+        maxTimeoutMs: 120000,
+        allowUserPackageInstall: false,
+      },
+      workspacePythonRuntime: {
+        async runCommand(command, args = []) {
+          if (args[0] === '--version') {
+            return { stdout: 'Python 3.11.9\n', stderr: '', exitCode: 0, timedOut: false };
+          }
+
+          if (args[0] === '-c') {
+            return {
+              stdout: JSON.stringify({
+                sitePackages: [path.join(rootDir, '.fake-site-packages')],
+                stdlib: [path.join(rootDir, '.fake-stdlib')],
+              }),
+              stderr: '',
+              exitCode: 0,
+              timedOut: false,
+            };
+          }
+
+          if ((args[0] || '').endsWith(path.join('workspace-runtime', 'generate_image.py'))) {
+            return {
+              stdout: JSON.stringify({
+                ok: true,
+                outputPath: path.join(workspaceDir, 'generated-images', 'poster.png'),
+                model: 'mock-image-model',
+                resolution: '1K',
+              }),
+              stderr: 'spawn ENOENT',
+              exitCode: 0,
+              timedOut: false,
+            };
+          }
+
+          throw new Error(`Unexpected fake python command: ${command} ${args.join(' ')}`);
+        },
+        async pathExists(candidatePath) {
+          return candidatePath === path.join(repoRoot, 'workspace-runtime', 'generate_image.py');
+        },
+      },
+      imageGeneration: {
+        enabled: true,
+        scriptPath: path.join(repoRoot, 'workspace-runtime', 'generate_image.py'),
+        outputDir: 'generated-images',
+        defaultResolution: '1K',
+        currentProfile: 'mock-image',
+        profiles: {
+          'mock-image': {
+            apiKey: 'test-key',
+            model: 'mock-image-model',
+          },
+        },
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () => imageFailureRuntime.tools.generateImage.execute({
+          prompt: 'Generate a poster for FounderClaw',
+          sendToUser: true,
+        }),
+        /finished without creating an output file[\s\S]*spawn ENOENT/i,
+      );
+    } finally {
+      await imageFailureRuntime.close();
+    }
 
     let receivedTimeoutMs = null;
     const fakeBashTool = createBashTool({
