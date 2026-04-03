@@ -20,6 +20,7 @@ const { buildMemoryPrompt, MemoryManager } = require('./memory');
 const { listAvailableSkills } = require('./tools/skills');
 const { loadRolePrompt } = require('./roles');
 const SessionManager = require('./session');
+const SchedulerStore = require('../scheduler/store');
 const { resolveUserAgentConfig } = require('./user-config');
 const { buildOpenAICompatibleProviderOptions } = require('../llm-thinking');
 
@@ -166,6 +167,16 @@ function buildRequestContextPrompt(requestContext = {}) {
 
   if (Number.isFinite(requestContext.context?.chatType) || requestContext.context?.chatId) {
     lines.push(`- Current chat target: ${requestContext.context?.chatId || requestContext.userId} (chatType=${requestContext.context?.chatType || 1})`);
+  }
+
+  if (requestContext.scheduledTask?.id) {
+    lines.push('Scheduled Task Context');
+    lines.push('- This request was triggered automatically by a saved recurring task.');
+    lines.push(`- Scheduled task id: ${requestContext.scheduledTask.id}`);
+
+    if (requestContext.scheduledTask.title) {
+      lines.push(`- Scheduled task title: ${requestContext.scheduledTask.title}`);
+    }
   }
 
   return lines.join('\n');
@@ -476,6 +487,11 @@ class AgentCore {
   constructor(config, options = {}) {
     this.config = config;
     this.modelOverride = options.model;
+    this.schedulerStore = options.schedulerStore
+      || (config.scheduler?.enabled !== false && config.scheduler?.dbPath
+        ? new SchedulerStore(config.scheduler.dbPath)
+        : null);
+    this.ownsSchedulerStore = !options.schedulerStore && Boolean(this.schedulerStore);
     this.memoryManagers = new Map();
     this.sessionManagers = new Map();
     this.sessionManager = this.getSessionManager(config.sessionDb);
@@ -539,6 +555,31 @@ class AgentCore {
       },
       trigger: 'system_onboarding',
     });
+  }
+
+  buildSchedulerRuntime(userId, effectiveConfig, requestContext = {}) {
+    if (!this.schedulerStore) {
+      return null;
+    }
+
+    const context = requestContext.context || {};
+    const defaultTimeZone = requestContext.timezone
+      || context.timezone
+      || effectiveConfig.scheduler?.defaultTimezone
+      || 'Asia/Shanghai';
+
+    return {
+      defaultTimeZone,
+      createTask: taskInput => this.schedulerStore.createTask({
+        ...taskInput,
+        userId,
+        chatId: context.chatId || userId,
+        chatType: context.chatType || 1,
+        timeZone: taskInput.timeZone || defaultTimeZone,
+      }),
+      listTasks: options => this.schedulerStore.listTasksForUser(userId, options),
+      cancelTask: taskId => this.schedulerStore.cancelTask(taskId, userId),
+    };
   }
 
   async chat(userId, userMessage, attachments = [], options = {}) {
@@ -609,6 +650,7 @@ class AgentCore {
       memory,
       userDisplayName,
     };
+    const schedulerRuntime = this.buildSchedulerRuntime(userId, effectiveConfig, liveRequestContext);
 
     const provider = createOpenAICompatible({
       name: effectiveConfig.provider || 'openaiCompatible',
@@ -634,6 +676,7 @@ class AgentCore {
       workspacePython: effectiveConfig.workspacePython || {},
       imageGeneration: effectiveConfig.imageGeneration || {},
       webSearch: effectiveConfig.webSearch || {},
+      schedulerRuntime,
       requestContext: liveRequestContext,
       memoryRuntime: {
         applyPatch({ reason = '', patch = {} } = {}) {
@@ -903,11 +946,20 @@ class AgentCore {
   }
 
   close() {
+    if (this.schedulerEngine && typeof this.schedulerEngine.stop === 'function') {
+      this.schedulerEngine.stop();
+      this.schedulerEngine = null;
+    }
+
     this.memoryManagers.clear();
     for (const sessionManager of this.sessionManagers.values()) {
       sessionManager.close();
     }
     this.sessionManagers.clear();
+
+    if (this.ownsSchedulerStore && this.schedulerStore) {
+      this.schedulerStore.close();
+    }
   }
 }
 

@@ -41,6 +41,11 @@ function normalizeOptionalString(value) {
     : '';
 }
 
+function isPathInside(baseDir, candidatePath) {
+  const relativePath = path.relative(path.resolve(baseDir), path.resolve(candidatePath));
+  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+}
+
 function resolveProfile(imageGenerationConfig = {}, requestedProfile = '') {
   const profiles = imageGenerationConfig.profiles && typeof imageGenerationConfig.profiles === 'object'
     ? imageGenerationConfig.profiles
@@ -114,6 +119,45 @@ async function parseRunnerResult(stdout) {
   }
 
   return {};
+}
+
+function truncateDiagnosticText(value, maxLength = 400) {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) {
+    return '';
+  }
+
+  return normalized.length <= maxLength
+    ? normalized
+    : `${normalized.slice(0, maxLength)}...`;
+}
+
+function buildOutputPathCandidates(workspaceDir, expectedOutputPath, runnerResult = {}) {
+  const runnerOutputPath = normalizeOptionalString(runnerResult.outputPath);
+  const candidates = [];
+
+  if (runnerOutputPath) {
+    const resolvedRunnerOutputPath = path.isAbsolute(runnerOutputPath)
+      ? path.normalize(runnerOutputPath)
+      : path.resolve(workspaceDir, runnerOutputPath);
+
+    if (isPathInside(workspaceDir, resolvedRunnerOutputPath)) {
+      candidates.push(resolvedRunnerOutputPath);
+    }
+  }
+
+  candidates.push(path.normalize(expectedOutputPath));
+  return [...new Set(candidates)];
+}
+
+async function findExistingOutputPath(candidatePaths, pathExists) {
+  for (const candidatePath of candidatePaths) {
+    if (await pathExists(candidatePath)) {
+      return candidatePath;
+    }
+  }
+
+  return '';
 }
 
 function createImageGenerationTool({
@@ -217,14 +261,30 @@ function createImageGenerationTool({
       }
 
       const runnerResult = await parseRunnerResult(result.stdout);
+      const actualOutputPath = await findExistingOutputPath(
+        buildOutputPathCandidates(workspaceDir, resolvedOutputPath, runnerResult),
+        pathExists,
+      );
+
+      if (!actualOutputPath) {
+        const diagnosticDetails = [
+          truncateDiagnosticText(result.stderr),
+          truncateDiagnosticText(result.stdout),
+        ].filter(Boolean).join(' | ');
+        throw new Error(
+          `Image runner finished without creating an output file in the workspace. Expected: ${resolvedOutputPath}.`
+          + (diagnosticDetails ? ` Details: ${diagnosticDetails}` : ''),
+        );
+      }
+
       const attachment = sendToUser
-        ? await registerOutboundAttachment(resolvedOutputPath, path.basename(resolvedOutputPath))
+        ? await registerOutboundAttachment(actualOutputPath, path.basename(actualOutputPath))
         : null;
 
       return {
         success: true,
-        path: resolvedOutputPath,
-        ...buildWorkspacePathMetadata(workspaceDir, resolvedOutputPath),
+        path: actualOutputPath,
+        ...buildWorkspacePathMetadata(workspaceDir, actualOutputPath),
         profile: selectedProfile.name,
         model: runnerResult.model || selectedProfile.model,
         resolution: runnerResult.resolution || resolution || imageGenerationConfig.defaultResolution || DEFAULT_RESOLUTION,

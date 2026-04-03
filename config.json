@@ -53,6 +53,13 @@
       "maxResults": 5,
       "timeoutMs": 12000
     },
+    "scheduler": {
+      "enabled": true,
+      "dbPath": "./data/scheduled-tasks.db",
+      "heartbeatMs": 600000,
+      "dueTaskLimit": 10,
+      "defaultTimezone": "Asia/Shanghai"
+    },
     "toolTimeouts": {
       "bashTimeoutMs": 30000,
       "maxBashTimeoutMs": 300000,

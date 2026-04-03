@@ -14,6 +14,8 @@ const tests = [
   ['markitdown.extractor', require('./markitdown.extractor.test')],
   ['agent.attachment-session', require('./agent.attachment-session.test')],
   ['agent.tool-error-recovery', require('./agent.tool-error-recovery.test')],
+  ['scheduler.store', require('./scheduler.store.test')],
+  ['scheduler.engine', require('./scheduler.engine.test')],
   ['mcp.toolkit', require('./mcp.toolkit.test')],
   ['agent.mcp.integration', require('./agent.mcp.integration.test')],
   ['wxwork.adapter', require('./wxwork.adapter.test')],

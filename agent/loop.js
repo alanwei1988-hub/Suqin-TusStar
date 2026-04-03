@@ -85,6 +85,8 @@ function isMutatingToolCall(toolCall, runtime) {
     toolCall.toolName === 'stageHostPath'
     || toolCall.toolName === 'archiveWorkspacePath'
     || toolCall.toolName === 'generateImage'
+    || toolCall.toolName === 'createScheduleTask'
+    || toolCall.toolName === 'cancelScheduledTask'
     || toolCall.toolName === 'runPython'
     || toolCall.toolName === 'runJavaScript'
   ) {
@@ -108,6 +110,10 @@ function isVerificationToolCall(toolCall) {
   }
 
   if (toolCall.toolName === 'inspectFile' || toolCall.toolName === 'readFile') {
+    return true;
+  }
+
+  if (toolCall.toolName === 'listScheduledTasks') {
     return true;
   }
 
@@ -151,10 +157,18 @@ function getActiveTools(stepNumber, loopState, runtime) {
   const readOnlyMcpToolNames = runtime.mcpReadOnlyToolNames || [];
   const discoveryToolNames = [
     'webSearch',
+    ...(runtime.scheduleToolNames || []),
   ].filter(toolName => runtime.toolNames.includes(toolName));
 
   if (loopState.pendingVerification) {
-    return ['inspectFile', 'readFile', 'bash', ...runtime.attachmentToolNames, ...memoryToolNames];
+    return [
+      'inspectFile',
+      'readFile',
+      'bash',
+      ...(runtime.scheduleReadOnlyToolNames || []),
+      ...runtime.attachmentToolNames,
+      ...memoryToolNames,
+    ];
   }
 
   if (stepNumber === 0) {
