@@ -32,7 +32,7 @@
       "maxTimeoutMs": 200000,
       "outputDir": "generated-images",
       "defaultResolution": "1K",
-      "currentProfile": "zetatechs",
+      "currentProfile": "apiyi",
       "profiles": {
         "zetatechs": {
           "apiKeyEnv": "OPENAI_API_KEY",
