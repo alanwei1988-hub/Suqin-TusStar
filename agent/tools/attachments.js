@@ -745,7 +745,7 @@ function buildAttachmentsPrompt(attachments) {
   const lines = attachments.map(attachment => `- id=${attachment.id}, name=${attachment.name}, path=${attachment.logicalPath || attachment.path || attachment.resolvedPath}, kind=${attachment.kind}${attachment.mimeType ? `, mime=${attachment.mimeType}` : ''}`);
   return [
     'Attachments',
-    'These user-provided attachments are currently available in the conversation, including files from earlier turns that may still be relevant.',
+    'These conversation attachments are currently available, including user-uploaded files and assistant-generated files from earlier turns that may still be relevant.',
     'Do not treat the presence of an attachment as a reason to inspect it immediately.',
     'First decide the concrete task from the latest message and prior conversation.',
     'If the task is ambiguous, ask a clarifying question before touching the attachment.',
