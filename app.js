@@ -1085,6 +1085,10 @@ function registerChannelHandlers({ agent, channel, contractMcpConfig = {} }) {
   }
 
   channel.on('user_enter', async ({ userId, context }) => {
+    if (typeof agent.shouldSendOnboardingGreeting === 'function' && !agent.shouldSendOnboardingGreeting(userId)) {
+      return;
+    }
+
     const welcomeMsg = [
       '\u60a8\u597d\uff0c\u6211\u662f\u82cf\u79e6\u3002',
       '\u6211\u64c5\u957f\u505a\u8fd9\u51e0\u7c7b\u5de5\u4f5c\uff1a\u8d44\u6599\u6574\u7406\u3001\u65b9\u6848\u64b0\u5199\u3001\u5916\u90e8\u4fe1\u606f\u68c0\u7d22\uff0c\u4ee5\u53ca\u76f4\u63a5\u751f\u6210\u53ef\u4ea4\u4ed8\u6587\u4ef6\uff08Word/PDF \u7b49\uff09\u3002',

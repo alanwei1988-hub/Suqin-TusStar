@@ -539,6 +539,32 @@ class AgentCore {
     }
   }
 
+  getOnboardingState(userId) {
+    const { config: effectiveConfig } = resolveUserAgentConfig(this.config, userId);
+    const memoryPath = path.join(effectiveConfig.userPaths.dataDir, 'memory.json');
+    const memoryManager = this.getMemoryManager(memoryPath, {
+      reflectionIntervalTurns: effectiveConfig.memory?.reflectionIntervalTurns,
+    });
+    const memory = memoryManager.load();
+    const sessionManager = this.getSessionManager(effectiveConfig.sessionDb);
+    const conversationMessages = sessionManager.getMessages(userId);
+    const hasConversationHistory = Array.isArray(conversationMessages) && conversationMessages.length > 0;
+    const hasKnownAddress = typeof memory.profile?.preferredAddress === 'string' && memory.profile.preferredAddress.trim().length > 0;
+    const awaitingPreferredAddressReply = memory.profile?.awaitingPreferredAddressReply === true;
+
+    return {
+      hasConversationHistory,
+      hasKnownAddress,
+      awaitingPreferredAddressReply,
+      shouldSendGreeting: !hasConversationHistory && !hasKnownAddress && !awaitingPreferredAddressReply,
+      memory,
+    };
+  }
+
+  shouldSendOnboardingGreeting(userId) {
+    return this.getOnboardingState(userId).shouldSendGreeting;
+  }
+
   markAwaitingPreferredAddress(userId) {
     const { config: effectiveConfig } = resolveUserAgentConfig(this.config, userId);
     const memoryPath = path.join(effectiveConfig.userPaths.dataDir, 'memory.json');
