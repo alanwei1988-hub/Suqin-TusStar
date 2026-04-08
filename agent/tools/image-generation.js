@@ -308,6 +308,7 @@ function buildImageGenerationPrompt(imageGenerationConfig = {}) {
   return [
     'Image generation',
     `Use \`generateImage\` for visual design work such as posters, promotional drafts, and image edits. Default profile: \`${profileName || 'not-set'}\`; default resolution: \`${defaultResolution}\`; default output directory: \`${outputDir}\`.`,
+    'When the user asks to modify, refine, continue, or make a new version based on an earlier conversation image, reuse the most relevant existing image attachment and pass its path as `inputImagePath` instead of starting from scratch.',
     'If the user should receive the resulting image file in chat, set `sendToUser=true` or call `sendFile` with the generated path before the final reply.',
   ].join('\n');
 }

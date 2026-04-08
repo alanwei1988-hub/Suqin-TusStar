@@ -85,6 +85,8 @@ function isMutatingToolCall(toolCall, runtime) {
     toolCall.toolName === 'stageHostPath'
     || toolCall.toolName === 'archiveWorkspacePath'
     || toolCall.toolName === 'generateImage'
+    || toolCall.toolName === 'updateTaskState'
+    || toolCall.toolName === 'completeTaskState'
     || toolCall.toolName === 'createScheduleTask'
     || toolCall.toolName === 'cancelScheduledTask'
     || toolCall.toolName === 'runPython'
@@ -114,6 +116,10 @@ function isVerificationToolCall(toolCall) {
   }
 
   if (toolCall.toolName === 'listScheduledTasks') {
+    return true;
+  }
+
+  if (toolCall.toolName === 'listTaskStates') {
     return true;
   }
 
@@ -154,10 +160,13 @@ function computeLoopState(steps, runtime) {
 
 function getActiveTools(stepNumber, loopState, runtime) {
   const memoryToolNames = runtime.memoryToolNames || [];
+  const taskStateToolNames = runtime.taskStateToolNames || [];
+  const taskStateReadOnlyToolNames = runtime.taskStateReadOnlyToolNames || [];
   const readOnlyMcpToolNames = runtime.mcpReadOnlyToolNames || [];
   const discoveryToolNames = [
     'webSearch',
     ...(runtime.scheduleToolNames || []),
+    ...taskStateToolNames,
   ].filter(toolName => runtime.toolNames.includes(toolName));
 
   if (loopState.pendingVerification) {
@@ -166,6 +175,7 @@ function getActiveTools(stepNumber, loopState, runtime) {
       'readFile',
       'bash',
       ...(runtime.scheduleReadOnlyToolNames || []),
+      ...taskStateReadOnlyToolNames,
       ...runtime.attachmentToolNames,
       ...memoryToolNames,
     ];

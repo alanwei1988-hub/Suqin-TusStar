@@ -21,6 +21,7 @@ const { buildImageGenerationPrompt, createImageGenerationTool } = require('./ima
 const { buildMcpPrompt, createMcpToolkit } = require('./mcp');
 const { createSchedulerTools } = require('./scheduler');
 const { buildSkillsPrompt, createSkillsToolkit } = require('./skills');
+const { createTaskStateTools } = require('./task-state');
 const { buildWebSearchPrompt, createWebSearchTool } = require('./web-search');
 
 const MAX_BASH_OUTPUT_LENGTH = 20000;
@@ -1506,6 +1507,7 @@ async function createRuntimeTools({
   imageGeneration = {},
   webSearch = {},
   schedulerRuntime = null,
+  taskStateRuntime = null,
   requestContext = {},
   memoryRuntime = null,
 }) {
@@ -1583,6 +1585,7 @@ async function createRuntimeTools({
 
   const webSearchTool = createWebSearchTool(webSearch);
   const schedulerToolkit = createSchedulerTools(schedulerRuntime);
+  const taskStateToolkit = createTaskStateTools(taskStateRuntime);
 
   const runtimeTools = {
     bash: bashToolkit.tool,
@@ -1631,6 +1634,7 @@ async function createRuntimeTools({
     ...(webSearchTool ? { webSearch: webSearchTool } : {}),
     ...(memoryRuntime ? { updateMemory: createUpdateMemoryTool(memoryRuntime) } : {}),
     ...schedulerToolkit.tools,
+    ...taskStateToolkit.tools,
     ...attachmentToolkit.tools,
   };
 
@@ -1697,6 +1701,7 @@ async function createRuntimeTools({
         }),
       } : {}),
       ...(schedulerToolkit.toolDisplayByName || {}),
+      ...(taskStateToolkit.toolDisplayByName || {}),
       ...(attachmentToolkit.toolDisplayByName || {}),
       ...(skillsToolkit.toolDisplayByName || {}),
       ...(mcpToolkit.toolDisplayByName || {}),
@@ -1712,6 +1717,8 @@ async function createRuntimeTools({
       memoryToolNames: memoryRuntime ? ['updateMemory'] : [],
       scheduleToolNames: schedulerToolkit.toolNames || [],
       scheduleReadOnlyToolNames: schedulerToolkit.readOnlyToolNames || [],
+      taskStateToolNames: taskStateToolkit.toolNames || [],
+      taskStateReadOnlyToolNames: taskStateToolkit.readOnlyToolNames || [],
       promptSections: [
         `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. Prefer \`workspace://...\` for workspace files, \`attachment://...\` for current-user uploaded attachments, and \`shared://...\` for files under the primary shared read-only root. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`inspectFile\`, \`readFile\`, \`writeFile\`, \`sendFile\`, \`archiveWorkspacePath\`) operate on real host paths. \`writeFile\` still writes only inside the workspace. \`inspectFile\` and \`readFile\` also accept the current user's attachment root, the shared read-only roots ${effectiveSharedReadRoots.map(rootDir => `\`${toPosixPath(rootDir)}\``).join(', ')}, and explicit absolute host paths when needed.`,
         'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly. When the user asks for a zip or package, prefer `archiveWorkspacePath` instead of improvising archive commands in bash.',
@@ -1720,6 +1727,7 @@ async function createRuntimeTools({
         buildImageGenerationPrompt(imageGeneration),
         buildWebSearchPrompt(webSearch),
         schedulerToolkit.prompt,
+        taskStateToolkit.prompt,
         memoryRuntime
           ? 'Memory\nUse `updateMemory` when the current turn reveals durable identity, a preferred real name, or a lasting collaboration preference/correction that should influence future turns. When you call it, provide the memory patch directly from your own understanding of the conversation. Do not store one-off task details.'
           : '',

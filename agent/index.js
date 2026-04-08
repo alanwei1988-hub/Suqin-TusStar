@@ -20,9 +20,14 @@ const { buildMemoryPrompt, MemoryManager } = require('./memory');
 const { listAvailableSkills } = require('./tools/skills');
 const { loadRolePrompt } = require('./roles');
 const SessionManager = require('./session');
+const { buildTaskStatePrompt, TaskStateManager } = require('./task-state');
 const SchedulerStore = require('../scheduler/store');
 const { resolveUserAgentConfig } = require('./user-config');
 const { buildOpenAICompatibleProviderOptions } = require('../llm-thinking');
+
+const IMAGE_ATTACHMENT_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp',
+]);
 
 function throwIfAborted(signal) {
   if (!signal?.aborted) {
@@ -57,33 +62,10 @@ function normalizeConversationAttachments(attachments = []) {
   });
 }
 
-function collectConversationAttachments(messages = []) {
-  const collected = [];
-  const seenIdentityKeys = new Set();
-
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-
-    if (message?.role !== 'user' || !Array.isArray(message.attachments) || message.attachments.length === 0) {
-      continue;
-    }
-
-    for (const attachment of message.attachments) {
-      const identityKey = String(attachment?.path || attachment?.name || attachment?.id || '');
-
-      if (!identityKey || seenIdentityKeys.has(identityKey)) {
-        continue;
-      }
-
-      seenIdentityKeys.add(identityKey);
-      collected.push(attachment);
-    }
-  }
-
-  const reversed = collected.reverse();
+function ensureUniqueAttachmentIds(attachments = []) {
   const usedIds = new Set();
 
-  return reversed.map((attachment, index) => {
+  return attachments.map((attachment, index) => {
     const identityKey = String(attachment?.path || attachment?.name || attachment?.id || `attachment-${index + 1}`);
     const candidateId = String(attachment?.id || `attachment-${index + 1}`);
 
@@ -99,6 +81,102 @@ function collectConversationAttachments(messages = []) {
       id: uniqueId,
     };
   });
+}
+
+function findLastAssistantMessageIndex(messages = []) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'assistant') {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function inferAttachmentKind(attachment = {}) {
+  if (typeof attachment?.kind === 'string' && attachment.kind.trim().length > 0) {
+    return attachment.kind.trim();
+  }
+
+  const extension = String(path.extname(attachment?.path || attachment?.name || '')).toLowerCase();
+  return IMAGE_ATTACHMENT_EXTENSIONS.has(extension) ? 'image' : 'file';
+}
+
+function mergeConversationAttachments(existingAttachments = [], nextAttachments = []) {
+  const merged = [];
+  const seenIdentityKeys = new Set();
+
+  for (const attachment of [...existingAttachments, ...nextAttachments]) {
+    const identityKey = String(attachment?.path || attachment?.name || attachment?.id || '');
+
+    if (!identityKey || seenIdentityKeys.has(identityKey)) {
+      continue;
+    }
+
+    seenIdentityKeys.add(identityKey);
+    merged.push(attachment);
+  }
+
+  return ensureUniqueAttachmentIds(merged);
+}
+
+function persistOutboundAttachmentsOnLastAssistantMessage(fullMessages, outboundAttachments = []) {
+  if (!Array.isArray(fullMessages) || fullMessages.length === 0 || !Array.isArray(outboundAttachments) || outboundAttachments.length === 0) {
+    return;
+  }
+
+  const assistantMessageIndex = findLastAssistantMessageIndex(fullMessages);
+
+  if (assistantMessageIndex < 0) {
+    return;
+  }
+
+  const persistedAttachments = normalizeConversationAttachments(
+    outboundAttachments.map(attachment => ({
+      ...attachment,
+      kind: inferAttachmentKind(attachment),
+    })),
+  );
+
+  if (persistedAttachments.length === 0) {
+    return;
+  }
+
+  const assistantMessage = fullMessages[assistantMessageIndex];
+  const existingAttachments = Array.isArray(assistantMessage.attachments)
+    ? assistantMessage.attachments
+    : [];
+
+  fullMessages[assistantMessageIndex] = {
+    ...assistantMessage,
+    attachments: mergeConversationAttachments(existingAttachments, persistedAttachments),
+  };
+}
+
+function collectConversationAttachments(messages = []) {
+  const collected = [];
+  const seenIdentityKeys = new Set();
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+
+    if (!['user', 'assistant'].includes(message?.role) || !Array.isArray(message.attachments) || message.attachments.length === 0) {
+      continue;
+    }
+
+    for (const attachment of message.attachments) {
+      const identityKey = String(attachment?.path || attachment?.name || attachment?.id || '');
+
+      if (!identityKey || seenIdentityKeys.has(identityKey)) {
+        continue;
+      }
+
+      seenIdentityKeys.add(identityKey);
+      collected.push(attachment);
+    }
+  }
+
+  return ensureUniqueAttachmentIds(collected.reverse());
 }
 
 function buildUserContent(userMessage, attachments = []) {
@@ -494,6 +572,7 @@ class AgentCore {
     this.ownsSchedulerStore = !options.schedulerStore && Boolean(this.schedulerStore);
     this.memoryManagers = new Map();
     this.sessionManagers = new Map();
+    this.taskStateManagers = new Map();
     this.sessionManager = this.getSessionManager(config.sessionDb);
     this.skills = [];
   }
@@ -516,6 +595,16 @@ class AgentCore {
     }
 
     return this.memoryManagers.get(key);
+  }
+
+  getTaskStateManager(filePath) {
+    const key = path.resolve(filePath);
+
+    if (!this.taskStateManagers.has(key)) {
+      this.taskStateManagers.set(key, new TaskStateManager(key));
+    }
+
+    return this.taskStateManagers.get(key);
   }
 
   async init() {
@@ -608,6 +697,55 @@ class AgentCore {
     };
   }
 
+  buildTaskStateRuntime(userId, effectiveConfig, requestContext = {}) {
+    const taskStatePath = path.join(effectiveConfig.userPaths.dataDir, 'task-state.json');
+    const taskStateManager = this.getTaskStateManager(taskStatePath);
+    const context = requestContext.context || {};
+    const chatId = context.chatId || userId;
+    const chatType = context.chatType || 1;
+
+    const runtime = {
+      manager: taskStateManager,
+      currentTask: taskStateManager.getActiveTask({ userId, chatId, chatType }),
+      applyPatch({ reason = '', patch = {} } = {}) {
+        const result = taskStateManager.applyPatch({
+          userId,
+          chatId,
+          chatType,
+          patch,
+          reason,
+          trigger: 'tool_call',
+        });
+        runtime.currentTask = result.activeTask || result.task || null;
+        requestContext.currentTask = runtime.currentTask;
+        return result;
+      },
+      listTasks(options = {}) {
+        return taskStateManager.listTasks({
+          userId,
+          chatId,
+          chatType,
+          ...options,
+        });
+      },
+      recordArtifacts(attachments = []) {
+        const result = taskStateManager.recordArtifacts({
+          userId,
+          chatId,
+          chatType,
+          attachments,
+        });
+        runtime.currentTask = result.task || runtime.currentTask || null;
+        requestContext.currentTask = runtime.currentTask;
+        return result;
+      },
+    };
+
+    requestContext.currentTask = runtime.currentTask;
+
+    return runtime;
+  }
+
   async chat(userId, userMessage, attachments = [], options = {}) {
     const normalizedOptions = typeof options === 'function'
       ? { onStepFinish: options }
@@ -677,6 +815,19 @@ class AgentCore {
       userDisplayName,
     };
     const schedulerRuntime = this.buildSchedulerRuntime(userId, effectiveConfig, liveRequestContext);
+    const taskStateRuntime = this.buildTaskStateRuntime(userId, effectiveConfig, liveRequestContext);
+    if (taskStateRuntime.currentTask && typeof userMessage === 'string' && userMessage.trim().length > 0) {
+      taskStateRuntime.applyPatch({
+        reason: 'Refreshing the latest user request for the active task.',
+        patch: {
+          taskId: taskStateRuntime.currentTask.id,
+          latestUserRequest: userMessage,
+          markAsActive: true,
+        },
+      });
+    }
+    const currentTaskState = taskStateRuntime.currentTask;
+    liveRequestContext.currentTask = currentTaskState;
 
     const provider = createOpenAICompatible({
       name: effectiveConfig.provider || 'openaiCompatible',
@@ -703,6 +854,7 @@ class AgentCore {
       imageGeneration: effectiveConfig.imageGeneration || {},
       webSearch: effectiveConfig.webSearch || {},
       schedulerRuntime,
+      taskStateRuntime,
       requestContext: liveRequestContext,
       memoryRuntime: {
         applyPatch({ reason = '', patch = {} } = {}) {
@@ -727,6 +879,7 @@ class AgentCore {
         userDisplayName,
       }),
       buildMemoryPrompt(memory, { userId }),
+      buildTaskStatePrompt(currentTaskState),
       archiveIdentityPrompt,
       preferredAddressPrompt,
       ...runtime.promptSections,
@@ -946,6 +1099,11 @@ class AgentCore {
         : [];
 
       appendFinalAssistantMessageIfNeeded(fullMessages, responseMessages, finalResponse);
+      persistOutboundAttachmentsOnLastAssistantMessage(fullMessages, outboundAttachments);
+      if (outboundAttachments.length > 0) {
+        const artifactRecordResult = taskStateRuntime.recordArtifacts(outboundAttachments);
+        liveRequestContext.currentTask = artifactRecordResult.task || liveRequestContext.currentTask || null;
+      }
       sessionManager.saveMessages(userId, fullMessages);
       memoryManager.finalizeTurn({ assistantMessage: finalResponse });
       if (effectiveConfig.memory?.asyncReflectionEnabled !== false) {
@@ -978,6 +1136,7 @@ class AgentCore {
     }
 
     this.memoryManagers.clear();
+    this.taskStateManagers.clear();
     for (const sessionManager of this.sessionManagers.values()) {
       sessionManager.close();
     }
