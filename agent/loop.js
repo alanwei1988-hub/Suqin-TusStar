@@ -85,6 +85,7 @@ function isMutatingToolCall(toolCall, runtime) {
     toolCall.toolName === 'stageHostPath'
     || toolCall.toolName === 'archiveWorkspacePath'
     || toolCall.toolName === 'generateImage'
+    || toolCall.toolName === 'createExcelWorkbook'
     || toolCall.toolName === 'updateTaskState'
     || toolCall.toolName === 'completeTaskState'
     || toolCall.toolName === 'createScheduleTask'
@@ -120,6 +121,10 @@ function isVerificationToolCall(toolCall) {
   }
 
   if (toolCall.toolName === 'listTaskStates') {
+    return true;
+  }
+
+  if (toolCall.toolName === 'readSpreadsheet') {
     return true;
   }
 
@@ -162,11 +167,14 @@ function getActiveTools(stepNumber, loopState, runtime) {
   const memoryToolNames = runtime.memoryToolNames || [];
   const taskStateToolNames = runtime.taskStateToolNames || [];
   const taskStateReadOnlyToolNames = runtime.taskStateReadOnlyToolNames || [];
+  const spreadsheetToolNames = runtime.spreadsheetToolNames || [];
+  const spreadsheetReadOnlyToolNames = runtime.spreadsheetReadOnlyToolNames || [];
   const readOnlyMcpToolNames = runtime.mcpReadOnlyToolNames || [];
   const discoveryToolNames = [
     'webSearch',
     ...(runtime.scheduleToolNames || []),
     ...taskStateToolNames,
+    ...spreadsheetToolNames,
   ].filter(toolName => runtime.toolNames.includes(toolName));
 
   if (loopState.pendingVerification) {
@@ -176,6 +184,7 @@ function getActiveTools(stepNumber, loopState, runtime) {
       'bash',
       ...(runtime.scheduleReadOnlyToolNames || []),
       ...taskStateReadOnlyToolNames,
+      ...spreadsheetReadOnlyToolNames,
       ...runtime.attachmentToolNames,
       ...memoryToolNames,
     ];

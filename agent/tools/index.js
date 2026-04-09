@@ -29,6 +29,7 @@ const DEFAULT_BASH_TIMEOUT_MS = 30000;
 const DEFAULT_MAX_BASH_TIMEOUT_MS = 300000;
 const LOGICAL_WORKSPACE_PREFIX = 'workspace://';
 const LOGICAL_SHARED_PREFIX = 'shared://';
+const SUPPORTED_SPREADSHEET_EXTENSIONS = new Set(['.xlsx', '.csv', '.tsv']);
 let bashToolModulePromise;
 let justBashModulePromise;
 
@@ -577,6 +578,26 @@ async function pathExists(candidatePath) {
   } catch {
     return false;
   }
+}
+
+function parseJsonCommandOutput(stdout, fallbackMessage) {
+  const text = String(stdout || '').trim();
+
+  if (!text) {
+    throw new Error(fallbackMessage || 'Command returned empty output.');
+  }
+
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      return JSON.parse(lines[index]);
+    } catch {
+      continue;
+    }
+  }
+
+  throw new Error(fallbackMessage || text);
 }
 
 async function copyPathRecursive(sourcePath, destinationPath, options = {}) {
@@ -1337,6 +1358,179 @@ function createWordDocumentTool(workspaceDir, projectRootDir, workspacePythonCon
   });
 }
 
+const spreadsheetCellValueSchema = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.null(),
+]);
+
+function createExcelWorkbookTool({
+  workspaceDir,
+  projectRootDir,
+  workspacePythonConfig = {},
+  workspacePythonRuntime = {},
+  registerOutboundAttachment,
+}) {
+  const runCommandImpl = workspacePythonRuntime.runCommand || runCommand;
+  const pathExistsImpl = workspacePythonRuntime.pathExists || pathExists;
+
+  return tool({
+    description: [
+      'Create a real .xlsx Excel workbook in the current user workspace.',
+      'Use this when the user explicitly asks for an Excel file or when tabular output should be delivered as .xlsx.',
+      'Supports one or more sheets using either header+rows or records.',
+      'Set `sendToUser=true` when the generated workbook should be delivered in the current chat.',
+    ].join(' '),
+    inputSchema: z.object({
+      outputPath: z.string().describe('Target .xlsx path in workspace (workspace://... or relative path).'),
+      sheets: z.array(z.object({
+        name: z.string().optional().describe('Optional worksheet name.'),
+        header: z.array(spreadsheetCellValueSchema).optional().describe('Optional header row.'),
+        rows: z.array(z.array(spreadsheetCellValueSchema)).optional().describe('Optional table rows as arrays.'),
+        records: z.array(z.record(z.string(), spreadsheetCellValueSchema)).optional().describe('Optional records that will be expanded into columns.'),
+      })).min(1).describe('Workbook sheet definitions.'),
+      overwrite: z.boolean().optional().describe('Whether to overwrite the output workbook if it already exists. Defaults to false.'),
+      sendToUser: z.boolean().optional().describe('Whether to queue the generated workbook for delivery to the user.'),
+    }),
+    execute: async ({ outputPath, sheets, overwrite, sendToUser }) => {
+      if (workspacePythonConfig.enabled === false) {
+        throw new Error('createExcelWorkbook is disabled because workspace Python runtime is disabled.');
+      }
+
+      let resolvedOutputPath = resolveWorkspacePath(workspaceDir, outputPath);
+      if (!resolvedOutputPath.toLowerCase().endsWith('.xlsx')) {
+        resolvedOutputPath += '.xlsx';
+      }
+
+      if (!overwrite && await pathExistsImpl(resolvedOutputPath)) {
+        throw new Error(`Destination already exists: ${resolvedOutputPath}`);
+      }
+
+      const pythonCommand = await resolveAvailablePythonCommand(workspacePythonConfig.command, {
+        runCommandImpl,
+        pathExistsImpl,
+      });
+      const scriptPath = path.join(projectRootDir, 'workspace-runtime', 'create_xlsx.py');
+      const payload = Buffer.from(JSON.stringify({ sheets }), 'utf8').toString('base64');
+      const result = await runCommandImpl(
+        pythonCommand,
+        [
+          scriptPath,
+          '--output',
+          resolvedOutputPath,
+          '--payload-base64',
+          payload,
+        ],
+        {
+          cwd: workspaceDir,
+          timeoutMs: Math.min(
+            workspacePythonConfig.timeoutMs || DEFAULT_BASH_TIMEOUT_MS,
+            workspacePythonConfig.maxTimeoutMs || DEFAULT_MAX_BASH_TIMEOUT_MS,
+          ),
+        },
+      );
+
+      if (result.exitCode !== 0) {
+        throw new Error(result.stderr || 'Failed to generate Excel workbook.');
+      }
+
+      const parsed = parseJsonCommandOutput(result.stdout, 'Excel workbook generation returned no JSON result.');
+      const stat = await fs.stat(resolvedOutputPath);
+      const attachment = sendToUser
+        ? await registerOutboundAttachment(resolvedOutputPath, path.basename(resolvedOutputPath))
+        : null;
+
+      return {
+        success: true,
+        outputPath: resolvedOutputPath,
+        ...buildWorkspacePathMetadata(workspaceDir, resolvedOutputPath),
+        sizeBytes: stat.size,
+        sheetCount: Number.isFinite(parsed?.sheetCount) ? parsed.sheetCount : sheets.length,
+        attachment,
+      };
+    },
+  });
+}
+
+function createReadSpreadsheetTool({
+  workspaceDir,
+  projectRootDir,
+  workspacePythonConfig = {},
+  workspacePythonRuntime = {},
+  resolveReadableSpreadsheetPath,
+}) {
+  const runCommandImpl = workspacePythonRuntime.runCommand || runCommand;
+  const pathExistsImpl = workspacePythonRuntime.pathExists || pathExists;
+
+  return tool({
+    description: [
+      'Read a spreadsheet in structured form.',
+      'Use this for .xlsx, .csv, or .tsv files when you need worksheet names, headers, row previews, or tabular data instead of plain extracted text.',
+      'Accepts current-conversation attachment ids or names when they resolve to supported spreadsheet files.',
+    ].join(' '),
+    inputSchema: z.object({
+      path: z.string().describe('Spreadsheet path, or a current-conversation spreadsheet attachment id/name.'),
+      sheetName: z.string().optional().describe('Optional worksheet name for .xlsx files.'),
+      maxRows: z.number().int().min(1).max(200).optional().describe('Maximum preview rows to return. Defaults to 50.'),
+      headerRow: z.boolean().optional().describe('Whether the first row should be treated as the header. Defaults to true.'),
+      includeEmptyRows: z.boolean().optional().describe('Whether empty rows should be kept in the preview. Defaults to false.'),
+    }),
+    execute: async ({ path: requestedPath, sheetName, maxRows, headerRow, includeEmptyRows }) => {
+      if (workspacePythonConfig.enabled === false) {
+        throw new Error('readSpreadsheet is disabled because workspace Python runtime is disabled.');
+      }
+
+      const resolvedInputPath = resolveReadableSpreadsheetPath(requestedPath);
+      const extension = String(path.extname(resolvedInputPath)).toLowerCase();
+
+      if (!SUPPORTED_SPREADSHEET_EXTENSIONS.has(extension)) {
+        throw new Error(`Unsupported spreadsheet format for structured read: ${extension || '(unknown)'}`);
+      }
+
+      const pythonCommand = await resolveAvailablePythonCommand(workspacePythonConfig.command, {
+        runCommandImpl,
+        pathExistsImpl,
+      });
+      const scriptPath = path.join(projectRootDir, 'workspace-runtime', 'read_spreadsheet.py');
+      const result = await runCommandImpl(
+        pythonCommand,
+        [
+          scriptPath,
+          '--input',
+          resolvedInputPath,
+          '--max-rows',
+          String(Number.isFinite(maxRows) ? maxRows : 50),
+          '--header-row',
+          headerRow === false ? 'false' : 'true',
+          '--include-empty-rows',
+          includeEmptyRows === true ? 'true' : 'false',
+          ...(typeof sheetName === 'string' && sheetName.trim().length > 0 ? ['--sheet-name', sheetName.trim()] : []),
+        ],
+        {
+          cwd: workspaceDir,
+          timeoutMs: Math.min(
+            workspacePythonConfig.timeoutMs || DEFAULT_BASH_TIMEOUT_MS,
+            workspacePythonConfig.maxTimeoutMs || DEFAULT_MAX_BASH_TIMEOUT_MS,
+          ),
+        },
+      );
+
+      if (result.exitCode !== 0) {
+        throw new Error(result.stderr || 'Failed to read spreadsheet.');
+      }
+
+      const parsed = parseJsonCommandOutput(result.stdout, 'Spreadsheet reader returned no JSON result.');
+
+      return {
+        success: true,
+        path: resolvedInputPath,
+        workbook: parsed,
+      };
+    },
+  });
+}
+
 function createRunJavaScriptTool(workspaceDir) {
   return tool({
     description: [
@@ -1555,6 +1749,38 @@ async function createRuntimeTools({
     attachmentPathResolver,
     attachmentRootDir,
   );
+  const resolveAttachmentReference = requestedReference => {
+    const normalizedReference = typeof requestedReference === 'string'
+      ? requestedReference.trim()
+      : '';
+
+    if (!normalizedReference) {
+      throw new Error('Spreadsheet path is required.');
+    }
+
+    return normalizedAttachments.find(attachment => (
+      normalizedReference === attachment.id
+      || normalizedReference === attachment.name
+      || normalizedReference === attachment.path
+      || normalizedReference === attachment.logicalPath
+      || normalizedReference === attachment.resolvedPath
+    )) || null;
+  };
+  const resolveReadableSpreadsheetPath = requestedReference => {
+    const matchedAttachment = resolveAttachmentReference(requestedReference);
+
+    if (matchedAttachment?.resolvedPath) {
+      return matchedAttachment.resolvedPath;
+    }
+
+    return resolveReadablePath(
+      workingDir,
+      machine.sharedReadRoots,
+      machine.primarySharedRoot,
+      machine.attachmentRootDir,
+      requestedReference,
+    );
+  };
   const attachmentToolkit = createAttachmentTools(
     normalizedAttachments,
     workingDir,
@@ -1605,6 +1831,20 @@ async function createRuntimeTools({
       workspacePython,
       workspacePythonRuntime,
     ),
+    createExcelWorkbook: createExcelWorkbookTool({
+      workspaceDir: workingDir,
+      projectRootDir: path.resolve(projectRootDir),
+      workspacePythonConfig: workspacePython,
+      workspacePythonRuntime,
+      registerOutboundAttachment: (filePath, displayName) => machine.registerOutboundAttachment(filePath, displayName),
+    }),
+    readSpreadsheet: createReadSpreadsheetTool({
+      workspaceDir: workingDir,
+      projectRootDir: path.resolve(projectRootDir),
+      workspacePythonConfig: workspacePython,
+      workspacePythonRuntime,
+      resolveReadableSpreadsheetPath,
+    }),
     generateImage: createImageGenerationTool({
       workspaceDir: workingDir,
       workspacePythonConfig: workspacePython,
@@ -1672,6 +1912,14 @@ async function createRuntimeTools({
       displayName: 'Word生成',
       statusText: '生成Word文档',
     }),
+    createExcelWorkbook: createToolDisplayInfo('createExcelWorkbook', {
+      displayName: 'Excel生成',
+      statusText: '生成Excel工作簿',
+    }),
+    readSpreadsheet: createToolDisplayInfo('readSpreadsheet', {
+      displayName: '表格读取',
+      statusText: '读取电子表格内容',
+    }),
     generateImage: createToolDisplayInfo('generateImage', {
       displayName: '图片生成',
       statusText: '生成或编辑图片',
@@ -1719,11 +1967,14 @@ async function createRuntimeTools({
       scheduleReadOnlyToolNames: schedulerToolkit.readOnlyToolNames || [],
       taskStateToolNames: taskStateToolkit.toolNames || [],
       taskStateReadOnlyToolNames: taskStateToolkit.readOnlyToolNames || [],
+      spreadsheetToolNames: ['createExcelWorkbook', 'readSpreadsheet'].filter(toolName => Object.prototype.hasOwnProperty.call(tools, toolName)),
+      spreadsheetReadOnlyToolNames: ['readSpreadsheet'].filter(toolName => Object.prototype.hasOwnProperty.call(tools, toolName)),
       promptSections: [
         `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. Prefer \`workspace://...\` for workspace files, \`attachment://...\` for current-user uploaded attachments, and \`shared://...\` for files under the primary shared read-only root. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`inspectFile\`, \`readFile\`, \`writeFile\`, \`sendFile\`, \`archiveWorkspacePath\`) operate on real host paths. \`writeFile\` still writes only inside the workspace. \`inspectFile\` and \`readFile\` also accept the current user's attachment root, the shared read-only roots ${effectiveSharedReadRoots.map(rootDir => `\`${toPosixPath(rootDir)}\``).join(', ')}, and explicit absolute host paths when needed.`,
         'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly. When the user asks for a zip or package, prefer `archiveWorkspacePath` instead of improvising archive commands in bash.',
         'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. `sendFile` can send files from the workspace, the current user attachment root, or shared read-only roots without staging. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
         'Direct delivery rule\nIf the user explicitly asks for a concrete deliverable file format (such as Word .docx, Excel .xlsx, PPT, PDF, zip), execute directly and deliver the file in the same turn when the action is non-destructive. Do not ask an extra confirmation question for this kind of explicit file-generation request.',
+        'Spreadsheets\nUse `readSpreadsheet` for structured .xlsx/.csv/.tsv reading when you need sheet names, headers, row previews, or table data. Use `createExcelWorkbook` to generate a real .xlsx workbook for delivery.',
         buildImageGenerationPrompt(imageGeneration),
         buildWebSearchPrompt(webSearch),
         schedulerToolkit.prompt,
