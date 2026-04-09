@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+﻿const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const {
@@ -129,6 +129,50 @@ function createFakeWorkspacePythonRuntime() {
         };
       }
 
+      if (invokedScriptPath.endsWith(path.join('workspace-runtime', 'create_xlsx.py'))) {
+        const outputPath = args[2];
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        fs.writeFileSync(outputPath, 'fake-xlsx-binary', 'utf8');
+        return {
+          stdout: JSON.stringify({
+            ok: true,
+            outputPath,
+            sheetCount: 1,
+            sheetNames: ['Sheet1'],
+          }),
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+        };
+      }
+
+      if (invokedScriptPath.endsWith(path.join('workspace-runtime', 'read_spreadsheet.py'))) {
+        const inputPath = args[2];
+        return {
+          stdout: JSON.stringify({
+            type: 'delimited',
+            path: inputPath,
+            sheetNames: ['Sheet1'],
+            sheets: [
+              {
+                name: 'Sheet1',
+                headers: ['Company', 'Amount'],
+                rows: [
+                  ['启迪之星', 120],
+                  ['辛芮智能', 88],
+                ],
+                rowCount: 2,
+                columnCount: 2,
+                truncated: false,
+              },
+            ],
+          }),
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+        };
+      }
+
       throw new Error(`Unexpected fake python command: ${command} ${args.join(' ')}`);
     },
     async pathExists(candidatePath) {
@@ -147,11 +191,12 @@ module.exports = async function runAgentToolsTest() {
   const projectRootDir = path.join(rootDir, 'project');
   const workspaceDir = path.join(rootDir, 'workspace');
   const sharedLibraryRoot = path.join(projectRootDir, 'storage', '已签署协议电子档');
-  const externalSharedLibraryRoot = path.join(rootDir, 'nas-share', '已签署协议电子档');
+  const externalSharedLibraryRoot = path.join(rootDir, 'nas-share', 'archive-library');
   const mockMarkItDownHandler = path.join(repoRoot, 'tests', 'helpers', 'mock-markitdown-handler.js');
   const mockImageInspectorHandler = path.join(repoRoot, 'tests', 'helpers', 'mock-image-inspector-handler.js');
   const localTextPath = path.join(workspaceDir, 'notes.md');
   const localPdfPath = path.join(workspaceDir, 'local.pdf');
+  const localCsvPath = path.join(workspaceDir, 'contracts.csv');
   const attachmentTextPath = path.join(workspaceDir, 'user-upload.txt');
   const attachmentPdfPath = path.join(workspaceDir, 'scan.pdf');
   const attachmentPagedPdfPath = path.join(workspaceDir, 'paged.pdf');
@@ -164,7 +209,7 @@ module.exports = async function runAgentToolsTest() {
   const localPythonPackageDir = path.join(workspaceDir, 'local-py-package');
   const sharedTextPath = path.join(sharedLibraryRoot, 'shared-note.md');
   const sharedPdfPath = path.join(sharedLibraryRoot, 'shared-contract.pdf');
-  const externalSharedPdfPath = path.join(externalSharedLibraryRoot, '赞存信息-4090采购.pdf');
+  const externalSharedPdfPath = path.join(externalSharedLibraryRoot, 'external-shared.pdf');
   const absoluteHostTextPath = path.join(rootDir, 'absolute-host-note.txt');
 
   fs.mkdirSync(workspaceDir, { recursive: true });
@@ -173,6 +218,7 @@ module.exports = async function runAgentToolsTest() {
 
   fs.writeFileSync(localTextPath, 'hello local file');
   fs.writeFileSync(localPdfPath, '%PDF-1.7\nlocal pdf body');
+  fs.writeFileSync(localCsvPath, 'Company,Amount\n启迪之星,120\n辛芮智能,88\n');
   fs.writeFileSync(attachmentTextPath, 'alpha beta gamma delta');
   fs.writeFileSync(attachmentImagePath, 'fake image bytes for vision extraction');
   fs.writeFileSync(attachmentPdfPath, `%PDF-1.7
@@ -315,9 +361,11 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(runtime.toolDisplayByName.runPython.statusText, '运行 Python 代码');
     assert.equal(runtime.toolDisplayByName.runJavaScript.statusText, '运行 JavaScript 代码');
     assert.equal(runtime.toolDisplayByName.sendFile.statusText, '准备发送文件');
+    assert.equal(runtime.toolDisplayByName.createExcelWorkbook.statusText, '生成Excel工作簿');
+    assert.equal(runtime.toolDisplayByName.readSpreadsheet.statusText, '读取电子表格内容');
 
     if (process.platform === 'win32') {
-      const wrappedCommand = wrapWindowsPowerShellCommand("Get-ChildItem -LiteralPath '\\\\server\\共享'");
+      const wrappedCommand = wrapWindowsPowerShellCommand("Get-ChildItem -LiteralPath '\\\\server\\鍏变韩'");
       assert.match(wrappedCommand, /\[Console\]::OutputEncoding = \[System\.Text\.UTF8Encoding\]::new\(\$false\)/);
       assert.match(wrappedCommand, /\$OutputEncoding = \[System\.Text\.UTF8Encoding\]::new\(\$false\)/);
       assert.match(wrappedCommand, /chcp\.com 65001 > \$null/);
@@ -325,8 +373,8 @@ module.exports = async function failingHandler({ llm, profileName }) {
       assert.equal(getBlockedCommandReason("'ok' | Format-Table"), null);
       assert.match(getBlockedCommandReason('format C:'), /destructive system command/i);
 
-      const unicodeOutput = decodeShellOutput(Buffer.from('已签署协议电子档', 'utf8'));
-      assert.equal(unicodeOutput, '已签署协议电子档');
+      const unicodeOutput = decodeShellOutput(Buffer.from('宸茬缃插崗璁數瀛愭。', 'utf8'));
+      assert.equal(unicodeOutput, '宸茬缃插崗璁數瀛愭。');
     }
 
     const prompt = buildBashToolPrompt(rootDir);
@@ -337,6 +385,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.match(prompt, /runPython/i);
     assert.match(runtime.promptSections.join('\n'), /inspectFile/i);
     assert.match(runtime.promptSections.join('\n'), /attachment:\/\//i);
+    assert.match(runtime.promptSections.join('\n'), /readSpreadsheet/i);
 
     const bashListResult = await runtime.tools.bash.execute({
       command: "ls -la && printf '\\n---\\n' && ls -la bash-visible-dir && printf '\\n---\\n' && cat bash-visible-dir/nested.txt",
@@ -447,6 +496,36 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(missingCommandResult.exitCode, 1);
     assert.equal(missingCommandResult.timedOut, false);
     assert.match(missingCommandResult.stderr, /not found|ENOENT|spawn/i);
+
+    const spreadsheetRead = await runtime.tools.readSpreadsheet.execute({
+      path: localCsvPath,
+      maxRows: 10,
+    });
+    assert.equal(spreadsheetRead.success, true);
+    assert.equal(spreadsheetRead.workbook.type, 'delimited');
+    assert.equal(spreadsheetRead.workbook.sheets[0].headers[0], 'Company');
+    assert.equal(spreadsheetRead.workbook.sheets[0].rows[0][0], '启迪之星');
+
+    const excelOutputPath = 'workspace://jobs/stage-test/contracts-summary.xlsx';
+    const excelCreateResult = await runtime.tools.createExcelWorkbook.execute({
+      outputPath: excelOutputPath,
+      sheets: [
+        {
+          name: 'Summary',
+          header: ['Company', 'Amount'],
+          rows: [
+            ['启迪之星', 120],
+            ['辛芮智能', 88],
+          ],
+        },
+      ],
+      sendToUser: true,
+    });
+    assert.equal(excelCreateResult.success, true);
+    assert.equal(excelCreateResult.logicalPath, 'workspace://jobs/stage-test/contracts-summary.xlsx');
+    assert.equal(excelCreateResult.sheetCount, 1);
+    assert.ok(fs.existsSync(path.join(workspaceDir, 'jobs', 'stage-test', 'contracts-summary.xlsx')));
+    assert.equal(runtime.getOutboundAttachments().some(item => /contracts-summary\.xlsx$/i.test(item.path)), true);
 
     const imageFailureRuntime = await createRuntimeTools({
       workspaceDir,
@@ -822,10 +901,10 @@ module.exports = async function failingHandler({ llm, profileName }) {
 
     const externalSharedOutbound = await runtime.tools.sendFile.execute({
       path: externalSharedPdfPath,
-      name: '赞存信息-4090采购.pdf',
+      name: '璧炲瓨淇℃伅-4090閲囪喘.pdf',
     });
     assert.equal(externalSharedOutbound.success, true);
-    assert.equal(externalSharedOutbound.attachment.name, '赞存信息-4090采购.pdf');
+    assert.equal(externalSharedOutbound.attachment.name, '璧炲瓨淇℃伅-4090閲囪喘.pdf');
 
     const attachmentOutbound = await runtime.tools.sendFile.execute({
       path: 'attachment://avatar.png',
@@ -841,6 +920,10 @@ module.exports = async function failingHandler({ llm, profileName }) {
     );
 
     assert.deepEqual(runtime.getOutboundAttachments(), [{
+      path: path.join(workspaceDir, 'jobs', 'stage-test', 'contracts-summary.xlsx'),
+      name: 'contracts-summary.xlsx',
+      sizeBytes: fs.statSync(path.join(workspaceDir, 'jobs', 'stage-test', 'contracts-summary.xlsx')).size,
+    }, {
       path: localPdfPath,
       name: 'result.pdf',
       sizeBytes: fs.statSync(localPdfPath).size,
@@ -854,7 +937,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
       sizeBytes: fs.statSync(sharedPdfPath).size,
     }, {
       path: externalSharedPdfPath,
-      name: '赞存信息-4090采购.pdf',
+      name: '璧炲瓨淇℃伅-4090閲囪喘.pdf',
       sizeBytes: fs.statSync(externalSharedPdfPath).size,
     }, {
       path: attachmentImagePath,
@@ -949,3 +1032,6 @@ module.exports = async function failingHandler({ llm, profileName }) {
     fs.rmSync(timeoutRootDir, { recursive: true, force: true });
   }
 };
+
+
+
