@@ -146,6 +146,18 @@ function createFakeWorkspacePythonRuntime() {
         };
       }
 
+      if (invokedScriptPath.endsWith(path.join('workspace-runtime', 'create_docx.py'))) {
+        const outputPath = args[2];
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        fs.writeFileSync(outputPath, 'fake-docx-binary', 'utf8');
+        return {
+          stdout: `${outputPath}\n`,
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+        };
+      }
+
       if (invokedScriptPath.endsWith(path.join('workspace-runtime', 'update_xlsx.py'))) {
         const inputPath = args[2];
         const outputPath = args[4];
@@ -385,6 +397,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(runtime.toolDisplayByName.runPython.statusText, '运行 Python 代码');
     assert.equal(runtime.toolDisplayByName.runJavaScript.statusText, '运行 JavaScript 代码');
     assert.equal(runtime.toolDisplayByName.sendFile.statusText, '准备发送文件');
+    assert.equal(runtime.toolDisplayByName.createWordDocument.statusText, '生成Word文档');
     assert.equal(runtime.toolDisplayByName.createExcelWorkbook.statusText, '生成Excel工作簿');
     assert.equal(runtime.toolDisplayByName.updateExcelWorkbook.statusText, '修改Excel工作簿');
     assert.equal(runtime.toolDisplayByName.readSpreadsheet.statusText, '读取电子表格内容');
@@ -410,6 +423,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.match(prompt, /runPython/i);
     assert.match(runtime.promptSections.join('\n'), /inspectFile/i);
     assert.match(runtime.promptSections.join('\n'), /attachment:\/\//i);
+    assert.match(runtime.promptSections.join('\n'), /createWordDocument/i);
     assert.match(runtime.promptSections.join('\n'), /readSpreadsheet/i);
     assert.match(runtime.promptSections.join('\n'), /updateExcelWorkbook/i);
 
@@ -552,6 +566,18 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(excelCreateResult.sheetCount, 1);
     assert.ok(fs.existsSync(path.join(workspaceDir, 'jobs', 'stage-test', 'contracts-summary.xlsx')));
     assert.equal(runtime.getOutboundAttachments().some(item => /contracts-summary\.xlsx$/i.test(item.path)), true);
+
+    const wordOutputPath = 'workspace://jobs/stage-test/weekly-report.docx';
+    const wordCreateResult = await runtime.tools.createWordDocument.execute({
+      outputPath: wordOutputPath,
+      content: '# Weekly Report\n\n- 已完成事项',
+      title: 'Weekly Report',
+      sendToUser: true,
+    });
+    assert.equal(wordCreateResult.success, true);
+    assert.equal(wordCreateResult.logicalPath, 'workspace://jobs/stage-test/weekly-report.docx');
+    assert.ok(fs.existsSync(path.join(workspaceDir, 'jobs', 'stage-test', 'weekly-report.docx')));
+    assert.equal(runtime.getOutboundAttachments().some(item => /weekly-report\.docx$/i.test(item.path)), true);
 
     const excelUpdateResult = await runtime.tools.updateExcelWorkbook.execute({
       sourcePath: localWorkbookPath,
@@ -960,6 +986,10 @@ module.exports = async function failingHandler({ llm, profileName }) {
       path: path.join(workspaceDir, 'jobs', 'stage-test', 'contracts-summary.xlsx'),
       name: 'contracts-summary.xlsx',
       sizeBytes: fs.statSync(path.join(workspaceDir, 'jobs', 'stage-test', 'contracts-summary.xlsx')).size,
+    }, {
+      path: path.join(workspaceDir, 'jobs', 'stage-test', 'weekly-report.docx'),
+      name: 'weekly-report.docx',
+      sizeBytes: fs.statSync(path.join(workspaceDir, 'jobs', 'stage-test', 'weekly-report.docx')).size,
     }, {
       path: excelUpdateResult.outputPath,
       name: path.basename(excelUpdateResult.outputPath),

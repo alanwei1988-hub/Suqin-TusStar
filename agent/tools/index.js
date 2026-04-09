@@ -1279,7 +1279,13 @@ function createArchiveWorkspacePathTool(workspaceDir, projectRootDir, workspaceP
   });
 }
 
-function createWordDocumentTool(workspaceDir, projectRootDir, workspacePythonConfig = {}, workspacePythonRuntime = {}) {
+function createWordDocumentTool({
+  workspaceDir,
+  projectRootDir,
+  workspacePythonConfig = {},
+  workspacePythonRuntime = {},
+  registerOutboundAttachment,
+}) {
   const runCommandImpl = workspacePythonRuntime.runCommand || runCommand;
   const pathExistsImpl = workspacePythonRuntime.pathExists || pathExists;
 
@@ -1288,6 +1294,7 @@ function createWordDocumentTool(workspaceDir, projectRootDir, workspacePythonCon
       'Create a real .docx Word document in the current user workspace from markdown/text content.',
       'Use this when the user explicitly asks for a Word file so you can deliver .docx directly instead of .md.',
       'Accepts either inline content or a source workspace text/markdown file.',
+      'Set `sendToUser=true` when the generated document should be delivered in the current chat.',
     ].join(' '),
     inputSchema: z.object({
       outputPath: z.string().describe('Target .docx path in workspace (workspace://... or relative path).'),
@@ -1295,8 +1302,9 @@ function createWordDocumentTool(workspaceDir, projectRootDir, workspacePythonCon
       sourcePath: z.string().optional().describe('Optional source text/markdown file path in workspace.'),
       title: z.string().optional().describe('Optional document title.'),
       overwrite: z.boolean().optional().describe('Whether to overwrite existing target file. Defaults to false.'),
+      sendToUser: z.boolean().optional().describe('Whether to queue the generated document for delivery to the user.'),
     }),
-    execute: async ({ outputPath, content, sourcePath, title, overwrite }) => {
+    execute: async ({ outputPath, content, sourcePath, title, overwrite, sendToUser }) => {
       if (workspacePythonConfig.enabled === false) {
         throw new Error('createWordDocument is disabled because workspace Python runtime is disabled.');
       }
@@ -1355,12 +1363,16 @@ function createWordDocumentTool(workspaceDir, projectRootDir, workspacePythonCon
       }
 
       const stat = await fs.stat(resolvedOutputPath);
+      const attachment = sendToUser
+        ? await registerOutboundAttachment(resolvedOutputPath, path.basename(resolvedOutputPath))
+        : null;
 
       return {
         success: true,
         outputPath: resolvedOutputPath,
         ...buildWorkspacePathMetadata(workspaceDir, resolvedOutputPath),
         sizeBytes: stat.size,
+        attachment,
       };
     },
   });
@@ -1971,12 +1983,13 @@ async function createRuntimeTools({
       workspacePython,
       workspacePythonRuntime,
     ),
-    createWordDocument: createWordDocumentTool(
-      workingDir,
-      path.resolve(projectRootDir),
-      workspacePython,
+    createWordDocument: createWordDocumentTool({
+      workspaceDir: workingDir,
+      projectRootDir: path.resolve(projectRootDir),
+      workspacePythonConfig: workspacePython,
       workspacePythonRuntime,
-    ),
+      registerOutboundAttachment: (filePath, displayName) => machine.registerOutboundAttachment(filePath, displayName),
+    }),
     createExcelWorkbook: createExcelWorkbookTool({
       workspaceDir: workingDir,
       projectRootDir: path.resolve(projectRootDir),
@@ -2125,13 +2138,14 @@ async function createRuntimeTools({
       scheduleReadOnlyToolNames: schedulerToolkit.readOnlyToolNames || [],
       taskStateToolNames: taskStateToolkit.toolNames || [],
       taskStateReadOnlyToolNames: taskStateToolkit.readOnlyToolNames || [],
+      documentToolNames: ['createWordDocument'].filter(toolName => Object.prototype.hasOwnProperty.call(tools, toolName)),
       spreadsheetToolNames: ['createExcelWorkbook', 'updateExcelWorkbook', 'readSpreadsheet'].filter(toolName => Object.prototype.hasOwnProperty.call(tools, toolName)),
       spreadsheetReadOnlyToolNames: ['readSpreadsheet'].filter(toolName => Object.prototype.hasOwnProperty.call(tools, toolName)),
       promptSections: [
         `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. Prefer \`workspace://...\` for workspace files, \`attachment://...\` for current-user uploaded attachments, and \`shared://...\` for files under the primary shared read-only root. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`inspectFile\`, \`readFile\`, \`writeFile\`, \`sendFile\`, \`archiveWorkspacePath\`) operate on real host paths. \`writeFile\` still writes only inside the workspace. \`inspectFile\` and \`readFile\` also accept the current user's attachment root, the shared read-only roots ${effectiveSharedReadRoots.map(rootDir => `\`${toPosixPath(rootDir)}\``).join(', ')}, and explicit absolute host paths when needed.`,
         'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly. When the user asks for a zip or package, prefer `archiveWorkspacePath` instead of improvising archive commands in bash.',
         'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. `sendFile` can send files from the workspace, the current user attachment root, or shared read-only roots without staging. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
-        'Direct delivery rule\nIf the user explicitly asks for a concrete deliverable file format (such as Word .docx, Excel .xlsx, PPT, PDF, zip), execute directly and deliver the file in the same turn when the action is non-destructive. Do not ask an extra confirmation question for this kind of explicit file-generation request.',
+        'Direct delivery rule\nIf the user explicitly asks for a concrete deliverable file format (such as Word .docx, Excel .xlsx, PPT, PDF, zip), execute directly and deliver the file in the same turn when the action is non-destructive. Use `createWordDocument` for Word output, `createExcelWorkbook` for new Excel files, and `updateExcelWorkbook` for edits to an existing workbook copy. Do not ask an extra confirmation question for this kind of explicit file-generation request.',
         'Spreadsheets\nUse `readSpreadsheet` for structured .xlsx/.csv/.tsv reading when you need sheet names, headers, row previews, or table data. Use `createExcelWorkbook` to generate a real .xlsx workbook for delivery. Use `updateExcelWorkbook` when the user wants an existing workbook edited as a validated copy, such as deleting tabs, keeping only specific sheets, or renaming worksheets.',
         buildImageGenerationPrompt(imageGeneration),
         buildWebSearchPrompt(webSearch),
