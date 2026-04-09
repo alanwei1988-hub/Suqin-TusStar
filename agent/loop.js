@@ -85,7 +85,9 @@ function isMutatingToolCall(toolCall, runtime) {
     toolCall.toolName === 'stageHostPath'
     || toolCall.toolName === 'archiveWorkspacePath'
     || toolCall.toolName === 'generateImage'
+    || toolCall.toolName === 'createWordDocument'
     || toolCall.toolName === 'createExcelWorkbook'
+    || toolCall.toolName === 'updateExcelWorkbook'
     || toolCall.toolName === 'updateTaskState'
     || toolCall.toolName === 'completeTaskState'
     || toolCall.toolName === 'createScheduleTask'
@@ -167,6 +169,7 @@ function getActiveTools(stepNumber, loopState, runtime) {
   const memoryToolNames = runtime.memoryToolNames || [];
   const taskStateToolNames = runtime.taskStateToolNames || [];
   const taskStateReadOnlyToolNames = runtime.taskStateReadOnlyToolNames || [];
+  const documentToolNames = runtime.documentToolNames || [];
   const spreadsheetToolNames = runtime.spreadsheetToolNames || [];
   const spreadsheetReadOnlyToolNames = runtime.spreadsheetReadOnlyToolNames || [];
   const readOnlyMcpToolNames = runtime.mcpReadOnlyToolNames || [];
@@ -174,6 +177,7 @@ function getActiveTools(stepNumber, loopState, runtime) {
     'webSearch',
     ...(runtime.scheduleToolNames || []),
     ...taskStateToolNames,
+    ...documentToolNames,
     ...spreadsheetToolNames,
   ].filter(toolName => runtime.toolNames.includes(toolName));
 

@@ -1,4 +1,4 @@
-const fs = require('fs/promises');
+﻿const fs = require('fs/promises');
 const crypto = require('crypto');
 const os = require('os');
 const path = require('path');
@@ -30,6 +30,7 @@ const DEFAULT_MAX_BASH_TIMEOUT_MS = 300000;
 const LOGICAL_WORKSPACE_PREFIX = 'workspace://';
 const LOGICAL_SHARED_PREFIX = 'shared://';
 const SUPPORTED_SPREADSHEET_EXTENSIONS = new Set(['.xlsx', '.csv', '.tsv']);
+const SUPPORTED_EDITABLE_SPREADSHEET_EXTENSIONS = new Set(['.xlsx', '.xlsm']);
 let bashToolModulePromise;
 let justBashModulePromise;
 
@@ -598,6 +599,13 @@ function parseJsonCommandOutput(stdout, fallbackMessage) {
   }
 
   throw new Error(fallbackMessage || text);
+}
+
+function buildDefaultSpreadsheetEditOutputPath(workspaceDir, inputPath) {
+  const extension = String(path.extname(inputPath)).toLowerCase() || '.xlsx';
+  const baseName = path.basename(inputPath, path.extname(inputPath)) || 'spreadsheet';
+  const suffix = crypto.randomBytes(4).toString('hex');
+  return path.join(workspaceDir, 'jobs', 'spreadsheet-edits', `${baseName}-edited-${suffix}${extension}`);
 }
 
 async function copyPathRecursive(sourcePath, destinationPath, options = {}) {
@@ -1271,7 +1279,13 @@ function createArchiveWorkspacePathTool(workspaceDir, projectRootDir, workspaceP
   });
 }
 
-function createWordDocumentTool(workspaceDir, projectRootDir, workspacePythonConfig = {}, workspacePythonRuntime = {}) {
+function createWordDocumentTool({
+  workspaceDir,
+  projectRootDir,
+  workspacePythonConfig = {},
+  workspacePythonRuntime = {},
+  registerOutboundAttachment,
+}) {
   const runCommandImpl = workspacePythonRuntime.runCommand || runCommand;
   const pathExistsImpl = workspacePythonRuntime.pathExists || pathExists;
 
@@ -1280,6 +1294,7 @@ function createWordDocumentTool(workspaceDir, projectRootDir, workspacePythonCon
       'Create a real .docx Word document in the current user workspace from markdown/text content.',
       'Use this when the user explicitly asks for a Word file so you can deliver .docx directly instead of .md.',
       'Accepts either inline content or a source workspace text/markdown file.',
+      'Set `sendToUser=true` when the generated document should be delivered in the current chat.',
     ].join(' '),
     inputSchema: z.object({
       outputPath: z.string().describe('Target .docx path in workspace (workspace://... or relative path).'),
@@ -1287,8 +1302,9 @@ function createWordDocumentTool(workspaceDir, projectRootDir, workspacePythonCon
       sourcePath: z.string().optional().describe('Optional source text/markdown file path in workspace.'),
       title: z.string().optional().describe('Optional document title.'),
       overwrite: z.boolean().optional().describe('Whether to overwrite existing target file. Defaults to false.'),
+      sendToUser: z.boolean().optional().describe('Whether to queue the generated document for delivery to the user.'),
     }),
-    execute: async ({ outputPath, content, sourcePath, title, overwrite }) => {
+    execute: async ({ outputPath, content, sourcePath, title, overwrite, sendToUser }) => {
       if (workspacePythonConfig.enabled === false) {
         throw new Error('createWordDocument is disabled because workspace Python runtime is disabled.');
       }
@@ -1347,12 +1363,16 @@ function createWordDocumentTool(workspaceDir, projectRootDir, workspacePythonCon
       }
 
       const stat = await fs.stat(resolvedOutputPath);
+      const attachment = sendToUser
+        ? await registerOutboundAttachment(resolvedOutputPath, path.basename(resolvedOutputPath))
+        : null;
 
       return {
         success: true,
         outputPath: resolvedOutputPath,
         ...buildWorkspacePathMetadata(workspaceDir, resolvedOutputPath),
         sizeBytes: stat.size,
+        attachment,
       };
     },
   });
@@ -1447,6 +1467,144 @@ function createExcelWorkbookTool({
         ...buildWorkspacePathMetadata(workspaceDir, resolvedOutputPath),
         sizeBytes: stat.size,
         sheetCount: Number.isFinite(parsed?.sheetCount) ? parsed.sheetCount : sheets.length,
+        attachment,
+      };
+    },
+  });
+}
+
+function createUpdateExcelWorkbookTool({
+  workspaceDir,
+  projectRootDir,
+  workspacePythonConfig = {},
+  workspacePythonRuntime = {},
+  resolveReadableSpreadsheetPath,
+  registerOutboundAttachment,
+}) {
+  const runCommandImpl = workspacePythonRuntime.runCommand || runCommand;
+  const pathExistsImpl = workspacePythonRuntime.pathExists || pathExists;
+
+  return tool({
+    description: [
+      'Edit an existing Excel workbook while preserving its original workbook structure as much as possible.',
+      'Use this when the user wants to remove tabs, keep only certain tabs, rename worksheets, and receive the edited workbook back.',
+      'Accepts current-conversation spreadsheet attachment ids or names when they resolve to supported workbook files.',
+      'This edits a copy and validates the saved workbook before it is sent back to the user.',
+    ].join(' '),
+    inputSchema: z.object({
+      sourcePath: z.string().describe('Existing workbook path, or a current-conversation spreadsheet attachment id/name.'),
+      outputPath: z.string().optional().describe('Optional target workbook path in workspace. If omitted, a safe edited copy path is created automatically.'),
+      removeSheets: z.array(z.string()).optional().describe('Worksheet names to remove from the workbook copy.'),
+      keepSheets: z.array(z.string()).optional().describe('Worksheet names to keep. All other sheets will be removed.'),
+      renameSheets: z.array(z.object({
+        from: z.string().describe('Existing worksheet name.'),
+        to: z.string().describe('New worksheet name.'),
+      })).optional().describe('Optional worksheet rename operations.'),
+      overwrite: z.boolean().optional().describe('Whether to overwrite the output workbook if it already exists. Defaults to false.'),
+      sendToUser: z.boolean().optional().describe('Whether to queue the edited workbook for delivery to the user.'),
+    }),
+    execute: async ({ sourcePath, outputPath, removeSheets, keepSheets, renameSheets, overwrite, sendToUser }) => {
+      if (workspacePythonConfig.enabled === false) {
+        throw new Error('updateExcelWorkbook is disabled because workspace Python runtime is disabled.');
+      }
+
+      const requestedRemovals = Array.isArray(removeSheets)
+        ? removeSheets.map(item => String(item || '').trim()).filter(Boolean)
+        : [];
+      const requestedKeeps = Array.isArray(keepSheets)
+        ? keepSheets.map(item => String(item || '').trim()).filter(Boolean)
+        : [];
+      const requestedRenames = Array.isArray(renameSheets)
+        ? renameSheets
+          .map(item => ({
+            from: String(item?.from || '').trim(),
+            to: String(item?.to || '').trim(),
+          }))
+          .filter(item => item.from && item.to)
+        : [];
+
+      if (!requestedRemovals.length && !requestedKeeps.length && !requestedRenames.length) {
+        throw new Error('updateExcelWorkbook requires at least one edit operation such as removeSheets, keepSheets, or renameSheets.');
+      }
+
+      if (requestedRemovals.length && requestedKeeps.length) {
+        throw new Error('Use either removeSheets or keepSheets for one workbook edit, not both together.');
+      }
+
+      const resolvedInputPath = resolveReadableSpreadsheetPath(sourcePath);
+      const inputExtension = String(path.extname(resolvedInputPath)).toLowerCase();
+
+      if (!SUPPORTED_EDITABLE_SPREADSHEET_EXTENSIONS.has(inputExtension)) {
+        throw new Error(`Unsupported workbook format for editing: ${inputExtension || '(unknown)'}`);
+      }
+
+      let resolvedOutputPath = outputPath
+        ? resolveWorkspacePath(workspaceDir, outputPath)
+        : buildDefaultSpreadsheetEditOutputPath(workspaceDir, resolvedInputPath);
+
+      if (!String(path.extname(resolvedOutputPath)).trim()) {
+        resolvedOutputPath += inputExtension || '.xlsx';
+      }
+
+      if (path.resolve(resolvedOutputPath) === path.resolve(resolvedInputPath)) {
+        throw new Error('updateExcelWorkbook must save to a new workbook path so the source file remains intact.');
+      }
+
+      if (!overwrite && await pathExistsImpl(resolvedOutputPath)) {
+        throw new Error(`Destination already exists: ${resolvedOutputPath}`);
+      }
+
+      const pythonCommand = await resolveAvailablePythonCommand(workspacePythonConfig.command, {
+        runCommandImpl,
+        pathExistsImpl,
+      });
+      const scriptPath = path.join(projectRootDir, 'workspace-runtime', 'update_xlsx.py');
+      const payload = Buffer.from(JSON.stringify({
+        removeSheets: requestedRemovals,
+        keepSheets: requestedKeeps,
+        renameSheets: requestedRenames,
+      }), 'utf8').toString('base64');
+      const result = await runCommandImpl(
+        pythonCommand,
+        [
+          scriptPath,
+          '--input',
+          resolvedInputPath,
+          '--output',
+          resolvedOutputPath,
+          '--payload-base64',
+          payload,
+        ],
+        {
+          cwd: workspaceDir,
+          timeoutMs: Math.min(
+            workspacePythonConfig.timeoutMs || DEFAULT_BASH_TIMEOUT_MS,
+            workspacePythonConfig.maxTimeoutMs || DEFAULT_MAX_BASH_TIMEOUT_MS,
+          ),
+        },
+      );
+
+      if (result.exitCode !== 0) {
+        throw new Error(result.stderr || 'Failed to update Excel workbook.');
+      }
+
+      const parsed = parseJsonCommandOutput(result.stdout, 'Excel workbook update returned no JSON result.');
+      const stat = await fs.stat(resolvedOutputPath);
+      const attachment = sendToUser
+        ? await registerOutboundAttachment(resolvedOutputPath, path.basename(resolvedOutputPath))
+        : null;
+
+      return {
+        success: true,
+        inputPath: resolvedInputPath,
+        outputPath: resolvedOutputPath,
+        ...buildWorkspacePathMetadata(workspaceDir, resolvedOutputPath),
+        sizeBytes: stat.size,
+        sheetCount: Array.isArray(parsed?.sheetNames) ? parsed.sheetNames.length : undefined,
+        sheetNames: Array.isArray(parsed?.sheetNames) ? parsed.sheetNames : [],
+        removedSheets: Array.isArray(parsed?.removedSheets) ? parsed.removedSheets : requestedRemovals,
+        keptSheets: Array.isArray(parsed?.keptSheets) ? parsed.keptSheets : requestedKeeps,
+        renamedSheets: Array.isArray(parsed?.renamedSheets) ? parsed.renamedSheets : requestedRenames,
         attachment,
       };
     },
@@ -1709,7 +1867,7 @@ async function createRuntimeTools({
   const runCommandImpl = workspacePythonRuntime.runCommand || runCommand;
   const pathExistsImpl = workspacePythonRuntime.pathExists || pathExists;
   await fs.mkdir(workingDir, { recursive: true });
-  const defaultSharedLibraryRoot = path.resolve(projectRootDir, 'storage', '已签署协议电子档');
+  const defaultSharedLibraryRoot = path.resolve(projectRootDir, 'storage', '宸茬缃插崗璁數瀛愭。');
   const effectiveSharedReadRoots = [
     ...new Set(
       [
@@ -1825,17 +1983,26 @@ async function createRuntimeTools({
       workspacePython,
       workspacePythonRuntime,
     ),
-    createWordDocument: createWordDocumentTool(
-      workingDir,
-      path.resolve(projectRootDir),
-      workspacePython,
+    createWordDocument: createWordDocumentTool({
+      workspaceDir: workingDir,
+      projectRootDir: path.resolve(projectRootDir),
+      workspacePythonConfig: workspacePython,
       workspacePythonRuntime,
-    ),
+      registerOutboundAttachment: (filePath, displayName) => machine.registerOutboundAttachment(filePath, displayName),
+    }),
     createExcelWorkbook: createExcelWorkbookTool({
       workspaceDir: workingDir,
       projectRootDir: path.resolve(projectRootDir),
       workspacePythonConfig: workspacePython,
       workspacePythonRuntime,
+      registerOutboundAttachment: (filePath, displayName) => machine.registerOutboundAttachment(filePath, displayName),
+    }),
+    updateExcelWorkbook: createUpdateExcelWorkbookTool({
+      workspaceDir: workingDir,
+      projectRootDir: path.resolve(projectRootDir),
+      workspacePythonConfig: workspacePython,
+      workspacePythonRuntime,
+      resolveReadableSpreadsheetPath,
       registerOutboundAttachment: (filePath, displayName) => machine.registerOutboundAttachment(filePath, displayName),
     }),
     readSpreadsheet: createReadSpreadsheetTool({
@@ -1916,6 +2083,10 @@ async function createRuntimeTools({
       displayName: 'Excel生成',
       statusText: '生成Excel工作簿',
     }),
+    updateExcelWorkbook: createToolDisplayInfo('updateExcelWorkbook', {
+      displayName: 'Excel 编辑',
+      statusText: '修改Excel工作簿',
+    }),
     readSpreadsheet: createToolDisplayInfo('readSpreadsheet', {
       displayName: '表格读取',
       statusText: '读取电子表格内容',
@@ -1967,14 +2138,15 @@ async function createRuntimeTools({
       scheduleReadOnlyToolNames: schedulerToolkit.readOnlyToolNames || [],
       taskStateToolNames: taskStateToolkit.toolNames || [],
       taskStateReadOnlyToolNames: taskStateToolkit.readOnlyToolNames || [],
-      spreadsheetToolNames: ['createExcelWorkbook', 'readSpreadsheet'].filter(toolName => Object.prototype.hasOwnProperty.call(tools, toolName)),
+      documentToolNames: ['createWordDocument'].filter(toolName => Object.prototype.hasOwnProperty.call(tools, toolName)),
+      spreadsheetToolNames: ['createExcelWorkbook', 'updateExcelWorkbook', 'readSpreadsheet'].filter(toolName => Object.prototype.hasOwnProperty.call(tools, toolName)),
       spreadsheetReadOnlyToolNames: ['readSpreadsheet'].filter(toolName => Object.prototype.hasOwnProperty.call(tools, toolName)),
       promptSections: [
         `Machine\nYou are operating in the current user's isolated workspace. Host workspace: \`${toPosixPath(workingDir)}\`. Prefer \`workspace://...\` for workspace files, \`attachment://...\` for current-user uploaded attachments, and \`shared://...\` for files under the primary shared read-only root. The \`bash\` tool remains sandboxed and cannot reach the host filesystem outside that workspace. Host file tools (\`inspectFile\`, \`readFile\`, \`writeFile\`, \`sendFile\`, \`archiveWorkspacePath\`) operate on real host paths. \`writeFile\` still writes only inside the workspace. \`inspectFile\` and \`readFile\` also accept the current user's attachment root, the shared read-only roots ${effectiveSharedReadRoots.map(rootDir => `\`${toPosixPath(rootDir)}\``).join(', ')}, and explicit absolute host paths when needed.`,
         'Staging workflow\nIf a needed host file is outside the workspace, first use `stageHostPath` to copy it into a dedicated task directory such as `jobs/<task-name>/` under the workspace. After staging, use `runPython` or `runJavaScript` against that staged workspace directory instead of touching the source files directly. When the user asks for a zip or package, prefer `archiveWorkspacePath` instead of improvising archive commands in bash.',
         'Reply files\nWhen the user should receive a real file, create or locate it locally and then call `sendFile` with that file path. `sendFile` can send files from the workspace, the current user attachment root, or shared read-only roots without staging. The file will be sent before your final text reply. If channel delivery fails, the user will be told that sending failed and will receive the absolute path instead.',
-        'Direct delivery rule\nIf the user explicitly asks for a concrete deliverable file format (such as Word .docx, Excel .xlsx, PPT, PDF, zip), execute directly and deliver the file in the same turn when the action is non-destructive. Do not ask an extra confirmation question for this kind of explicit file-generation request.',
-        'Spreadsheets\nUse `readSpreadsheet` for structured .xlsx/.csv/.tsv reading when you need sheet names, headers, row previews, or table data. Use `createExcelWorkbook` to generate a real .xlsx workbook for delivery.',
+        'Direct delivery rule\nIf the user explicitly asks for a concrete deliverable file format (such as Word .docx, Excel .xlsx, PPT, PDF, zip), execute directly and deliver the file in the same turn when the action is non-destructive. Use `createWordDocument` for Word output, `createExcelWorkbook` for new Excel files, and `updateExcelWorkbook` for edits to an existing workbook copy. Do not ask an extra confirmation question for this kind of explicit file-generation request.',
+        'Spreadsheets\nUse `readSpreadsheet` for structured .xlsx/.csv/.tsv reading when you need sheet names, headers, row previews, or table data. Use `createExcelWorkbook` to generate a real .xlsx workbook for delivery. Use `updateExcelWorkbook` when the user wants an existing workbook edited as a validated copy, such as deleting tabs, keeping only specific sheets, or renaming worksheets.',
         buildImageGenerationPrompt(imageGeneration),
         buildWebSearchPrompt(webSearch),
         schedulerToolkit.prompt,
