@@ -146,6 +146,28 @@ function createFakeWorkspacePythonRuntime() {
         };
       }
 
+      if (invokedScriptPath.endsWith(path.join('workspace-runtime', 'update_xlsx.py'))) {
+        const inputPath = args[2];
+        const outputPath = args[4];
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        fs.copyFileSync(inputPath, outputPath);
+        return {
+          stdout: JSON.stringify({
+            ok: true,
+            inputPath,
+            outputPath,
+            originalSheetNames: ['欠费企业一览表', '虚拟', '长阳谷已退租企业', 'Sheet1'],
+            sheetNames: ['欠费企业一览表'],
+            removedSheets: ['虚拟', '长阳谷已退租企业', 'Sheet1'],
+            keptSheets: [],
+            renamedSheets: [],
+          }),
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+        };
+      }
+
       if (invokedScriptPath.endsWith(path.join('workspace-runtime', 'read_spreadsheet.py'))) {
         const inputPath = args[2];
         return {
@@ -197,6 +219,7 @@ module.exports = async function runAgentToolsTest() {
   const localTextPath = path.join(workspaceDir, 'notes.md');
   const localPdfPath = path.join(workspaceDir, 'local.pdf');
   const localCsvPath = path.join(workspaceDir, 'contracts.csv');
+  const localWorkbookPath = path.join(workspaceDir, 'leases.xlsx');
   const attachmentTextPath = path.join(workspaceDir, 'user-upload.txt');
   const attachmentPdfPath = path.join(workspaceDir, 'scan.pdf');
   const attachmentPagedPdfPath = path.join(workspaceDir, 'paged.pdf');
@@ -219,6 +242,7 @@ module.exports = async function runAgentToolsTest() {
   fs.writeFileSync(localTextPath, 'hello local file');
   fs.writeFileSync(localPdfPath, '%PDF-1.7\nlocal pdf body');
   fs.writeFileSync(localCsvPath, 'Company,Amount\n启迪之星,120\n辛芮智能,88\n');
+  fs.writeFileSync(localWorkbookPath, 'fake-existing-xlsx', 'utf8');
   fs.writeFileSync(attachmentTextPath, 'alpha beta gamma delta');
   fs.writeFileSync(attachmentImagePath, 'fake image bytes for vision extraction');
   fs.writeFileSync(attachmentPdfPath, `%PDF-1.7
@@ -320,7 +344,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
     workspaceDir,
     projectRootDir,
     attachmentRootDir: workspaceDir,
-    sharedReadRoots: [externalSharedLibraryRoot],
+    sharedReadRoots: [sharedLibraryRoot, externalSharedLibraryRoot],
     skillsDir: path.join(repoRoot, 'skills'),
     mcpServers: [],
     attachmentExtraction: {
@@ -362,6 +386,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(runtime.toolDisplayByName.runJavaScript.statusText, '运行 JavaScript 代码');
     assert.equal(runtime.toolDisplayByName.sendFile.statusText, '准备发送文件');
     assert.equal(runtime.toolDisplayByName.createExcelWorkbook.statusText, '生成Excel工作簿');
+    assert.equal(runtime.toolDisplayByName.updateExcelWorkbook.statusText, '修改Excel工作簿');
     assert.equal(runtime.toolDisplayByName.readSpreadsheet.statusText, '读取电子表格内容');
 
     if (process.platform === 'win32') {
@@ -386,6 +411,7 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.match(runtime.promptSections.join('\n'), /inspectFile/i);
     assert.match(runtime.promptSections.join('\n'), /attachment:\/\//i);
     assert.match(runtime.promptSections.join('\n'), /readSpreadsheet/i);
+    assert.match(runtime.promptSections.join('\n'), /updateExcelWorkbook/i);
 
     const bashListResult = await runtime.tools.bash.execute({
       command: "ls -la && printf '\\n---\\n' && ls -la bash-visible-dir && printf '\\n---\\n' && cat bash-visible-dir/nested.txt",
@@ -526,6 +552,17 @@ module.exports = async function failingHandler({ llm, profileName }) {
     assert.equal(excelCreateResult.sheetCount, 1);
     assert.ok(fs.existsSync(path.join(workspaceDir, 'jobs', 'stage-test', 'contracts-summary.xlsx')));
     assert.equal(runtime.getOutboundAttachments().some(item => /contracts-summary\.xlsx$/i.test(item.path)), true);
+
+    const excelUpdateResult = await runtime.tools.updateExcelWorkbook.execute({
+      sourcePath: localWorkbookPath,
+      removeSheets: ['虚拟', '长阳谷已退租企业', 'Sheet1'],
+      sendToUser: true,
+    });
+    assert.equal(excelUpdateResult.success, true);
+    assert.equal(excelUpdateResult.sheetNames[0], '欠费企业一览表');
+    assert.equal(excelUpdateResult.removedSheets.includes('Sheet1'), true);
+    assert.ok(fs.existsSync(excelUpdateResult.outputPath));
+    assert.equal(runtime.getOutboundAttachments().some(item => /leases-edited-.*\.xlsx$/i.test(item.path)), true);
 
     const imageFailureRuntime = await createRuntimeTools({
       workspaceDir,
@@ -923,6 +960,10 @@ module.exports = async function failingHandler({ llm, profileName }) {
       path: path.join(workspaceDir, 'jobs', 'stage-test', 'contracts-summary.xlsx'),
       name: 'contracts-summary.xlsx',
       sizeBytes: fs.statSync(path.join(workspaceDir, 'jobs', 'stage-test', 'contracts-summary.xlsx')).size,
+    }, {
+      path: excelUpdateResult.outputPath,
+      name: path.basename(excelUpdateResult.outputPath),
+      sizeBytes: fs.statSync(excelUpdateResult.outputPath).size,
     }, {
       path: localPdfPath,
       name: 'result.pdf',

@@ -86,6 +86,7 @@ function isMutatingToolCall(toolCall, runtime) {
     || toolCall.toolName === 'archiveWorkspacePath'
     || toolCall.toolName === 'generateImage'
     || toolCall.toolName === 'createExcelWorkbook'
+    || toolCall.toolName === 'updateExcelWorkbook'
     || toolCall.toolName === 'updateTaskState'
     || toolCall.toolName === 'completeTaskState'
     || toolCall.toolName === 'createScheduleTask'
